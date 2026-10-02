@@ -3,6 +3,7 @@
 <!-- closed automatically.                                               -->
 
 # REGULATIONS GOVERNING THE AUTOMATIC MERGER OF PULL REQUESTS
+<[English](./docs/en_README.md) / [简体中文](./README.md)>
 
 **Repository:** any-pr
 
