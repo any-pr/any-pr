@@ -1,0 +1,25 @@
+// Demonstrates variable types and constants
+// Type inference
+var a = 10         // inferred as i32
+var b = 3.14       // inferred as f64
+var name = "Alice" // inferred as str
+
+// Explicit types
+var c : i32 = 20
+var d : f64 = 2.718
+var e : str = "Bob"
+
+// Uninitialized variable (defaults to 0 or empty)
+var uninit : i32
+print("uninit =", uninit)  // prints 0
+
+// Constants (must be initialized, cannot be reassigned)
+let pi : f64 = 3.14159
+let greeting = "Hello"    // type inferred
+
+print("a =", a, "b =", b, "name =", name)
+print("c =", c, "d =", d, "e =", e)
+print("pi =", pi, "greeting =", greeting)
+
+// Attempting to reassign a constant would cause a compile error:
+// pi = 3.14   // ERROR
