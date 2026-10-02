@@ -16,7 +16,7 @@ WHEREAS, it is deemed expedient to establish uniform rules under which pull requ
 
 NOW, THEREFORE, the following Regulations are hereby adopted and shall be binding upon all contributors.
 
-## ARTICLE I 鈥� GENERAL PROVISIONS
+## ARTICLE I / GENERAL PROVISIONS
 
 **Section 1. Purpose.** These Regulations prescribe the conditions under which a Pull Request submitted to this Repository shall be merged automatically. No manual review shall be conducted at any stage of the process.
 
@@ -28,7 +28,7 @@ NOW, THEREFORE, the following Regulations are hereby adopted and shall be bindin
 - (d) **"Prohibited Files"** means temporary files, editor or operating-system residue (`*.tmp`, `*.bak`, `*~`, `.DS_Store`, `Thumbs.db`, swap files), caches (`__pycache__/`, `node_modules/`, `.turbo/`, and similar), build output directories (`dist/`, `build/`, `out/`, `target/`, `coverage/`, and similar), files bearing compiled or binary extensions (`*.exe`, `*.so`, `*.o`, `*.class`, `*.jar`, `*.zip`, `*.whl`, and similar), and credential or secret material (`.env` and variants thereof, private keys, certificate stores, credential stores such as `.npmrc`, `.netrc`, `.pgpass`, and similar), it being provided that clearly-marked example templates such as `.env.example` are exempt;
 - (e) **"the README"** means this document, namely `README.md` and all variants thereof (`README`, `README.rst`, localized variants such as `README.zh-CN.md`, and files so named at any depth).
 
-## ARTICLE II 鈥� AUTOMATIC MERGER
+## ARTICLE II / AUTOMATIC MERGER
 
 **Section 1. Mandatory Merger.** Any Pull Request not designated as a draft which satisfies the requirements of Article III shall be merged forthwith by means of a squash commit, whereupon its source branch shall be deleted insofar as the Workflow's authority permits.
 
@@ -36,7 +36,7 @@ NOW, THEREFORE, the following Regulations are hereby adopted and shall be bindin
 
 **Section 3. Failure of Merger.** Where merger cannot proceed by reason of conflict with the base branch, notice thereof shall be posted upon the Pull Request, and the contributor shall rebase and resubmit.
 
-## ARTICLE III 鈥� GROUNDS FOR MANDATORY CLOSURE
+## ARTICLE III / GROUNDS FOR MANDATORY CLOSURE
 
 A Pull Request shall be closed without merger if it:
 
@@ -47,7 +47,7 @@ A Pull Request shall be closed without merger if it:
 - (e) introduces binary content, howsoever named, such determination to be made by inspection of the underlying git objects;
 - (f) exceeds the size limitations prescribed in Article IV.
 
-## ARTICLE IV 鈥� SIZE LIMITATIONS
+## ARTICLE IV / SIZE LIMITATIONS
 
 **Section 1.** A Pull Request shall not modify more than twenty (20) files.
 
@@ -57,13 +57,13 @@ A Pull Request shall be closed without merger if it:
 
 **Section 4.** Generated and vendored content 鈥� including lockfiles, the contents of `vendor/`, minified files, and snapshots 鈥� shall be exempt from the line counts prescribed in Sections 2 and 3, but shall remain subject to the file count prescribed in Section 1.
 
-## ARTICLE V 鈥� PROHIBITION OF DIRECT PUSHES
+## ARTICLE V / PROHIBITION OF DIRECT PUSHES
 
 **Section 1.** No person shall push commits directly to the `main` branch. All changes shall be submitted exclusively through Pull Requests.
 
 **Section 2.** Any commit arriving upon `main` without an associated merged Pull Request shall cause the branch to be restored to its state immediately prior to such push, and a record of the incident shall be made.
 
-## ARTICLE VI 鈥� DISCLAIMER
+## ARTICLE VI / DISCLAIMER
 
 **Section 1. Nature of the Repository.** This Repository is an experiment in automated governance. It is not, and shall not be construed as, a model of sound engineering practice.
 
