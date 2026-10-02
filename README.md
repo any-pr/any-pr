@@ -1,78 +1,79 @@
-<!-- Enacted 2026-10-01T14:57:58Z. This document shall not be amended, -->
-<!-- superseded, or repealed. Any pull request that modifies it will be   -->
-<!-- closed automatically.                                               -->
+<!-- 于 2026-10-01T14:57:58Z 制定。本文档不得修订、 -->
+<!-- 取代或废止。任何修改它的拉取请求都将被 -->
+<!-- 自动关闭。 -->
 
-# REGULATIONS GOVERNING THE AUTOMATIC MERGER OF PULL REQUESTS
+# 关于自动合并拉取请求的规定
+<[English](./docs/en_README.md) / [简体中文](./README.md)>
 
-**Repository:** any-pr
+**仓库：** any-pr
 
-**Enforcement Instrument:** `.github/workflows/auto-merge.yml`
+**执行文书：** `.github/workflows/auto-merge.yml`
 
 ---
 
-WHEREAS, this Repository operates under a policy of unrestricted contribution; and
+鉴于，本仓库实行不受限制贡献的政策；且
 
-WHEREAS, it is deemed expedient to establish uniform rules under which pull requests shall be received, examined, and merged without human review;
+鉴于，认为宜建立统一规则，据以在无人工审查的情况下接收、审查并合并拉取请求；
 
-NOW, THEREFORE, the following Regulations are hereby adopted and shall be binding upon all contributors.
+因此，现通过以下规定，且其应对所有贡献者具有约束力。
 
-## ARTICLE I — GENERAL PROVISIONS
+## 第一条 — 总则
 
-**Section 1. Purpose.** These Regulations prescribe the conditions under which a Pull Request submitted to this Repository shall be merged automatically. No manual review shall be conducted at any stage of the process.
+**第1节 目的。** 本规定订明提交至本仓库的拉取请求应被自动合并的条件。任何阶段均不进行人工审查。
 
-**Section 2. Definitions.** For the purposes of these Regulations:
+**第2节 定义。** 就本规定而言：
 
-- (a) **"Pull Request"** or **"PR"** means a proposed set of changes submitted for merger into the base branch;
-- (b) **"the Workflow"** means the automated enforcement instrument maintained at `.github/workflows/auto-merge.yml`;
-- (c) **"License Instrument"** means any file constituting a license agreement, including `LICENSE`, `LICENCE`, `UNLICENSE`, `COPYING`, `COPYRIGHT`, all suffixed variants thereof (e.g., `LICENSE-MIT`, `LICENSE_APACHE-2.0`), and the contents of any `LICENSES/` directory;
-- (d) **"Prohibited Files"** means temporary files, editor or operating-system residue (`*.tmp`, `*.bak`, `*~`, `.DS_Store`, `Thumbs.db`, swap files), caches (`__pycache__/`, `node_modules/`, `.turbo/`, and similar), build output directories (`dist/`, `build/`, `out/`, `target/`, `coverage/`, and similar), files bearing compiled or binary extensions (`*.exe`, `*.so`, `*.o`, `*.class`, `*.jar`, `*.zip`, `*.whl`, and similar), and credential or secret material (`.env` and variants thereof, private keys, certificate stores, credential stores such as `.npmrc`, `.netrc`, `.pgpass`, and similar), it being provided that clearly-marked example templates such as `.env.example` are exempt;
-- (e) **"the README"** means this document, namely `README.md` and all variants thereof (`README`, `README.rst`, localized variants such as `README.zh-CN.md`, and files so named at any depth).
+- (a) **“拉取请求”** 或 **“PR”** 指为合并至基础分支而提交的一组拟议更改；
+- (b) **“工作流”** 指维护于 `.github/workflows/auto-merge.yml` 的自动化执行文书；
+- (c) **“许可文书”** 指构成许可协议的任何文件，包括 `LICENSE`、`LICENCE`、`UNLICENSE`、`COPYING`、`COPYRIGHT`、其所有带后缀变体（例如 `LICENSE-MIT`、`LICENSE_APACHE-2.0`），以及任何 `LICENSES/` 目录的内容；
+- (d) **“禁止文件”** 指临时文件、编辑器或操作系统残留物（`*.tmp`、`*.bak`、`*~`、`.DS_Store`、`Thumbs.db`、交换文件）、缓存（`__pycache__/`、`node_modules/`、`.turbo/` 及类似物）、构建输出目录（`dist/`、`build/`、`out/`、`target/`、`coverage/` 及类似物）、带有编译或二进制扩展名的文件（`*.exe`、`*.so`、`*.o`、`*.class`、`*.jar`、`*.zip`、`*.whl` 及类似物），以及凭据或机密材料（`.env` 及其变体、私钥、证书存储、凭据存储，例如 `.npmrc`、`.netrc`、`.pgpass` 及类似物），但明确规定，清楚标记的示例模板（例如 `.env.example`）豁免；
+- (e) **“README”** 指本文档，即 `README.md` 及其所有变体（`README`、`README.rst`、本地化变体如 `README.zh-CN.md`，以及在任何深度以此命名的文件）。
 
-## ARTICLE II — AUTOMATIC MERGER
+## 第二条 — 自动合并
 
-**Section 1. Mandatory Merger.** Any Pull Request not designated as a draft which satisfies the requirements of Article III shall be merged forthwith by means of a squash commit, whereupon its source branch shall be deleted insofar as the Workflow's authority permits.
+**第1节 强制合并。** 任何未被指定为草稿且满足第三条规定要求的拉取请求，应随即通过压缩提交（squash commit）予以合并，其后，在工作流权限允许的范围内，其源分支应被删除。
 
-**Section 2. Draft Pull Requests.** A Pull Request bearing draft designation shall not be merged until such designation is withdrawn.
+**第2节 草稿拉取请求。** 带有草稿指定的拉取请求，在该指定被撤销之前不得合并。
 
-**Section 3. Failure of Merger.** Where merger cannot proceed by reason of conflict with the base branch, notice thereof shall be posted upon the Pull Request, and the contributor shall rebase and resubmit.
+**第3节 合并失败。** 若因与基础分支冲突而无法进行合并，应在该拉取请求上发布相关通知，贡献者应对其进行变基并重新提交。
 
-## ARTICLE III — GROUNDS FOR MANDATORY CLOSURE
+## 第三条 — 强制关闭的理由
 
-A Pull Request shall be closed without merger if it:
+拉取请求在以下情形下应被关闭且不予合并，若其：
 
-- (a) modifies, adds, deletes, or renames any file or directory under `.github/`;
-- (b) modifies any License Instrument or the README, it being provided that deletion or renaming shall constitute modification;
-- (c) introduces one or more Prohibited Files;
-- (d) introduces symlinks or submodules, such determination to be made by inspection of git file modes;
-- (e) introduces binary content, howsoever named, such determination to be made by inspection of the underlying git objects;
-- (f) exceeds the size limitations prescribed in Article IV.
+- (a) 修改、添加、删除或重命名 `.github/` 下的任何文件或目录；
+- (b) 修改任何许可文书或 README，但明确规定删除或重命名构成修改；
+- (c) 引入一个或多个禁止文件；
+- (d) 引入符号链接或子模块，该判定应通过检查 git 文件模式作出；
+- (e) 引入二进制内容，无论以何命名，该判定应通过检查底层 git 对象作出；
+- (f) 超过第四条规定的大小限制。
 
-## ARTICLE IV — SIZE LIMITATIONS
+## 第四条 — 大小限制
 
-**Section 1.** A Pull Request shall not modify more than twenty (20) files.
+**第1节。** 拉取请求不得修改超过二十（20）个文件。
 
-**Section 2.** A Pull Request shall not contain more than five hundred (500) counted changed lines in aggregate.
+**第2节。** 拉取请求合计不得包含超过五百（500）行计入的更改行。
 
-**Section 3.** No single file within a Pull Request shall exceed three hundred (300) changed lines.
+**第3节。** 拉取请求中的任何单个文件不得修改超过三百（300）行。
 
-**Section 4.** Generated and vendored content — including lockfiles, the contents of `vendor/`, minified files, and snapshots — shall be exempt from the line counts prescribed in Sections 2 and 3, but shall remain subject to the file count prescribed in Section 1.
+**第4节。** 生成内容和 vendored（第三方内置）内容——包括锁文件、`vendor/` 的内容、压缩文件和快照——就第2节和第3节规定的行数而言豁免，但仍受第1节规定的文件数约束。
 
-## ARTICLE V — PROHIBITION OF DIRECT PUSHES
+## 第五条 — 禁止直接推送
 
-**Section 1.** No person shall push commits directly to the `main` branch. All changes shall be submitted exclusively through Pull Requests.
+**第1节。** 任何人不得将提交直接推送到 `main` 分支。所有更改应仅通过拉取请求提交。
 
-**Section 2.** Any commit arriving upon `main` without an associated merged Pull Request shall cause the branch to be restored to its state immediately prior to such push, and a record of the incident shall be made.
+**第2节。** 任何到达 `main` 且没有关联的已合并拉取请求的提交，应导致该分支恢复到紧接该推送之前的状态，并应记录该事件。
 
-## ARTICLE VI — DISCLAIMER
+## 第六条 — 免责声明
 
-**Section 1. Nature of the Repository.** This Repository is an experiment in automated governance. It is not, and shall not be construed as, a model of sound engineering practice.
+**第1节 仓库性质。** 本仓库是一项自动化治理实验。它不是、也不应被解释为良好工程实践的典范。
 
-**Section 2. Absence of Review.** All content merged herein is unreviewed. Contributors and consumers of this Repository are advised that its contents may include, without limitation, spam, nonsense, conflicting edits, nonfunctional code, and material of questionable taste. The rules enumerated herein filter specified hazards only and make no determination as to quality, utility, or intent.
+**第2节 无审查。** 所有合并至此的内容均未经审查。本仓库的贡献者和使用者应知悉，其内容可能包括但不限于垃圾信息、胡言乱语、冲突编辑、无法运行的代码以及品味存疑的材料。本文所列规则仅过滤指定危害，并不对质量、效用或意图作出任何判断。
 
-**Section 3. No Warranty.** No code in this Repository shall be executed, deployed, or relied upon for any purpose. Every file shall be treated as untrusted.
+**第3节 无保证。** 本仓库中的任何代码均不得被执行、部署或依赖用于任何目的。每个文件都应被视为不可信。
 
-**Section 4. Best-Effort Enforcement.** Enforcement of these Regulations is effected by an automated workflow reacting to repository events. Such enforcement is best-effort in nature, does not constitute an access control, and affords no guarantee as to the state of the Repository at any given moment.
+**第4节 尽力执行。** 本规定的执行由响应仓库事件的自动化工作流实施。此类执行属于尽力而为，不构成访问控制，也不保证仓库在任何特定时刻的状态。
 
-**Section 5. Responsibility of Contributors.** Each contributor shall bear sole responsibility for the content of their Pull Requests. No contributor shall submit material that is illegal, harmful, infringing, or injurious to the contributor's own reputation, the contributor being hereby reminded that submissions are publicly attributable to their author.
+**第5节 贡献者责任。** 每位贡献者应自行对其拉取请求的内容承担全部责任。任何贡献者不得提交非法、有害、侵权或损害贡献者自身声誉的材料，并在此提醒贡献者，提交内容会公开归属于其作者。
 
-**Section 6. Acceptance of Terms.** The act of opening a Pull Request shall constitute acceptance that such Pull Request may be merged, closed, or otherwise altered by subsequent contributors at any time. Such is the purpose of the experiment.
+**第6节 条款接受。** 提交拉取请求的行为应构成接受：该拉取请求可在任何时候被后续贡献者合并、关闭或以其他方式更改。这正是本实验的目的。
