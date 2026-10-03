@@ -1,0 +1,236 @@
+name: Auto-merge PRs
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+concurrency:
+  group: auto-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+env:
+  MAX_CHANGED_FILES: 20
+  MAX_CHANGED_LINES: 500
+  MAX_FILE_LINES: 300
+jobs:
+  gate-and-merge:
+    name: Gate and merge PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    if: >-
+      github.event_name == 'pull_request_target'
+      && github.event.pull_request.draft == false
+    steps:
+      - name: Checkout base commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+      - name: Inspect PR and merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          REPO="$GITHUB_REPOSITORY"
+          PROTECTED_REGEX='^\.gitlab(/|$)'
+          EXT_EXCL='c|h|cpp|cc|cxx|hpp|hh|cs|go|rs|rb|erb|py|pyi|java|kt|kts|scala|clj|ex|exs|erl|hs|ml|fs|vb|swift|php|pl|pm|r|lua|dart|zig|nim|cr|jl|sh|bash|zsh|fish|ps1|bat|cmd|js|jsx|ts|tsx|mjs|cjs|mts|cts|vue|svelte|astro|elm|css|scss|sass|less|styl|json|jsonc|ya?ml|toml|xml|ini|cfg|conf|sql|graphql|proto|tf|nix|ipynb|lock|csv|png|jpe?g|gif|svg|ico|webp|mp[34]|mov|woff2?|ttf|otf|eot|o|obj|so|dll|exe|wasm|zip|tar|gz|7z|jar|whl'
+          DOCS_REGEX="(^|/)licen[cs]es?/|(^|/)((un)?licen[cs]e|copying|copyright|readme)s?([._-](?!(${EXT_EXCL})\$)[a-z0-9]+)*\$"
+          PROHIBITED_REGEX='~$|\.(tmp|temp|bak|sav|old|orig|rej|sw[a-z]|log)$|(^|/)(\.DS_Store|Thumbs\.db|desktop\.ini)$|(^|/)(__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.ipynb_checkpoints|\.tox|\.nox|\.cache|\.parcel-cache|\.turbo|\.nyc_output|node_modules|dist|build|out|target|coverage|obj|\.next|\.nuxt|\.output|\.gradle|\.vercel)/|\.(eslintcache|stylelintcache|py[co]|o|obj|a|lib|so|dylib|dll|exe|com|msi|apk|aab|ipa|dmg|deb|rpm|class|jar|war|ear|whl|egg|wasm|pdb|bin|db|sqlite3?|zip|tgz|tar|tar\.(gz|bz2|xz|zst)|gz|bz2|xz|7z|rar|zst)$'
+          SECRET_REGEX='(^|/)\.env([._-][a-z0-9._-]*)?$|(^|/)id_(rsa|dsa|ecdsa|ed25519)$|(^|/)credentials(\.json)?$|(^|/)\.(npmrc|netrc|pgpass|htpasswd)$|\.(pem|key|p12|pfx|jks|keystore|kdbx|ovpn)$'
+          SECRET_OK_REGEX='(^|/)\.env[._-](example|sample|template|dist)$'
+          EXCLUDED_FILE_REGEX='(^|/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|composer\.lock|Cargo\.lock|Gemfile\.lock|poetry\.lock|Pipfile\.lock|go\.sum)$|(^|/)vendor/|\.(min\.(js|css)|map|snap|lockb?)$'
+          git fetch --depth=1 origin "refs/pull/${PR_NUMBER}/head"
+          HEAD_SHA=$(git rev-parse FETCH_HEAD)
+          gh api --paginate --slurp \
+            "repos/${REPO}/pulls/${PR_NUMBER}/files?per_page=100" \
+            | jq 'add' > pr_files.json
+          gh pr view "$PR_NUMBER" --repo "$REPO" \
+            --json title,isDraft,state,headRefName,isCrossRepository > pr.json
+          TITLE=$(jq -r .title pr.json)
+          if [ "$(jq -r .isDraft pr.json)" = "true" ] || [ "$(jq -r .state pr.json)" != "OPEN" ]; then
+            echo "PR is draft or no longer open; nothing to do."
+            exit 0
+          fi
+          FILES_CHANGED=$(jq 'length' pr_files.json)
+          TOTAL_LINES=$(jq '[.[].changes] | add // 0' pr_files.json)
+          COUNTED_LINES=$(jq --arg re "$EXCLUDED_FILE_REGEX" \
+            '[.[] | select(.filename | test($re; "i") | not) | .changes] | add // 0' pr_files.json)
+          echo "PR #${PR_NUMBER}: ${TITLE}"
+          echo "Pinned head: ${HEAD_SHA}"
+          echo "Files changed: ${FILES_CHANGED} | Lines: ${COUNTED_LINES} counted / ${TOTAL_LINES} total"
+          close_pr() {
+            gh pr close "$PR_NUMBER" --repo "$REPO" --comment "$1"
+            echo "Closed PR #${PR_NUMBER}"
+          }
+          declare -A MODE SHA
+          while IFS= read -r -d '' e; do
+            m="${e%%$'\t'*}"
+            p="${e#*$'\t'}"
+            MODE["$p"]="${m%% *}"
+            SHA["$p"]="${m##* }"
+          done < <(git ls-tree -r -z FETCH_HEAD)
+          mapfile -d '' -t CHANGED < <(jq -j '
+            [.[] | select(.status != "removed") | .filename]
+            | unique | .[] + "\u0000"' pr_files.json)
+          for f in ${CHANGED[@]+"${CHANGED[@]}"}; do
+            [ -z "$f" ] && continue
+            if [ -z "${SHA[$f]+x}" ]; then
+              echo "Path '$f' absent from pinned head ${HEAD_SHA} — head moved during inspection; skipping."
+              exit 0
+            fi
+          done
+          OFFENDING=$(jq -r --arg re "$PROTECTED_REGEX" '
+            [ .[] | .filename, (.previous_filename // empty) ]
+            | unique
+            | map(select(test($re; "i")))
+            | .[:5] | join(", ")' pr_files.json)
+          if [ -n "$OFFENDING" ]; then
+            close_pr "This PR modifies protected path(s): \`${OFFENDING}\`. Changes under \`.github/\` are not accepted via pull request. Closing."
+            exit 0
+          fi
+          DOCS_TOUCHED=$(jq -r --arg re "$DOCS_REGEX" '
+            [ .[] | .filename, (.previous_filename // empty) ]
+            | unique
+            | map(select(test($re; "i")))
+            | .[:5] | join(", ")' pr_files.json)
+          if [ -n "$DOCS_TOUCHED" ]; then
+            close_pr "This PR modifies protected document(s): \`${DOCS_TOUCHED}\`. The license agreement and README may not be changed via pull request. Closing."
+            exit 0
+          fi
+          JUNK=$(jq -r --arg re "$PROHIBITED_REGEX" '
+            [ .[] | select(.status != "removed")
+              | .filename
+              | select(test($re; "i")) ]
+            | .[:5] | join(", ")' pr_files.json)
+          if [ -n "$JUNK" ]; then
+            close_pr "This PR commits file(s) that look like temporary files, caches, build artifacts, or binaries: \`${JUNK}\`. Please remove them and add the appropriate patterns to \`.gitignore\`. Closing."
+            exit 0
+          fi
+          SECRETS_FOUND=$(jq -r --arg re "$SECRET_REGEX" --arg ok "$SECRET_OK_REGEX" '
+            [ .[] | select(.status != "removed")
+              | .filename
+              | select(test($re; "i") and (test($ok; "i") | not)) ]
+            | .[:5] | join(", ")' pr_files.json)
+          if [ -n "$SECRETS_FOUND" ]; then
+            close_pr "This PR commits file(s) that look like credentials or secrets: \`${SECRETS_FOUND}\`. Please remove them (and rotate any leaked keys). Closing."
+            exit 0
+          fi
+          LINKS=""
+          for f in ${CHANGED[@]+"${CHANGED[@]}"}; do
+            [ -z "$f" ] && continue
+            case "${MODE[$f]:-}" in
+              120000) LINKS+="symlink: $f, ";;
+              160000) LINKS+="submodule: $f, ";;
+            esac
+          done
+          if [ -n "$LINKS" ]; then
+            close_pr "This PR adds symlinks or submodules, which are not allowed: ${LINKS%, }. Closing."
+            exit 0
+          fi
+          if [ "$FILES_CHANGED" -gt "$MAX_CHANGED_FILES" ]; then
+            close_pr "This PR changes ${FILES_CHANGED} files, exceeding the limit of ${MAX_CHANGED_FILES}. Please split it into smaller PRs."
+            exit 0
+          fi
+          if [ "$COUNTED_LINES" -gt "$MAX_CHANGED_LINES" ]; then
+            close_pr "This PR changes ${COUNTED_LINES} lines (excluding generated/vendored files), exceeding the limit of ${MAX_CHANGED_LINES}. Please split it into smaller PRs."
+            exit 0
+          fi
+          BIG_FILES=$(jq -r --arg re "$EXCLUDED_FILE_REGEX" --argjson max "$MAX_FILE_LINES" '
+            [ .[] | select((.filename | test($re; "i") | not) and .changes > $max)
+              | "\(.filename) (\(.changes) lines)" ]
+            | .[:3] | join(", ")' pr_files.json)
+          if [ -n "$BIG_FILES" ]; then
+            close_pr "This PR contains file(s) exceeding the per-file limit of ${MAX_FILE_LINES} changed lines: ${BIG_FILES}. Please split it into smaller PRs."
+            exit 0
+          fi
+          BINFILES=""
+          for f in ${CHANGED[@]+"${CHANGED[@]}"}; do
+            [ -z "$f" ] && continue
+            n=$(git cat-file blob "${SHA[$f]}" 2>/dev/null | head -c 52428800 | LC_ALL=C tr -cd '\000' | wc -c) || n=0
+            if [ "${n:-0}" -gt 0 ]; then BINFILES+="$f, "; fi
+          done
+          if [ -n "$BINFILES" ]; then
+            close_pr "This PR adds binary file(s): ${BINFILES%, }. Binary content cannot be reviewed and is not accepted via pull request. Closing."
+            exit 0
+          fi
+          if gh api -X PUT "repos/${REPO}/pulls/${PR_NUMBER}/merge" \
+              -f sha="$HEAD_SHA" -f merge_method=squash > merge.json 2>merge.err; then
+            echo "Merged PR #${PR_NUMBER} at ${HEAD_SHA}"
+            if [ "$(jq -r .isCrossRepository pr.json)" = "false" ]; then
+              git push origin --delete "refs/heads/$(jq -r .headRefName pr.json)" >/dev/null 2>&1 || true
+            fi
+          elif grep -qiE 'match|modified|conflict' merge.err; then
+            echo "Head moved during inspection — a synchronize run will re-check."
+            exit 0
+          else
+            cat merge.err >&2
+            gh pr comment "$PR_NUMBER" --repo "$REPO" \
+              --body "Auto-merge failed — this PR likely conflicts with the base branch. Please rebase and push again."
+            exit 1
+          fi
+  reject-direct-pushes:
+    name: Reject direct pushes to main
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+    if: >-
+      github.event_name == 'push'
+      && github.actor != 'github-actions[bot]'
+    steps:
+      - name: Checkout pushed ref
+        uses: actions/checkout@v4
+      - name: Revert commits without an associated PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+          PUSHER: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          REPO="$GITHUB_REPOSITORY"
+          if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "No previous ref to compare; skipping."
+            exit 0
+          fi
+          if ! git rev-parse -q --verify "${BEFORE}^{commit}" >/dev/null 2>&1; then
+            if ! git fetch --depth=1 origin "$BEFORE"; then
+              echo "Cannot recover pre-push state ${BEFORE}; manual intervention required."
+              exit 1
+            fi
+          fi
+          BAD=""
+          if NEW_COMMITS=$(git rev-list "${BEFORE}..${AFTER}" 2>/dev/null) && [ -n "$NEW_COMMITS" ]; then
+            while read -r sha; do
+              [ -z "$sha" ] && continue
+              n=$(gh api "repos/${REPO}/commits/${sha}/pulls" --jq 'length')
+              if [ "$n" -eq 0 ]; then
+                echo "Commit ${sha} has no associated pull request."
+                BAD+="${sha} "
+              else
+                echo "Commit ${sha} came via a PR — OK."
+              fi
+            done <<< "$NEW_COMMITS"
+          else
+            echo "Push range ${BEFORE}..${AFTER} could not be resolved — treating as violation."
+            BAD="(unverifiable push)"
+          fi
+          if [ -z "$BAD" ]; then
+            echo "All pushed commits originated from pull requests."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git reset --hard "$BEFORE"
+          if ! git push --force-with-lease="refs/heads/main:${AFTER}" origin HEAD:refs/heads/main; then
+            echo "main moved past ${AFTER} while inspecting — not rewinding to avoid losing newer history."
+            exit 1
+          fi
+          ISSUE_BODY="Push by @${PUSHER} to \`main\` was reverted because it contained commit(s) not associated with any merged pull request: ${BAD}"$'\n\n'"Direct pushes to \`main\` are not allowed — all changes must go through a pull request."
+          gh issue create --repo "$REPO" \
+            --title "Blocked direct push to main" \
+            --body "$ISSUE_BODY" \
+            || echo "Could not open audit issue."
+          echo "Rewound main to ${BEFORE}."
