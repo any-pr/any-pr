@@ -1,0 +1,140 @@
+--- a/net/minecraft/world/level/block/state/BlockBehaviour.java
++++ b/net/minecraft/world/level/block/state/BlockBehaviour.java
+@@ -172,7 +_,7 @@
+         if (!state.isAir() && explosion.getBlockInteraction() != Explosion.BlockInteraction.TRIGGER_BLOCK) {
+             Block block = state.getBlock();
+             boolean doDropExperienceHack = explosion.getIndirectSourceEntity() instanceof Player;
+-            if (block.dropFromExplosion(explosion)) {
++            if (state.canDropFromExplosion(level, pos, explosion)) {
+                 BlockEntity blockEntity = state.hasBlockEntity() ? level.getBlockEntity(pos) : null;
+                 LootParams.Builder params = new LootParams.Builder(level)
+                     .withParameter(LootContextParams.ORIGIN, Vec3.atCenterOf(pos))
+@@ -187,8 +_,7 @@
+                 state.getDrops(params).forEach(stack -> onHit.accept(stack, pos));
+             }
+ 
+-            level.setBlock(pos, Blocks.AIR.defaultBlockState(), 3);
+-            block.wasExploded(level, pos, explosion);
++            state.onBlockExploded(level, pos, explosion);
+         }
+     }
+ 
+@@ -338,8 +_,8 @@
+             return 0.0F;
+         }
+ 
+-        int modifier = player.hasCorrectToolForDrops(state) ? 30 : 100;
+-        return player.getDestroySpeed(state) / destroySpeed / modifier;
++        int modifier = net.neoforged.neoforge.event.EventHooks.doPlayerHarvestCheck(player, state, level, pos) ? 30 : 100;
++        return player.getDestroySpeed(state, pos) / destroySpeed / (float)modifier;
+     }
+ 
+     protected void spawnAfterBreak(BlockState state, ServerLevel level, BlockPos pos, ItemStack tool, boolean dropExperience) {
+@@ -386,10 +_,13 @@
+         return this.isRandomlyTicking;
+     }
+ 
++    @Deprecated //Neo: Use more sensitive version {@link net.neoforged.neoforge.common.extensions.IBlockStateExtension#getSoundType(LevelReader, BlockPos, Entity) }
+     protected SoundType getSoundType(BlockState state) {
+         return this.soundType;
+     }
+ 
++    @Deprecated
++    /** @deprecated Neo: use {@link net.neoforged.neoforge.common.extensions.IBlockExtension#getCloneItemStack(LevelReader, BlockPos, BlockState, boolean, Player) player-sensitive version} */
+     protected ItemStack getCloneItemStack(LevelReader level, BlockPos pos, BlockState state, boolean includeData) {
+         return new ItemStack(this.asItem());
+     }
+@@ -406,6 +_,10 @@
+         return this.properties.destroyTime;
+     }
+ 
++    protected boolean isAir(BlockState state) {
++        return ((BlockStateBase)state).isAir;
++    }
++
+     public abstract static class BlockStateBase extends StateHolder<Block, BlockState> implements TypedInstance<Block> {
+         private static final Direction[] DIRECTIONS = Direction.values();
+         private static final VoxelShape[] EMPTY_OCCLUSION_SHAPES = Util.make(new VoxelShape[DIRECTIONS.length], s -> Arrays.fill(s, Shapes.empty()));
+@@ -505,7 +_,12 @@
+                 this.occlusionShapesByFace = new VoxelShape[DIRECTIONS.length];
+ 
+                 for (Direction direction : DIRECTIONS) {
+-                    this.occlusionShapesByFace[direction.ordinal()] = this.occlusionShape.getFaceShape(direction);
++                    // Neo: properly intern full-cube face shapes generated from shapes with multiple boxes
++                    VoxelShape faceOcclusionShape = this.occlusionShape.getFaceShape(direction);
++                    if (faceOcclusionShape != Shapes.empty() && faceOcclusionShape != Shapes.block() && Block.isShapeFullBlock(faceOcclusionShape)) {
++                        faceOcclusionShape = Shapes.block();
++                    }
++                    this.occlusionShapesByFace[direction.ordinal()] = faceOcclusionShape;
+                 }
+             }
+ 
+@@ -561,14 +_,18 @@
+             return this.useShapeForLightOcclusion;
+         }
+ 
++        /** @deprecated Neo: Use {@link net.neoforged.neoforge.common.extensions.IBlockStateExtension#getLightEmission(BlockGetter, BlockPos)} instead */
++        @Deprecated
+         public int getLightEmission() {
+             return this.lightEmission;
+         }
+ 
+         public boolean isAir() {
+-            return this.isAir;
++            return this.getBlock().isAir((BlockState)this);
+         }
+ 
++        /** @deprecated Neo: Use {@link net.neoforged.neoforge.common.extensions.IBlockStateExtension#ignitedByLava(BlockGetter, BlockPos, Direction)} instead */
++        @Deprecated
+         public boolean ignitedByLava() {
+             return this.ignitedByLava;
+         }
+@@ -579,9 +_,11 @@
+         }
+ 
+         public MapColor getMapColor(BlockGetter level, BlockPos pos) {
+-            return this.mapColor;
++            return getBlock().getMapColor(this.asState(), level, pos, this.mapColor);
+         }
+ 
++        /** @deprecated use {@link BlockState#rotate(LevelAccessor, BlockPos, Rotation)} */
++        @Deprecated
+         public BlockState rotate(Rotation rotation) {
+             return this.getBlock().rotate(this.asState(), rotation);
+         }
+@@ -639,6 +_,8 @@
+         }
+ 
+         public PushReaction getPistonPushReaction() {
++            PushReaction reaction = getBlock().getPistonPushReaction(asState());
++            if (reaction != null) return reaction;
+             return this.pushReaction;
+         }
+ 
+@@ -765,6 +_,9 @@
+         }
+ 
+         public InteractionResult useItemOn(ItemStack itemStack, Level level, Player player, InteractionHand hand, BlockHitResult hitResult) {
++            var useOnContext = new net.minecraft.world.item.context.UseOnContext(level, player, hand, player.getItemInHand(hand).copy(), hitResult);
++            var e = net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.entity.player.UseItemOnBlockEvent(useOnContext, net.neoforged.neoforge.event.entity.player.UseItemOnBlockEvent.UsePhase.BLOCK));
++            if (e.isCanceled()) return e.getCancellationResult();
+             return this.getBlock().useItemOn(itemStack, this.asState(), level, hitResult.getBlockPos(), player, hand, hitResult);
+         }
+ 
+@@ -852,6 +_,7 @@
+             return this.getBlock().getSeed(this.asState(), pos);
+         }
+ 
++        @Deprecated //Neo: Use more sensitive version {@link net.neoforged.neoforge.common.extensions.IBlockStateExtension#getSoundType(LevelReader, BlockPos, Entity) }
+         public SoundType getSoundType() {
+             return this.getBlock().getSoundType(this.asState());
+         }
+@@ -984,7 +_,7 @@
+         private BlockBehaviour.StateArgumentPredicate<EntityType<?>> isValidSpawn = (state, level, pos, entityType) -> state.isFaceSturdy(
+                 level, pos, Direction.UP
+             )
+-            && state.getLightEmission() < 14;
++            && state.getLightEmission(level, pos) < 14;
+         private BlockBehaviour.StatePredicate isRedstoneConductor = BlockBehaviour.BlockStateBase::isCollisionShapeFullBlock;
+         private BlockBehaviour.StatePredicate isSuffocating = (state, level, pos) -> state.blocksMotion() && state.isCollisionShapeFullBlock(level, pos);
+         private BlockBehaviour.StatePredicate isViewBlocking = this.isSuffocating;

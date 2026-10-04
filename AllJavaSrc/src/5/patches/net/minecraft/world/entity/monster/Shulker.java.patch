@@ -1,0 +1,15 @@
+--- a/net/minecraft/world/entity/monster/Shulker.java
++++ b/net/minecraft/world/entity/monster/Shulker.java
+@@ -401,6 +_,12 @@
+                     && this.level().noCollision(this, new AABB(target).deflate(1.0E-6))) {
+                     Direction attachmentDirection = this.findAttachableSurface(target);
+                     if (attachmentDirection != null) {
++                        net.neoforged.neoforge.event.entity.EntityTeleportEvent.EnderEntity event = net.neoforged.neoforge.event.EventHooks.onEnderTeleport(this, target.getX(), target.getY(), target.getZ());
++                        if (event.isCanceled()) attachmentDirection = null;
++                        target = BlockPos.containing(event.getTargetX(), event.getTargetY(), event.getTargetZ());
++                    }
++
++                    if (attachmentDirection != null) {
+                         this.unRide();
+                         this.setAttachFace(attachmentDirection);
+                         this.playSound(SoundEvents.SHULKER_TELEPORT, 1.0F, 1.0F);

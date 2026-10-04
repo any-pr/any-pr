@@ -1,0 +1,24 @@
+--- a/net/minecraft/network/CompressionEncoder.java
++++ b/net/minecraft/network/CompressionEncoder.java
+@@ -9,6 +_,8 @@
+     private final byte[] encodeBuf = new byte[8192];
+     private final Deflater deflater;
+     private int threshold;
++    private static final boolean DISABLE_PACKET_DEBUG = Boolean.parseBoolean(System.getProperty("neoforge.disablePacketCompressionDebug", "false"));
++    private static final org.apache.logging.log4j.Logger LOGGER = org.apache.logging.log4j.LogManager.getLogger();
+ 
+     public CompressionEncoder(int threshold) {
+         this.threshold = threshold;
+@@ -17,6 +_,12 @@
+ 
+     protected void encode(ChannelHandlerContext ctx, ByteBuf uncompressed, ByteBuf out) {
+         int uncompressedLength = uncompressed.readableBytes();
++        if (!DISABLE_PACKET_DEBUG && uncompressedLength > net.minecraft.network.CompressionDecoder.MAXIMUM_UNCOMPRESSED_LENGTH) {
++            uncompressed.markReaderIndex();
++            LOGGER.error("Attempted to send packet over maximum protocol size: {} > {}\nData:\n{}", uncompressedLength, net.minecraft.network.CompressionDecoder.MAXIMUM_UNCOMPRESSED_LENGTH,
++                    net.neoforged.neoforge.logging.PacketDump.getContentDump(uncompressed));
++            uncompressed.resetReaderIndex();
++        }
+         if (uncompressedLength > 8388608) {
+             throw new IllegalArgumentException("Packet too big (is " + uncompressedLength + ", should be less than 8388608)");
+         }

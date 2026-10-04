@@ -1,0 +1,200 @@
+package com.mojang.blaze3d.vulkan;
+
+import com.mojang.blaze3d.buffers.GpuBuffer;
+import com.mojang.blaze3d.buffers.GpuBufferSlice;
+import java.nio.ByteBuffer;
+import java.nio.LongBuffer;
+import java.util.function.Supplier;
+import net.minecraftforge.api.distmarker.Dist;
+import net.minecraftforge.api.distmarker.OnlyIn;
+import org.jspecify.annotations.Nullable;
+import org.lwjgl.PointerBuffer;
+import org.lwjgl.system.MemoryStack;
+import org.lwjgl.system.MemoryUtil;
+import org.lwjgl.util.vma.Vma;
+import org.lwjgl.util.vma.VmaAllocationCreateInfo;
+import org.lwjgl.vulkan.VkBufferCreateInfo;
+
+@OnlyIn(Dist.CLIENT)
+public abstract class VulkanGpuBuffer extends GpuBuffer implements Destroyable {
+    private final long vkBuffer;
+
+    public VulkanGpuBuffer(final long vkBuffer, final @GpuBuffer.Usage int usage, final long size) {
+        super(usage, size);
+        this.vkBuffer = vkBuffer;
+    }
+
+    public long vkBuffer() {
+        return this.vkBuffer;
+    }
+
+    @OnlyIn(Dist.CLIENT)
+    public static class Direct extends VulkanGpuBuffer {
+        private boolean closed;
+        protected final VulkanDevice device;
+        private final long vmaAllocation;
+        private int mappingRefCount;
+        private final boolean isMappedPersistent;
+
+        public Direct(
+            final VulkanDevice device,
+            final @Nullable Supplier<String> label,
+            final @GpuBuffer.Usage int usage,
+            final long size,
+            final boolean forceHostVisibleAllocation
+        ) {
+            this.device = device;
+
+            // ===== 修改点：根据 usage 精确选择 VMA 内存类型 =====
+            int vmaUsage;
+            int vmaFlags = 0;
+            boolean persistentMapped = false;
+            
+            // 检查是否需要 CPU 访问（读取或写入）
+            boolean needsHostAccess = (usage & (GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_MAP_WRITE)) != 0;
+            
+            if (needsHostAccess || forceHostVisibleAllocation) {
+                // 需要 CPU 映射：使用 CPU_TO_GPU 并启用 MAPPED_BIT
+                vmaUsage = Vma.VMA_MEMORY_USAGE_CPU_TO_GPU;
+                vmaFlags |= Vma.VMA_ALLOCATION_CREATE_MAPPED_BIT;
+                persistentMapped = true;
+            } else {
+                // 静态 Vertex/Index/Uniform Buffer：纯 GPU 本地内存
+                vmaUsage = Vma.VMA_MEMORY_USAGE_GPU_ONLY;
+                // 不设置 MAPPED_BIT，避免强制映射到 PCIe
+                persistentMapped = false;
+            }
+
+            long vkBuffer;
+            try (MemoryStack stack = MemoryStack.stackPush()) {
+                VkBufferCreateInfo bufferCreateInfo = VkBufferCreateInfo.calloc(stack).sType$Default();
+                bufferCreateInfo.size(size);
+                bufferCreateInfo.usage(VulkanConst.bufferUsageToVk(usage));
+                bufferCreateInfo.sharingMode(0);
+                bufferCreateInfo.pQueueFamilyIndices(null);
+                
+                VmaAllocationCreateInfo allocCreateInfo = VmaAllocationCreateInfo.calloc(stack);
+                allocCreateInfo.usage(vmaUsage);
+                allocCreateInfo.flags(vmaFlags);
+
+                LongBuffer bufferPtr = stack.callocLong(1);
+                PointerBuffer allocPtr = stack.callocPointer(1);
+                int result = Vma.vmaCreateBuffer(device.vma(), bufferCreateInfo, allocCreateInfo, bufferPtr, allocPtr, null);
+                VulkanUtils.crashIfFailure(device, result, "Failed to allocate VkBuffer");
+                vkBuffer = bufferPtr.get(0);
+                this.vmaAllocation = allocPtr.get(0);
+                if (label != null) {
+                    device.instance().debug().setObjectName(device.vkDevice(), 9, vkBuffer, label);
+                }
+            }
+
+            super(vkBuffer, usage, size);
+            this.closed = false;
+            this.mappingRefCount = 0;
+            this.isMappedPersistent = persistentMapped;
+
+            // 如果 Buffer 是持久映射的（即 usage 要求 CPU 访问），立即映射
+            if (this.isMappedPersistent && (usage & (GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_MAP_WRITE)) != 0) {
+                this.map(0L, size, (usage & 1) != 0, (usage & 2) != 0);
+            }
+        }
+
+        @Override
+        public void destroy() {
+            if (this.isMappedPersistent && this.mappingRefCount > 0) {
+                this.unmapInternal();
+            }
+            Vma.vmaDestroyBuffer(this.device.vma(), this.vkBuffer(), this.vmaAllocation);
+        }
+
+        @Override
+        public boolean isClosed() {
+            return this.closed;
+        }
+
+        @Override
+        public void close() {
+            if (!this.closed) {
+                this.closed = true;
+                if (this.mappingRefCount != 0) {
+                    throw new IllegalStateException("Attempt to close a mapped buffer");
+                }
+                this.device.createCommandEncoder().queueForDestroy(this);
+            }
+        }
+
+        private void unmapInternal() {
+            if (this.mappingRefCount > 0) {
+                this.mappingRefCount = 0;
+                Vma.vmaUnmapMemory(this.device.vma(), this.vmaAllocation);
+            }
+        }
+
+        @Override
+        public GpuBufferSlice.MappedView map(final long offset, final long length, final boolean read, final boolean write) {
+            if (this.isClosed()) {
+                throw new IllegalStateException("Buffer already closed");
+            }
+
+            if (!read && !write) {
+                throw new IllegalArgumentException("At least read or write must be true");
+            }
+
+            if (read && (this.usage() & 1) == 0) {
+                throw new IllegalStateException("Buffer is not readable");
+            }
+
+            if (write && (this.usage() & 2) == 0) {
+                throw new IllegalStateException("Buffer is not writable");
+            }
+
+            if (offset + length > this.size()) {
+                throw new IllegalArgumentException(
+                    "Cannot map more data than this buffer can hold (attempting to map "
+                        + length
+                        + " bytes at offset "
+                        + offset
+                        + " from "
+                        + this.size()
+                        + " size buffer)"
+                );
+            }
+
+            if (length > 2147483647L) {
+                throw new IllegalArgumentException("Mapping buffer slice larger than 2GB is not supported");
+            }
+
+            if (offset >= 0L && length >= 0L) {
+                this.mappingRefCount++;
+
+                try (MemoryStack stack = MemoryStack.stackPush()) {
+                    PointerBuffer pointer = stack.callocPointer(1);
+                    // 如果尚未映射（非持久化），则在此处映射
+                    if (this.mappingRefCount == 1 && !this.isMappedPersistent) {
+                        VulkanUtils.crashIfFailure(this.device, Vma.vmaMapMemory(this.device.vma(), this.vmaAllocation, pointer), "Failed to map buffer");
+                    } else {
+                        // 如果是持久映射，直接获取已映射的指针
+                        Vma.vmaGetAllocationMemory(this.device.vma(), this.vmaAllocation, pointer);
+                    }
+                    ByteBuffer byteBuffer = MemoryUtil.memByteBuffer(pointer.get(0) + offset, (int)length);
+                    return new GpuBufferSlice.MappedView(this.slice(offset, length), byteBuffer, new Runnable() {
+                        private boolean closed = false;
+
+                        @Override
+                        public void run() {
+                            if (!this.closed) {
+                                this.closed = true;
+                                Direct.this.mappingRefCount--;
+                                if (Direct.this.mappingRefCount == 0 && !Direct.this.isMappedPersistent) {
+                                    Vma.vmaUnmapMemory(Direct.this.device.vma(), Direct.this.vmaAllocation);
+                                }
+                            }
+                        }
+                    });
+                }
+            } else {
+                throw new IllegalArgumentException("Offset or length must be positive integer values");
+            }
+        }
+    }
+}

@@ -1,0 +1,37 @@
+--- a/net/minecraft/data/recipes/SimpleCookingRecipeBuilder.java
++++ b/net/minecraft/data/recipes/SimpleCookingRecipeBuilder.java
+@@ -92,6 +_,34 @@
+         return new SimpleCookingRecipeBuilder(craftingCategory, CookingBookCategory.FOOD, result, ingredient, experience, cookingTime, SmokingRecipe::new);
+     }
+ 
++    public static <T extends AbstractCookingRecipe> SimpleCookingRecipeBuilder generic(
++            Ingredient ingredient,
++            RecipeCategory craftingCategory,
++            CookingBookCategory cookingCategory,
++            net.minecraft.world.item.ItemStack result,
++            float experience,
++            int cookingTime,
++            AbstractCookingRecipe.Factory<T> factory
++    ) {
++        return new SimpleCookingRecipeBuilder(craftingCategory, cookingCategory, ItemStackTemplate.fromNonEmptyStack(result), ingredient, experience, cookingTime, factory);
++    }
++
++    public static SimpleCookingRecipeBuilder campfireCooking(Ingredient ingredient, RecipeCategory craftingCategory, ItemStackTemplate result, float experience, int cookingTime) {
++        return new SimpleCookingRecipeBuilder(craftingCategory, CookingBookCategory.FOOD, result, ingredient, experience, cookingTime, CampfireCookingRecipe::new);
++    }
++
++    public static SimpleCookingRecipeBuilder blasting(Ingredient ingredient, RecipeCategory craftingCategory, CookingBookCategory cookingCategory, ItemStackTemplate result, float experience, int cookingTime) {
++        return new SimpleCookingRecipeBuilder(craftingCategory, cookingCategory, result, ingredient, experience, cookingTime, BlastingRecipe::new);
++    }
++
++    public static SimpleCookingRecipeBuilder smelting(Ingredient ingredient, RecipeCategory craftingCategory, CookingBookCategory cookingCategory, ItemStackTemplate result, float experience, int cookingTime) {
++        return new SimpleCookingRecipeBuilder(craftingCategory, cookingCategory, result, ingredient, experience, cookingTime, SmeltingRecipe::new);
++    }
++
++    public static SimpleCookingRecipeBuilder smoking(Ingredient ingredient, RecipeCategory craftingCategory, ItemStackTemplate result, float experience, int cookingTime) {
++        return new SimpleCookingRecipeBuilder(craftingCategory, CookingBookCategory.FOOD, result, ingredient, experience, cookingTime, SmokingRecipe::new);
++    }
++
+     public SimpleCookingRecipeBuilder unlockedBy(String name, Criterion<?> criterion) {
+         this.advancementBuilder.unlockedBy(name, criterion);
+         return this;

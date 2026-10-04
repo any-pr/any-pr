@@ -1,0 +1,41 @@
+--- a/net/minecraft/data/HashCache.java
++++ b/net/minecraft/data/HashCache.java
+@@ -39,6 +_,7 @@
+     private final Path cacheDir;
+     private final String versionId;
+     private final Map<String, HashCache.ProviderCache> caches;
++    private final Map<String, HashCache.ProviderCache> originalCaches;
+     private final Set<String> cachesToWrite = new HashSet<>();
+     private final Set<Path> cachePaths = new HashSet<>();
+     private final int initialCount;
+@@ -65,6 +_,7 @@
+         }
+ 
+         this.caches = loadedCaches;
++        this.originalCaches = Map.copyOf(this.caches);
+         this.initialCount = initialCount;
+     }
+ 
+@@ -106,6 +_,8 @@
+         this.caches.forEach((providerId, cache) -> {
+             if (this.cachesToWrite.contains(providerId)) {
+                 Path cachePath = this.getProviderCachePath(providerId);
++                // Forge: Only rewrite the cache file if it changed or is missing
++                if (!cache.equals(this.originalCaches.get(providerId)) || !Files.exists(cachePath))
+                 cache.save(this.rootDir, cachePath, DateTimeFormatter.ISO_LOCAL_DATE_TIME.format(ZonedDateTime.now()) + "\t" + providerId);
+             }
+ 
+@@ -217,10 +_,11 @@
+                 output.write(extraHeaderInfo);
+                 output.newLine();
+ 
+-                for (Entry<Path, HashCode> e : this.data.entrySet()) {
++                // Forge: Standardize order of entries
++                for (Entry<Path, HashCode> e : this.data.entrySet().stream().sorted(Map.Entry.comparingByKey()).toList()) {
+                     output.write(e.getValue().toString());
+                     output.write(32);
+-                    output.write(rootDir.relativize(e.getKey()).toString());
++                    output.write(rootDir.relativize(e.getKey()).toString().replace("\\", "/")); // Forge: Standardize file paths.
+                     output.newLine();
+                 }
+             } catch (IOException e) {

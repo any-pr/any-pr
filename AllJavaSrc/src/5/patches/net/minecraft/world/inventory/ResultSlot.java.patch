@@ -1,0 +1,20 @@
+--- a/net/minecraft/world/inventory/ResultSlot.java
++++ b/net/minecraft/world/inventory/ResultSlot.java
+@@ -57,6 +_,7 @@
+     protected void checkTakeAchievements(ItemStack carried) {
+         if (this.removeCount > 0) {
+             carried.onCraftedBy(this.player, this.removeCount);
++            net.neoforged.neoforge.event.EventHooks.firePlayerCraftingEvent(this.player, carried, this.craftSlots);
+         }
+ 
+         if (this.container instanceof RecipeCraftingHolder recipeCraftingHolder) {
+@@ -92,7 +_,9 @@
+         CraftingInput input = positionedRecipe.input();
+         int recipeLeft = positionedRecipe.left();
+         int recipeTop = positionedRecipe.top();
++        net.neoforged.neoforge.common.CommonHooks.setCraftingPlayer(player);
+         NonNullList<ItemStack> remaining = this.getRemainingItems(input, player.level());
++        net.neoforged.neoforge.common.CommonHooks.setCraftingPlayer(null);
+ 
+         for (int y = 0; y < input.height(); y++) {
+             for (int x = 0; x < input.width(); x++) {

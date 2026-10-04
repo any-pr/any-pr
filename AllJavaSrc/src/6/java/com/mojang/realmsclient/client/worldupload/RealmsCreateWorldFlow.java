@@ -1,0 +1,125 @@
+package com.mojang.realmsclient.client.worldupload;
+
+import com.mojang.logging.LogUtils;
+import com.mojang.realmsclient.RealmsMainScreen;
+import com.mojang.realmsclient.dto.RealmsServer;
+import com.mojang.realmsclient.dto.RealmsSetting;
+import com.mojang.realmsclient.dto.RealmsSlot;
+import com.mojang.realmsclient.dto.RealmsWorldOptions;
+import com.mojang.realmsclient.gui.screens.RealmsGenericErrorScreen;
+import com.mojang.realmsclient.gui.screens.configuration.RealmsConfigureWorldScreen;
+import com.mojang.realmsclient.util.task.RealmCreationTask;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.concurrent.CompletionException;
+import net.minecraft.SharedConstants;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.AlertScreen;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.gui.screens.worldselection.CreateWorldScreen;
+import net.minecraft.core.LayeredRegistryAccess;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.NbtIo;
+import net.minecraft.network.chat.CommonComponents;
+import net.minecraft.network.chat.Component;
+import net.minecraft.server.RegistryLayer;
+import net.minecraft.world.level.storage.PrimaryLevelData;
+import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+
+public class RealmsCreateWorldFlow {
+   private static final Logger LOGGER = LogUtils.getLogger();
+
+   public static void createWorld(
+      final Minecraft minecraft,
+      final Screen returnScreen,
+      final Screen lastScreen,
+      final int slot,
+      final RealmsServer realmsServer,
+      final @Nullable RealmCreationTask realmCreationTask
+   ) {
+      CreateWorldScreen.openFresh(
+         minecraft,
+         () -> minecraft.setScreen(returnScreen),
+         (createWorldScreen, finalLayers, worldData, tempDataPackDir) -> {
+            Path worldFolder;
+            try {
+               worldFolder = createTemporaryWorldFolder(finalLayers, worldData, tempDataPackDir);
+            } catch (IOException e) {
+               LOGGER.warn("Failed to create temporary world folder.");
+               minecraft.setScreen(new RealmsGenericErrorScreen(Component.translatable("mco.create.world.failed"), lastScreen));
+               return true;
+            }
+
+            RealmsWorldOptions realmsWorldOptions = RealmsWorldOptions.createFromSettings(
+               worldData.getLevelSettings(), SharedConstants.getCurrentVersion().name()
+            );
+            RealmsSlot realmsSlot = new RealmsSlot(slot, realmsWorldOptions, List.of(RealmsSetting.hardcoreSetting(worldData.getLevelSettings().hardcore())));
+            RealmsWorldUpload realmsWorldUpload = new RealmsWorldUpload(
+               worldFolder, realmsSlot, minecraft.getUser(), realmsServer.id, RealmsWorldUploadStatusTracker.noOp()
+            );
+            minecraft.setScreenAndShow(
+               new AlertScreen(
+                  realmsWorldUpload::cancel, Component.translatable("mco.create.world.reset.title"), Component.empty(), CommonComponents.GUI_CANCEL, false
+               )
+            );
+            if (realmCreationTask != null) {
+               realmCreationTask.run();
+            }
+
+            realmsWorldUpload.packAndUpload().handleAsync((result, exception) -> {
+               if (exception != null) {
+                  if (exception instanceof CompletionException e) {
+                     exception = e.getCause();
+                  }
+
+                  if (exception instanceof RealmsUploadCanceledException) {
+                     minecraft.setScreenAndShow(lastScreen);
+                  } else {
+                     if (exception instanceof RealmsUploadFailedException realmsUploadFailedException) {
+                        LOGGER.warn("Failed to create realms world {}", realmsUploadFailedException.getStatusMessage());
+                     } else {
+                        LOGGER.warn("Failed to create realms world {}", exception.getMessage());
+                     }
+
+                     minecraft.setScreenAndShow(new RealmsGenericErrorScreen(Component.translatable("mco.create.world.failed"), lastScreen));
+                  }
+               } else {
+                  if (returnScreen instanceof RealmsConfigureWorldScreen configureWorldScreen) {
+                     configureWorldScreen.fetchServerData(realmsServer.id);
+                  }
+
+                  if (realmCreationTask != null) {
+                     RealmsMainScreen.play(realmsServer, returnScreen, true);
+                  } else {
+                     minecraft.setScreenAndShow(returnScreen);
+                  }
+
+                  RealmsMainScreen.refreshServerList();
+               }
+
+               return null;
+            }, minecraft);
+            return true;
+         }
+      );
+   }
+
+   private static Path createTemporaryWorldFolder(
+      final LayeredRegistryAccess<RegistryLayer> finalLayers, final PrimaryLevelData worldData, final @Nullable Path tempDataPackDir
+   ) throws IOException {
+      Path worldFolder = Files.createTempDirectory("minecraft_realms_world_upload");
+      if (tempDataPackDir != null) {
+         Files.move(tempDataPackDir, worldFolder.resolve("datapacks"));
+      }
+
+      CompoundTag dataTag = worldData.createTag(finalLayers.compositeAccess(), null);
+      CompoundTag root = new CompoundTag();
+      root.put("Data", dataTag);
+      Path levelDat = Files.createFile(worldFolder.resolve("level.dat"));
+      NbtIo.writeCompressed(root, levelDat);
+      return worldFolder;
+   }
+}

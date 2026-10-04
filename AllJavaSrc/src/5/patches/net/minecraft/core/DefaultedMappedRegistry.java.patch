@@ -1,0 +1,15 @@
+--- a/net/minecraft/core/DefaultedMappedRegistry.java
++++ b/net/minecraft/core/DefaultedMappedRegistry.java
+@@ -38,6 +_,12 @@
+         return k == null ? this.defaultKey : k;
+     }
+ 
++    @Nullable
++    @Override
++    public Identifier getKeyOrNull(T element) {
++        return super.getKey(element);
++    }
++
+     @Override
+     public T getValue(@Nullable Identifier key) {
+         T t = super.getValue(key);

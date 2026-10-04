@@ -1,0 +1,11 @@
+--- a/net/minecraft/tags/FluidTags.java
++++ b/net/minecraft/tags/FluidTags.java
+@@ -18,4 +_,8 @@
+     private static TagKey<Fluid> create(String name) {
+         return TagKey.create(Registries.FLUID, Identifier.withDefaultNamespace(name));
+     }
++
++    public static TagKey<Fluid> create(Identifier name) {
++        return TagKey.create(Registries.FLUID, name);
++    }
+ }

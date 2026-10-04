@@ -1,0 +1,11 @@
+--- a/net/minecraft/world/inventory/ShulkerBoxSlot.java
++++ b/net/minecraft/world/inventory/ShulkerBoxSlot.java
+@@ -10,6 +_,7 @@
+ 
+     @Override
+     public boolean mayPlace(ItemStack itemStack) {
+-        return itemStack.getItem().canFitInsideContainerItems();
++        // Neo: stack-aware placeability check
++        return itemStack.canFitInsideContainerItems();
+     }
+ }

@@ -1,0 +1,20 @@
+--- a/net/minecraft/world/level/block/TrapDoorBlock.java
++++ b/net/minecraft/world/level/block/TrapDoorBlock.java
+@@ -183,6 +_,17 @@
+         return super.updateShape(state, level, ticks, pos, directionToNeighbour, neighbourPos, neighbourState, random);
+     }
+ 
++    // Neo: Allows Trapdoors to be climbable if any ladder, even modded ladders, is below Trapdoor
++    @Override
++    public boolean isLadder(BlockState state, net.minecraft.world.level.LevelReader world, BlockPos pos, net.minecraft.world.entity.LivingEntity entity) {
++        if (state.getValue(OPEN)) {
++            BlockPos downPos = pos.below();
++            BlockState down = world.getBlockState(downPos);
++            return down.getBlock().makesOpenTrapdoorAboveClimbable(down, world, downPos, state);
++        }
++        return false;
++    }
++
+     protected BlockSetType getType() {
+         return this.type;
+     }

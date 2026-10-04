@@ -1,0 +1,11 @@
+--- a/net/minecraft/world/level/block/PumpkinBlock.java
++++ b/net/minecraft/world/level/block/PumpkinBlock.java
+@@ -37,7 +_,7 @@
+     protected InteractionResult useItemOn(
+         ItemStack itemStack, BlockState state, Level level, BlockPos pos, Player player, InteractionHand hand, BlockHitResult hitResult
+     ) {
+-        if (!itemStack.is(Items.SHEARS)) {
++        if (!itemStack.canPerformAction(net.neoforged.neoforge.common.ItemAbilities.SHEARS_CARVE)) {
+             return super.useItemOn(itemStack, state, level, pos, player, hand, hitResult);
+         } else if (level instanceof ServerLevel serverLevel) {
+             Direction clickedDirection = hitResult.getDirection();

@@ -1,0 +1,14 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "ingredients": [
+    {
+      "neoforge:ingredient_type": "neoforge:difference",
+      "base": "#c:chests/wooden",
+      "subtracted": "#c:chests/trapped"
+    },
+    "minecraft:minecart"
+  ],
+  "result": {
+    "id": "minecraft:chest_minecart"
+  }
+}

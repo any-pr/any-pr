@@ -1,0 +1,19 @@
+--- a/net/minecraft/world/item/BundleItem.java
++++ b/net/minecraft/world/item/BundleItem.java
+@@ -58,7 +_,7 @@
+     @Override
+     public boolean overrideStackedOnOther(ItemStack self, Slot slot, ClickAction clickAction, Player player) {
+         BundleContents initialContents = self.get(DataComponents.BUNDLE_CONTENTS);
+-        if (initialContents == null) {
++        if (initialContents == null || self.getCount() != 1) {
+             return false;
+         }
+ 
+@@ -95,6 +_,7 @@
+ 
+     @Override
+     public boolean overrideOtherStackedOnMe(ItemStack self, ItemStack other, Slot slot, ClickAction clickAction, Player player, SlotAccess carriedItem) {
++        if (self.getCount() != 1) return false;
+         if (clickAction == ClickAction.PRIMARY && other.isEmpty()) {
+             toggleSelectedItem(self, -1);
+             return false;

@@ -1,0 +1,108 @@
+--- a/net/minecraft/world/level/block/FlowerPotBlock.java
++++ b/net/minecraft/world/level/block/FlowerPotBlock.java
+@@ -35,6 +_,7 @@
+     );
+     private static final Map<Block, Block> POTTED_BY_CONTENT = Maps.newHashMap();
+     private static final VoxelShape SHAPE = Block.column(6.0, 0.0, 6.0);
++    /** Neo: Field accesses are redirected to {@link #getPotted()} with a coremod. */
+     private final Block potted;
+ 
+     @Override
+@@ -42,10 +_,31 @@
+         return CODEC;
+     }
+ 
++    @Deprecated // Mods should use the constructor below
+     public FlowerPotBlock(Block potted, BlockBehaviour.Properties properties) {
++        this(Blocks.FLOWER_POT == null ? null : () -> (FlowerPotBlock) Blocks.FLOWER_POT, () -> potted, properties);
++        if (Blocks.FLOWER_POT != null) {
++            ((FlowerPotBlock)Blocks.FLOWER_POT).addPlant(net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(potted), () -> this);
++        }
++    }
++
++    /**
++     * For mod use, eliminates the need to extend this class, and prevents modded
++     * flower pots from altering vanilla behavior.
++     *
++     * @param emptyPot The empty pot for this pot, or null for self.
++     */
++    public FlowerPotBlock(java.util.function.@org.jspecify.annotations.Nullable Supplier<FlowerPotBlock> emptyPot, java.util.function.Supplier<? extends Block> potted, BlockBehaviour.Properties properties) {
+         super(properties);
+-        this.potted = potted;
+-        POTTED_BY_CONTENT.put(potted, this);
++        this.potted = null; // Unused, redirected by coremod
++        this.flowerDelegate = potted;
++        if (emptyPot == null) {
++            this.fullPots = Maps.newHashMap();
++            this.emptyPot = null;
++        } else {
++            this.fullPots = java.util.Collections.emptyMap();
++            this.emptyPot = emptyPot;
++        }
+     }
+ 
+     @Override
+@@ -58,7 +_,7 @@
+         ItemStack itemStack, BlockState state, Level level, BlockPos pos, Player player, InteractionHand hand, BlockHitResult hitResult
+     ) {
+         BlockState newContents = (itemStack.getItem() instanceof BlockItem blockItem
+-                ? POTTED_BY_CONTENT.getOrDefault(blockItem.getBlock(), Blocks.AIR)
++                ? getEmptyPot().fullPots.getOrDefault(net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(blockItem.getBlock()), () -> Blocks.AIR).get()
+                 : Blocks.AIR)
+             .defaultBlockState();
+         if (newContents.isAir()) {
+@@ -87,7 +_,7 @@
+             player.drop(plant, false);
+         }
+ 
+-        level.setBlock(pos, Blocks.FLOWER_POT.defaultBlockState(), 3);
++        level.setBlock(pos, getEmptyPot().defaultBlockState(), 3);
+         level.gameEvent(player, GameEvent.BLOCK_CHANGE, pos);
+         return InteractionResult.SUCCESS;
+     }
+@@ -118,12 +_,44 @@
+     }
+ 
+     public Block getPotted() {
+-        return this.potted;
++        return flowerDelegate.get();
+     }
+ 
+     @Override
+     protected boolean isPathfindable(BlockState state, PathComputationType type) {
+         return false;
++    }
++
++    // Neo: Maps flower blocks to the filled flower pot equivalent
++    private final Map<net.minecraft.resources.Identifier, java.util.function.Supplier<? extends Block>> fullPots;
++
++    private final java.util.function.@org.jspecify.annotations.Nullable Supplier<FlowerPotBlock> emptyPot;
++
++    private final java.util.function.Supplier<? extends Block> flowerDelegate;
++
++    public FlowerPotBlock getEmptyPot() {
++         return emptyPot == null ? this : emptyPot.get();
++    }
++
++    /**
++     * Maps the given flower to the filled pot it is for.
++     * Call this on the empty pot block. Attempting to call this on a filled pot will throw an exception.
++     *
++     * @param flower The Identifier of the flower block. Not flower item
++     * @param fullPot The filled flower pot to map the flower block to
++     */
++    public void addPlant(net.minecraft.resources.Identifier flower, java.util.function.Supplier<? extends Block> fullPot) {
++         if (getEmptyPot() != this) {
++              throw new IllegalArgumentException("Cannot add plant to non-empty pot: " + this + " (Please call addPlant on the empty pot instead)");
++         }
++         fullPots.put(flower, fullPot);
++    }
++
++    /**
++     * Returns all the filled pots that can be spawned from filling this pot. (If this pot is filled, returned map will be empty)
++     */
++    public Map<net.minecraft.resources.Identifier, java.util.function.Supplier<? extends Block>> getFullPotsView() {
++        return java.util.Collections.unmodifiableMap(fullPots);
+     }
+ 
+     @Override

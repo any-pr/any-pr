@@ -1,0 +1,11 @@
+--- a/net/minecraft/network/protocol/BundlePacket.java
++++ b/net/minecraft/network/protocol/BundlePacket.java
+@@ -6,7 +_,7 @@
+     private final Iterable<Packet<? super T>> packets;
+ 
+     protected BundlePacket(Iterable<Packet<? super T>> packets) {
+-        this.packets = packets;
++        this.packets = net.neoforged.neoforge.network.bundle.BundlePacketUtils.flatten(packets);
+     }
+ 
+     public final Iterable<Packet<? super T>> subPackets() {

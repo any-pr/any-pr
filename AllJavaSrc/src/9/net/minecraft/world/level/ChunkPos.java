@@ -1,0 +1,247 @@
+package net.minecraft.world.level;
+
+import com.mojang.serialization.Codec;
+import io.netty.buffer.ByteBuf;
+import java.util.Spliterators.AbstractSpliterator;
+import java.util.function.Consumer;
+import java.util.stream.IntStream;
+import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.SectionPos;
+import net.minecraft.network.FriendlyByteBuf;
+import net.minecraft.network.codec.StreamCodec;
+import net.minecraft.util.Mth;
+import net.minecraft.util.Util;
+import net.minecraft.world.level.chunk.status.ChunkPyramid;
+import net.minecraft.world.level.chunk.status.ChunkStatus;
+import org.jspecify.annotations.Nullable;
+
+public class ChunkPos {
+   public static final Codec<ChunkPos> CODEC = Codec.INT_STREAM
+      .comapFlatMap(input -> Util.fixedSize(input, 2).map(ints -> new ChunkPos(ints[0], ints[1])), pos -> IntStream.of(pos.x, pos.z))
+      .stable();
+   public static final StreamCodec<ByteBuf, ChunkPos> STREAM_CODEC = new StreamCodec<ByteBuf, ChunkPos>() {
+      public ChunkPos decode(final ByteBuf input) {
+         return FriendlyByteBuf.readChunkPos(input);
+      }
+
+      public void encode(final ByteBuf output, final ChunkPos value) {
+         FriendlyByteBuf.writeChunkPos(output, value);
+      }
+   };
+   private static final int SAFETY_MARGIN = 1056;
+   public static final long INVALID_CHUNK_POS = asLong(1875066, 1875066);
+   private static final int SAFETY_MARGIN_CHUNKS = (32 + ChunkPyramid.GENERATION_PYRAMID.getStepTo(ChunkStatus.FULL).accumulatedDependencies().size() + 1) * 2;
+   public static final int MAX_COORDINATE_VALUE = SectionPos.blockToSectionCoord(BlockPos.MAX_HORIZONTAL_COORDINATE) - SAFETY_MARGIN_CHUNKS;
+   public static final ChunkPos ZERO = new ChunkPos(0, 0);
+   private static final long COORD_BITS = 32L;
+   private static final long COORD_MASK = 4294967295L;
+   private static final int REGION_BITS = 5;
+   public static final int REGION_SIZE = 32;
+   private static final int REGION_MASK = 31;
+   public static final int REGION_MAX_INDEX = 31;
+   public final int x;
+   public final int z;
+   private static final int HASH_A = 1664525;
+   private static final int HASH_C = 1013904223;
+   private static final int HASH_Z_XOR = -559038737;
+
+   public ChunkPos(final int x, final int z) {
+      this.x = x;
+      this.z = z;
+   }
+
+   public ChunkPos(final BlockPos pos) {
+      this.x = SectionPos.blockToSectionCoord(pos.getX());
+      this.z = SectionPos.blockToSectionCoord(pos.getZ());
+   }
+
+   public ChunkPos(final long key) {
+      this.x = (int)key;
+      this.z = (int)(key >> 32);
+   }
+
+   public static ChunkPos minFromRegion(final int regionX, final int regionZ) {
+      return new ChunkPos(regionX << 5, regionZ << 5);
+   }
+
+   public static ChunkPos maxFromRegion(final int regionX, final int regionZ) {
+      return new ChunkPos((regionX << 5) + 31, (regionZ << 5) + 31);
+   }
+
+   public boolean isValid() {
+      return isValid(this.x, this.z);
+   }
+
+   public static boolean isValid(final int x, final int z) {
+      return Mth.absMax(x, z) <= MAX_COORDINATE_VALUE;
+   }
+
+   public long toLong() {
+      return asLong(this.x, this.z);
+   }
+
+   public static long asLong(final int x, final int z) {
+      return x & 4294967295L | (z & 4294967295L) << 32;
+   }
+
+   public static long asLong(final BlockPos pos) {
+      return asLong(SectionPos.blockToSectionCoord(pos.getX()), SectionPos.blockToSectionCoord(pos.getZ()));
+   }
+
+   public static int getX(final long pos) {
+      return (int)(pos & 4294967295L);
+   }
+
+   public static int getZ(final long pos) {
+      return (int)(pos >>> 32 & 4294967295L);
+   }
+
+   @Override
+   public int hashCode() {
+      return hash(this.x, this.z);
+   }
+
+   public static int hash(final int x, final int z) {
+      int xTransform = 1664525 * x + 1013904223;
+      int zTransform = 1664525 * (z ^ -559038737) + 1013904223;
+      return xTransform ^ zTransform;
+   }
+
+   @Override
+   public boolean equals(final Object o) {
+      if (this == o) {
+         return true;
+      } else {
+         return !(o instanceof ChunkPos chunkPos) ? false : this.x == chunkPos.x && this.z == chunkPos.z;
+      }
+   }
+
+   public int getMiddleBlockX() {
+      return this.getBlockX(8);
+   }
+
+   public int getMiddleBlockZ() {
+      return this.getBlockZ(8);
+   }
+
+   public int getMinBlockX() {
+      return SectionPos.sectionToBlockCoord(this.x);
+   }
+
+   public int getMinBlockZ() {
+      return SectionPos.sectionToBlockCoord(this.z);
+   }
+
+   public int getMaxBlockX() {
+      return this.getBlockX(15);
+   }
+
+   public int getMaxBlockZ() {
+      return this.getBlockZ(15);
+   }
+
+   public int getRegionX() {
+      return this.x >> 5;
+   }
+
+   public int getRegionZ() {
+      return this.z >> 5;
+   }
+
+   public int getRegionLocalX() {
+      return this.x & 31;
+   }
+
+   public int getRegionLocalZ() {
+      return this.z & 31;
+   }
+
+   public BlockPos getBlockAt(final int x, final int y, final int z) {
+      return new BlockPos(this.getBlockX(x), y, this.getBlockZ(z));
+   }
+
+   public int getBlockX(final int offset) {
+      return SectionPos.sectionToBlockCoord(this.x, offset);
+   }
+
+   public int getBlockZ(final int offset) {
+      return SectionPos.sectionToBlockCoord(this.z, offset);
+   }
+
+   public BlockPos getMiddleBlockPosition(final int y) {
+      return new BlockPos(this.getMiddleBlockX(), y, this.getMiddleBlockZ());
+   }
+
+   public boolean contains(final BlockPos pos) {
+      return pos.getX() >= this.getMinBlockX() && pos.getZ() >= this.getMinBlockZ() && pos.getX() <= this.getMaxBlockX() && pos.getZ() <= this.getMaxBlockZ();
+   }
+
+   @Override
+   public String toString() {
+      return "[" + this.x + ", " + this.z + "]";
+   }
+
+   public BlockPos getWorldPosition() {
+      return new BlockPos(this.getMinBlockX(), 0, this.getMinBlockZ());
+   }
+
+   public int getChessboardDistance(final ChunkPos pos) {
+      return this.getChessboardDistance(pos.x, pos.z);
+   }
+
+   public int getChessboardDistance(final int x, final int z) {
+      return Mth.chessboardDistance(x, z, this.x, this.z);
+   }
+
+   public int distanceSquared(final ChunkPos pos) {
+      return this.distanceSquared(pos.x, pos.z);
+   }
+
+   public int distanceSquared(final long pos) {
+      return this.distanceSquared(getX(pos), getZ(pos));
+   }
+
+   private int distanceSquared(final int x, final int z) {
+      int deltaX = x - this.x;
+      int deltaZ = z - this.z;
+      return deltaX * deltaX + deltaZ * deltaZ;
+   }
+
+   public static Stream<ChunkPos> rangeClosed(final ChunkPos center, final int radius) {
+      return rangeClosed(new ChunkPos(center.x - radius, center.z - radius), new ChunkPos(center.x + radius, center.z + radius));
+   }
+
+   public static Stream<ChunkPos> rangeClosed(final ChunkPos from, final ChunkPos to) {
+      int xSize = Math.abs(from.x - to.x) + 1;
+      int zSize = Math.abs(from.z - to.z) + 1;
+      final int xDiff = from.x < to.x ? 1 : -1;
+      final int zDiff = from.z < to.z ? 1 : -1;
+      return StreamSupport.stream(new AbstractSpliterator<ChunkPos>(xSize * zSize, 64) {
+         private @Nullable ChunkPos pos;
+
+         @Override
+         public boolean tryAdvance(final Consumer<? super ChunkPos> action) {
+            if (this.pos == null) {
+               this.pos = from;
+            } else {
+               int x = this.pos.x;
+               int z = this.pos.z;
+               if (x == to.x) {
+                  if (z == to.z) {
+                     return false;
+                  }
+
+                  this.pos = new ChunkPos(from.x, z + zDiff);
+               } else {
+                  this.pos = new ChunkPos(x + xDiff, z);
+               }
+            }
+
+            action.accept(this.pos);
+            return true;
+         }
+      }, false);
+   }
+}

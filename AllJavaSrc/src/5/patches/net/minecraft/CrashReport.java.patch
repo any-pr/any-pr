@@ -1,0 +1,44 @@
+--- a/net/minecraft/CrashReport.java
++++ b/net/minecraft/CrashReport.java
+@@ -58,14 +_,8 @@
+         if (this.uncategorizedStackTrace.length > 0) {
+             builder.append("-- Head --\n");
+             builder.append("Thread: ").append(Thread.currentThread().getName()).append("\n");
+-            builder.append("Stacktrace:\n");
+-
+-            for (StackTraceElement element : this.uncategorizedStackTrace) {
+-                builder.append("\t").append("at ").append(element);
+-                builder.append("\n");
+-            }
+-
+-            builder.append("\n");
++            builder.append("Stacktrace:");
++            builder.append(net.neoforged.neoforge.logging.CrashReportExtender.generateEnhancedStackTrace(this.uncategorizedStackTrace));
+         }
+ 
+         for (CrashReportCategory entry : this.details) {
+@@ -73,6 +_,7 @@
+             builder.append("\n\n");
+         }
+ 
++        net.neoforged.neoforge.logging.CrashReportExtender.extendSystemReport(systemReport);
+         this.systemReport.appendToCrashReportString(builder);
+     }
+ 
+@@ -84,15 +_,7 @@
+             exception = replaceMessage(exception, this.title);
+         }
+ 
+-        try {
+-            writer = new StringWriter();
+-            printWriter = new PrintWriter(writer);
+-            exception.printStackTrace(printWriter);
+-            return writer.toString();
+-        } finally {
+-            IOUtils.closeQuietly(writer);
+-            IOUtils.closeQuietly(printWriter);
+-        }
++        return net.neoforged.neoforge.logging.CrashReportExtender.generateEnhancedStackTrace(exception);
+     }
+ 
+     private static Throwable copyProperties(Throwable original, Throwable copy) {

@@ -1,0 +1,10 @@
+--- a/net/minecraft/network/chat/ComponentSerialization.java
++++ b/net/minecraft/network/chat/ComponentSerialization.java
+@@ -122,6 +_,7 @@
+         contentTypes.put("selector", SelectorContents.MAP_CODEC);
+         contentTypes.put("nbt", NbtContents.MAP_CODEC);
+         contentTypes.put("object", ObjectContents.MAP_CODEC);
++        contentTypes.put("neoforge:inserting", net.neoforged.neoforge.common.util.InsertingContents.MAP_CODEC);
+     }
+ 
+     private static class FuzzyCodec<T> extends MapCodec<T> {

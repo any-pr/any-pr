@@ -1,0 +1,10 @@
+--- a/net/minecraft/world/level/block/SoundType.java
++++ b/net/minecraft/world/level/block/SoundType.java
+@@ -855,6 +_,7 @@
+     private final SoundEvent hitSound;
+     private final SoundEvent fallSound;
+ 
++    @Deprecated // Forge: Use {@link net.neoforged.neoforge.common.util.DeferredSoundType} instead for suppliers
+     public SoundType(float volume, float pitch, SoundEvent breakSound, SoundEvent stepSound, SoundEvent placeSound, SoundEvent hitSound, SoundEvent fallSound) {
+         this.volume = volume;
+         this.pitch = pitch;

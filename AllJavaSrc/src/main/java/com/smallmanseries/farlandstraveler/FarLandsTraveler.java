@@ -1,0 +1,77 @@
+package com.smallmanseries.farlandstraveler;
+
+import com.mojang.logging.LogUtils;
+import com.smallmanseries.farlandstraveler.client.sound.FLTSoundEvents;
+import com.smallmanseries.farlandstraveler.common.block.FLTBlocks;
+import com.smallmanseries.farlandstraveler.common.effect.FLTMobEffects;
+import com.smallmanseries.farlandstraveler.common.entity.FLTEntityTypes;
+import com.smallmanseries.farlandstraveler.common.item.FLTItems;
+import com.smallmanseries.farlandstraveler.common.misc.FLTAttachments;
+import com.smallmanseries.farlandstraveler.common.misc.FLTCreativeTabs;
+import com.smallmanseries.farlandstraveler.common.particle.FLTParticleTypes;
+import com.smallmanseries.farlandstraveler.common.worldgen.biomesources.FLTBiomeSources;
+import com.smallmanseries.farlandstraveler.common.worldgen.densityfunctions.FLTDensityFunctions;
+import com.smallmanseries.farlandstraveler.common.worldgen.features.FLTFeatures;
+import com.smallmanseries.farlandstraveler.common.worldgen.materialrules.FLTMaterialRules;
+import com.smallmanseries.farlandstraveler.common.worldgen.structures.FLTStructurePieceType;
+import com.smallmanseries.farlandstraveler.common.worldgen.structures.FLTStructures;
+import com.smallmanseries.farlandstraveler.common.worldgen.structures.placement.FLTStructurePlacements;
+import net.neoforged.bus.api.IEventBus;
+import net.neoforged.fml.ModContainer;
+import net.neoforged.fml.common.Mod;
+import net.neoforged.fml.config.ModConfig;
+import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
+import org.slf4j.Logger;
+
+@Mod(FarLandsTraveler.MODID)
+public class FarLandsTraveler {
+    public static final String MODID = "farlandstraveler";
+    public static final Logger LOGGER = LogUtils.getLogger();
+
+    public FarLandsTraveler(IEventBus modEventBus, ModContainer modContainer) {
+        modEventBus.addListener(this::commonSetup);
+
+        FLTBlocks.BLOCKS.register(modEventBus);
+        FLTEntityTypes.ENTITY_TYPES.register(modEventBus);
+        FLTItems.ITEMS.register(modEventBus);
+        FLTCreativeTabs.TABS.register(modEventBus);
+        FLTMobEffects.EFFECTS.register(modEventBus);
+        FLTParticleTypes.PARTICLE_TYPES.register(modEventBus);
+        FLTDensityFunctions.FUNCTIONS.register(modEventBus);
+        FLTBiomeSources.BIOME_SOURCES.register(modEventBus);
+        FLTAttachments.ATTACHMENT_TYPES.register(modEventBus);
+        FLTSoundEvents.SOUNDS.register(modEventBus);
+        FLTStructurePlacements.STRUCTURE_PLACEMENTS.register(modEventBus);
+        FLTStructures.STRUCTURES.register(modEventBus);
+        FLTStructurePieceType.STRUCTURE_PIECES.register(modEventBus);
+        FLTFeatures.FEATURES.register(modEventBus);
+        // Todo 26.3及以后的版本，原版自带材料规则功能，本模组的此功能可以删除
+        FLTMaterialRules.MATERIAL_RULES.register(modEventBus);
+
+        modContainer.registerConfig(ModConfig.Type.COMMON, Config.SPEC);
+
+        DataInjectors.noiseRouterInjector("worldgen/noise_settings/overworld", "noiseRouterInjectorNormal");
+        // DataInjectors.noiseRouterInjector("worldgen/noise_settings/amplified", "noiseRouterInjectorAmplified");
+        // DataInjectors.noiseRouterInjector("worldgen/noise_settings/large_biomes", "noiseRouterInjectorLargeBiomes");
+
+        DataInjectors.surfaceRuleInjector("worldgen/noise_settings/overworld", "surfaceRuleInjectorNormal");
+        // DataInjectors.surfaceRuleInjector("worldgen/noise_settings/amplified", "surfaceRuleInjectorAmplified");
+        // DataInjectors.surfaceRuleInjector("worldgen/noise_settings/large_biomes", "surfaceRuleInjectorLargeBiomes");
+
+        DataInjectors.worldPresentInjector("worldgen/world_preset/normal", "worldPresentInjectorNormal");
+        // DataInjectors.worldPresentInjector("worldgen/world_preset/amplified", "biomeSourceInjectorAmplified");
+        // DataInjectors.worldPresentInjector("worldgen/world_preset/large_biome", "biomeSourceInjectorLargeBiome");
+
+        DataInjectors.dimensionInjector("dimension/overworld", "dimensionInjectorNormal");
+    }
+
+    private void commonSetup(FMLCommonSetupEvent event) {
+
+        event.enqueueWork(() -> {
+            FLTBlocks.registerPots();
+            FLTBlocks.registerFlammability();
+        });
+        //LOGGER.info("Far Lands Travelers, gather!");
+    }
+
+}

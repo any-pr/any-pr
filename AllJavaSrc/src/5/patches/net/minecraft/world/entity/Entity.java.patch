@@ -1,0 +1,378 @@
+--- a/net/minecraft/world/entity/Entity.java
++++ b/net/minecraft/world/entity/Entity.java
+@@ -158,6 +_,7 @@
+ import net.neoforged.neoforge.common.extensions.IEntityExtension;
+ 
+ public abstract class Entity
++    extends net.neoforged.neoforge.attachment.AttachmentHolder
+     implements Nameable,
+     EntityAccess,
+     ScoreHolder,
+@@ -207,6 +_,8 @@
+     private static final int MAX_BLOCK_ITERATIONS_ALONG_TRAVEL_PER_TICK = 16;
+     private static final double MAX_MOVEMENT_RESETTING_TRACE_DISTANCE = 8.0;
+     private static double viewScale = 1.0;
++    /** @deprecated Neo: Use the getter to allow overriding in mods */
++    @Deprecated
+     private final EntityType<?> type;
+     private boolean requiresPrecisePosition;
+     private int id = 0;
+@@ -323,7 +_,10 @@
+         this.defineSynchedData(entityDataBuilder);
+         this.entityData = entityDataBuilder.build();
+         this.setPos(0.0, 0.0, 0.0);
++        net.neoforged.neoforge.event.entity.EntityEvent.Size sizeEvent = net.neoforged.neoforge.event.EventHooks.getEntitySizeForge(this, Pose.STANDING, this.dimensions);
++        this.dimensions = sizeEvent.getNewSize();
+         this.eyeHeight = this.dimensions.eyeHeight();
++        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.entity.EntityEvent.EntityConstructing(this));
+     }
+ 
+     public boolean isColliding(BlockPos pos, BlockState state) {
+@@ -550,7 +_,7 @@
+         }
+ 
+         if (this.isInLava()) {
+-            this.fallDistance *= 0.5;
++            this.fallDistance *= this.getFluidFallDistanceModifier(net.neoforged.neoforge.common.NeoForgeMod.LAVA_TYPE.value());
+         }
+ 
+         this.checkBelowWorld();
+@@ -785,7 +_,7 @@
+                 profiler.pop();
+             } else {
+                 if (this.canSimulateMovement() && (movedVertically && this.verticalCollision || this.horizontalCollision)) {
+-                    this.restituteMovementAfterCollisions(effectState, xCollision, zCollision, movement);
++                    this.restituteMovementAfterCollisions(effectPos, effectState, xCollision, zCollision, movement); // NeoForge: Pass down the bounce position to our extensions
+                 }
+ 
+                 if (!this.level().isClientSide() || this.isLocalInstanceAuthoritative()) {
+@@ -802,7 +_,13 @@
+         }
+     }
+ 
++    /// @deprecated NeoForge: Use [#restituteMovementAfterCollisions(BlockPos, BlockState, boolean, boolean, Vec3)]
++    @Deprecated
+     private void restituteMovementAfterCollisions(BlockState effectState, boolean xCollision, boolean zCollision, Vec3 movement) {
++        restituteMovementAfterCollisions(getOnPosLegacy(), effectState, xCollision, zCollision, movement);
++    }
++
++    private void restituteMovementAfterCollisions(BlockPos effectPos, BlockState effectState, boolean xCollision, boolean zCollision, Vec3 movement) {
+         double restitution = this.isSuppressingBounce() ? 0.0 : this.getEntityBounciness();
+         Vec3 currentMovement = this.getDeltaMovement();
+         Vec3 movementAfterBounce = currentMovement;
+@@ -818,7 +_,7 @@
+         if (this.verticalCollision) {
+             if (this.verticalCollisionBelow) {
+                 restitution = !(-currentMovement.y < this.getEffectiveGravity()) && !this.isSuppressingBounce() && !effectState.is(BlockTags.SUPPRESSES_BOUNCE)
+-                    ? Math.max(restitution, this.getBlockBounciness(effectState.getBlock()))
++                    ? Math.max(restitution, this.getBlockBounciness(effectPos, effectState)) // NeoForge: Allow bounciness to be state and position specific
+                     : 0.0;
+             }
+ 
+@@ -845,6 +_,8 @@
+         this.setDeltaMovement(movementAfterBounce);
+     }
+ 
++    /// @deprecated NeoForge: Use [IEntityExtension#getBlockBounciness(BlockPos, BlockState) ]
++    @Deprecated
+     private double getBlockBounciness(Block onBlock) {
+         float blockBounciness = onBlock.getBounceRestitution();
+         if (!(this instanceof LivingEntity)) {
+@@ -1062,9 +_,7 @@
+             }
+ 
+             BlockState belowState = this.level().getBlockState(getOnPos);
+-            return (!(offset <= 0.5) || !belowState.is(BlockTags.FENCES))
+-                    && !belowState.is(BlockTags.WALLS)
+-                    && !(belowState.getBlock() instanceof FenceGateBlock)
++            return (!(offset <= 0.5) || !belowState.collisionExtendsVertically(this.level(), getOnPos, this))
+                 ? getOnPos.atY(Mth.floor(this.position.y - offset))
+                 : getOnPos;
+         } else {
+@@ -1435,20 +_,20 @@
+         return !aboveState.is(BlockTags.INSIDE_STEP_SOUND_BLOCKS) && !aboveState.is(BlockTags.COMBINATION_STEP_SOUND_BLOCKS) ? affectingPos : abovePos;
+     }
+ 
+-    protected void playCombinationStepSounds(BlockState primaryStepSound, BlockState secondaryStepSound) {
+-        SoundType primaryStepSoundType = primaryStepSound.getSoundType();
+-        this.playSound(primaryStepSoundType.getStepSound(), primaryStepSoundType.getVolume() * 0.15F, primaryStepSoundType.getPitch());
+-        this.playMuffledStepSound(secondaryStepSound);
++    protected void playCombinationStepSounds(BlockState primaryStepSound, BlockState secondaryStepSound, BlockPos primaryPos, BlockPos secondaryPos) {
++        // Neo: Allow the blockstate full control over step sounds
++        primaryStepSound.playStepSound(this.level, primaryPos, this, .15F, 1F);
++        this.playMuffledStepSound(secondaryStepSound, secondaryPos);
+     }
+ 
+-    protected void playMuffledStepSound(BlockState blockState) {
+-        SoundType secondaryStepSoundType = blockState.getSoundType();
+-        this.playSound(secondaryStepSoundType.getStepSound(), secondaryStepSoundType.getVolume() * 0.05F, secondaryStepSoundType.getPitch() * 0.8F);
++    protected void playMuffledStepSound(BlockState blockState, BlockPos pos) {
++        // Neo: Allow the blockstate full control over step sounds
++        blockState.playStepSound(this.level, pos, this, .05F, .8F);
+     }
+ 
+     protected void playStepSound(BlockPos pos, BlockState blockState) {
+-        SoundType soundType = blockState.getSoundType();
+-        this.playSound(soundType.getStepSound(), soundType.getVolume() * 0.15F, soundType.getPitch());
++        // Neo: Allow the blockstate full control over step sounds
++        blockState.playStepSound(this.level(), pos, this, .15F, 1F);
+     }
+ 
+     private boolean shouldPlayAmethystStepSound(BlockState affectingState) {
+@@ -1706,6 +_,7 @@
+     protected void spawnSprintParticle() {
+         BlockPos pos = this.getOnPosLegacy();
+         BlockState blockState = this.level().getBlockState(pos);
++        if(!blockState.addRunningEffects(level, pos, this))
+         if (blockState.getRenderShape() != RenderShape.INVISIBLE) {
+             Vec3 movement = this.getDeltaMovement();
+             BlockPos entityPosition = this.blockPosition();
+@@ -1720,7 +_,7 @@
+             }
+ 
+             this.level()
+-                .addParticle(new BlockParticleOption(ParticleTypes.BLOCK, blockState), x, this.getY() + 0.1, z, movement.x * -4.0, 1.5, movement.z * -4.0);
++                .addParticle(new BlockParticleOption(ParticleTypes.BLOCK, blockState, pos), x, this.getY() + 0.1, z, movement.x * -4.0, 1.5, movement.z * -4.0);
+         }
+     }
+ 
+@@ -2109,6 +_,11 @@
+                 output.store("data", CustomData.CODEC, this.customData);
+             }
+ 
++            var attachments = output.child(ATTACHMENTS_NBT_KEY);
++            serializeAttachments(attachments);
++            if (attachments.isEmpty()) output.discard(ATTACHMENTS_NBT_KEY);
++            output.storeNullable("NeoForgeData", net.minecraft.nbt.CompoundTag.CODEC, persistentData);
++
+             this.addAdditionalSaveData(output);
+             if (this.isVehicle()) {
+                 ValueOutput.ValueOutputList passengersList = output.childrenList("Passengers");
+@@ -2173,6 +_,8 @@
+                 this.setTicksFrozen(input.getIntOr("TicksFrozen", 0));
+                 this.hasVisualFire = input.getBooleanOr("HasVisualFire", false);
+                 this.customData = input.read("data", CustomData.CODEC).orElse(CustomData.EMPTY);
++                input.read("NeoForgeData", net.minecraft.nbt.CompoundTag.CODEC).ifPresent(neoData -> this.persistentData = neoData);
++                input.child(ATTACHMENTS_NBT_KEY).ifPresent(attachments -> this.deserializeAttachments(attachments));
+                 this.tags.clear();
+                 input.read("Tags", TAG_LIST_CODEC).ifPresent(this.tags::addAll);
+                 this.readAdditionalSaveData(input);
+@@ -2222,6 +_,8 @@
+ 
+         ItemEntity entity = new ItemEntity(level, this.getX() + offset.x, this.getY() + offset.y, this.getZ() + offset.z, itemStack);
+         entity.setDefaultPickUpDelay();
++        if (captureDrops() != null) captureDrops().add(entity);
++        else
+         level.addFreshEntity(entity);
+         return entity;
+     }
+@@ -2279,11 +_,11 @@
+         }
+ 
+         ItemStack heldItem = player.getItemInHand(hand);
+-        if (heldItem.is(Items.SHEARS) && this.shearOffAllLeashConnections(player)) {
++        if (heldItem.canPerformAction(net.neoforged.neoforge.common.ItemAbilities.SHEARS_HARVEST) && this.shearOffAllLeashConnections(player)) {
+             heldItem.hurtAndBreak(1, player, hand);
+             return InteractionResult.SUCCESS;
+         } else if (this instanceof Mob target
+-            && heldItem.is(Items.SHEARS)
++            && heldItem.canPerformAction(net.neoforged.neoforge.common.ItemAbilities.SHEARS_REMOVE_ARMOR)
+             && target.canShearEquipment(player)
+             && !player.isSecondaryUseActive()
+             && target.attemptToShearEquipment(player, hand, heldItem)) {
+@@ -2367,7 +_,11 @@
+ 
+     public void rideTick() {
+         this.setDeltaMovement(Vec3.ZERO);
+-        this.tick();
++        // Neo: Permit cancellation of Entity#tick via EntityTickEvent.Pre
++        if (!net.neoforged.neoforge.event.EventHooks.fireEntityTickPre(this).isCanceled()) {
++            this.tick();
++            net.neoforged.neoforge.event.EventHooks.fireEntityTickPost(this);
++        }
+         if (this.isPassenger()) {
+             this.getVehicle().positionRider(this);
+         }
+@@ -2432,6 +_,7 @@
+             }
+         }
+ 
++        if (!net.neoforged.neoforge.event.EventHooks.canMountEntity(this, entityToRide, true)) return false;
+         if (force || this.canRide(entityToRide) && entityToRide.canAddPassenger(this)) {
+             if (this.isPassenger()) {
+                 this.stopRiding();
+@@ -2466,6 +_,7 @@
+     public void removeVehicle() {
+         if (this.vehicle != null) {
+             Entity oldVehicle = this.vehicle;
++            if (!net.neoforged.neoforge.event.EventHooks.canMountEntity(this, oldVehicle, false)) return;
+             this.vehicle = null;
+             oldVehicle.removePassenger(this);
+             Entity.RemovalReason removalReason = this.getRemovalReason();
+@@ -2516,6 +_,8 @@
+         return this.passengers.isEmpty();
+     }
+ 
++    /** @deprecated Forge: Use {@link #canBeRiddenUnderFluidType(net.neoforged.neoforge.fluids.FluidType, Entity) rider sensitive version} */
++    @Deprecated
+     protected boolean couldAcceptPassenger() {
+         return true;
+     }
+@@ -2828,7 +_,7 @@
+             this.igniteForSeconds(8.0F);
+         }
+ 
+-        this.hurtServer(level, this.damageSources().lightningBolt(), 5.0F);
++        this.hurt(this.damageSources().lightningBolt(), lightningBolt.getDamage());
+     }
+ 
+     public void onAboveBubbleColumn(boolean dragDown, BlockPos pos) {
+@@ -2947,7 +_,7 @@
+     }
+ 
+     protected Component getTypeName() {
+-        return this.type.getDescription();
++        return this.getType().getDescription(); // Forge: Use getter to allow overriding by mods
+     }
+ 
+     public boolean is(Entity other) {
+@@ -3002,10 +_,11 @@
+     }
+ 
+     protected final boolean isInvulnerableToBase(DamageSource source) {
+-        return this.isRemoved()
++        boolean isVanillaInvulnerable = this.isRemoved()
+             || this.invulnerable && !source.is(DamageTypeTags.BYPASSES_INVULNERABILITY) && !source.isCreativePlayer()
+             || source.is(DamageTypeTags.IS_FIRE) && this.fireImmune()
+             || source.is(DamageTypeTags.IS_FALL) && this.is(EntityTypeTags.FALL_DAMAGE_IMMUNE);
++        return net.neoforged.neoforge.common.CommonHooks.isEntityInvulnerableTo(this, source, isVanillaInvulnerable);
+     }
+ 
+     public boolean isInvulnerable() {
+@@ -3036,6 +_,7 @@
+     }
+ 
+     public @Nullable Entity teleport(TeleportTransition transition) {
++        if (!net.neoforged.neoforge.common.CommonHooks.onTravelToDimension(this, transition.newLevel().dimension())) return null;
+         if (this.level() instanceof ServerLevel serverLevel && !this.isRemoved()) {
+             ServerLevel newLevel = transition.newLevel();
+             boolean otherDimension = newLevel.dimension() != serverLevel.dimension();
+@@ -3258,6 +_,7 @@
+         return this.stringUUID;
+     }
+ 
++    @Deprecated // Forge: Use FluidType sensitive version
+     public boolean isPushedByFluid() {
+         return true;
+     }
+@@ -3369,6 +_,8 @@
+         EntityDimensions oldDim = this.dimensions;
+         Pose pose = this.getPose();
+         EntityDimensions newDim = this.getDimensions(pose);
++        net.neoforged.neoforge.event.entity.EntityEvent.Size sizeEvent = net.neoforged.neoforge.event.EventHooks.getEntitySizeForge(this, pose, oldDim, newDim);
++        newDim = sizeEvent.getNewSize();
+         this.dimensions = newDim;
+         this.eyeHeight = newDim.eyeHeight();
+         this.reapplyPosition();
+@@ -3810,6 +_,10 @@
+                 }
+             }
+         }
++        // Neo: ensure target chunk is loaded.
++        if (this.isAddedToLevel() && !this.level.isClientSide() && !this.isRemoved()) {
++            this.level.getChunk((int) Math.floor(x) >> 4, (int) Math.floor(z) >> 4);
++        }
+     }
+ 
+     public void checkDespawn() {
+@@ -3950,6 +_,90 @@
+ 
+     public boolean mayInteract(ServerLevel level, BlockPos pos) {
+         return true;
++    }
++
++    /**
++     * Neo: Short-lived holder of dropped item entities. Used mainly for Neo hooks and event logic.
++     * <p>
++     * When not null, records all item entities from {@link #spawnAtLocation(ItemStack, float)} and {@link net.minecraft.server.level.ServerPlayer#drop(ItemStack, boolean, boolean)} instead of adding them to the world.
++     */
++    private java.util.@Nullable Collection<ItemEntity> captureDrops = null;
++
++    @Override
++    public java.util.@Nullable Collection<ItemEntity> captureDrops() {
++        return captureDrops;
++    }
++
++    @Override
++    public java.util.@Nullable Collection<ItemEntity> captureDrops(java.util.@Nullable Collection<ItemEntity> value) {
++        java.util.Collection<ItemEntity> ret = captureDrops;
++        this.captureDrops = value;
++        return ret;
++    }
++
++    // Neo: Injected ability to store arbitrary nbt onto entities in ways that allow inter-mod compat without compile-time dependencies
++    private net.minecraft.nbt.@Nullable CompoundTag persistentData;
++
++    @Override
++    public net.minecraft.nbt.CompoundTag getPersistentData() {
++        if (persistentData == null)
++            persistentData = new net.minecraft.nbt.CompoundTag();
++        return persistentData;
++    }
++
++    // Neo: Set the default behavior for trampling on Farmland
++    @Override
++    public boolean canTrample(ServerLevel level, BlockState state, BlockPos pos, double fallDistance) {
++        return level.getRandom().nextFloat() < fallDistance - 0.5F
++             && this instanceof LivingEntity
++             && (this instanceof Player || net.neoforged.neoforge.event.EventHooks.canEntityGrief(level, this))
++             && this.getBbWidth() * this.getBbWidth() * this.getBbHeight() > 0.512F;
++    }
++
++    /**
++     * Neo: Internal use for keeping track of entities that are tracked by a world, to
++     * allow guarantees that entity position changes will force a chunk load, avoiding
++     * potential issues with entity desyncing and bad chunk data.
++     */
++    private boolean isAddedToLevel;
++
++    @Override
++    public final boolean isAddedToLevel() { return this.isAddedToLevel; }
++
++    @Override
++    public void onAddedToLevel() { this.isAddedToLevel = true; }
++
++    @Override
++    public void onRemovedFromLevel() { this.isAddedToLevel = false; }
++
++    // Neo: Helper method to stop an entity from being removed if already marked for removal
++    @Override
++    public void revive() {
++        this.unsetRemoved();
++    }
++
++    // Neo: Hookup Attachment data setting
++    @Override
++    @Nullable
++    public final <T> T setData(net.neoforged.neoforge.attachment.AttachmentType<T> type, T data) {
++        // Entities are always saved, no setChanged() call is necessary.
++        return super.setData(type, data);
++    }
++
++    @Override
++    public final void syncData(net.neoforged.neoforge.attachment.AttachmentType<?> type) {
++        net.neoforged.neoforge.attachment.AttachmentSync.syncEntityUpdate(this, type);
++    }
++
++    // Neo: Hookup Capabilities getters to entities
++    @Nullable
++    public final <T, C extends @org.jspecify.annotations.Nullable Object> T getCapability(net.neoforged.neoforge.capabilities.EntityCapability<T, C> capability, C context) {
++        return capability.getCapability(this, context);
++    }
++
++    @Nullable
++    public final <T> T getCapability(net.neoforged.neoforge.capabilities.EntityCapability<T, @org.jspecify.annotations.Nullable Void> capability) {
++        return capability.getCapability(this, null);
+     }
+ 
+     public boolean isFlyingVehicle() {

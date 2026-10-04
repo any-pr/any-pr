@@ -1,0 +1,203 @@
+--- a/net/minecraft/core/MappedRegistry.java
++++ b/net/minecraft/core/MappedRegistry.java
+@@ -30,7 +_,7 @@
+ import net.minecraft.util.Util;
+ import org.jspecify.annotations.Nullable;
+ 
+-public class MappedRegistry<T> implements WritableRegistry<T> {
++public class MappedRegistry<T> extends net.neoforged.neoforge.registries.BaseMappedRegistry<T> implements WritableRegistry<T> {
+     private final ResourceKey<? extends Registry<T>> key;
+     private final ObjectList<Holder.Reference<T>> byId = new ObjectArrayList<>(256);
+     private final Reference2IntMap<T> toId = Util.make(new Reference2IntOpenHashMap<>(), t -> t.defaultReturnValue(-1));
+@@ -86,9 +_,17 @@
+ 
+     @Override
+     public Holder.Reference<T> register(ResourceKey<T> key, T value, RegistrationInfo registrationInfo) {
++        return register(this.byId.size(), key, value, registrationInfo);
++    }
++
++    public Holder.Reference<T> register(int id, ResourceKey<T> key, T value, RegistrationInfo registrationInfo) {
+         this.validateWrite(key);
+         Objects.requireNonNull(key);
+         Objects.requireNonNull(value);
++        int newId = id;
++        if (newId > this.getMaxId())
++            throw new IllegalStateException(String.format(java.util.Locale.ENGLISH, "Invalid id %d - maximum id range of %d exceeded.", newId, this.getMaxId()));
++
+         if (this.byLocation.containsKey(key.identifier())) {
+             throw (IllegalStateException)Util.pauseInIde(new IllegalStateException("Adding duplicate key '" + key + "' to registry"));
+         }
+@@ -107,16 +_,18 @@
+             holder.bindKey(key);
+         } else {
+             holder = this.byKey.computeIfAbsent(key, k -> Holder.Reference.createStandAlone(this, (ResourceKey<T>)k));
++            // Neo: Bind the value immediately so it can be queried while the registry is not frozen
++            holder.bindValue(value);
+         }
+ 
+         this.byKey.put(key, holder);
+         this.byLocation.put(key.identifier(), holder);
+         this.byValue.put(value, holder);
+-        int newId = this.byId.size();
+         this.byId.add(holder);
+         this.toId.put(value, newId);
+         this.registrationInfos.put(key, registrationInfo);
+         this.registryLifecycle = this.registryLifecycle.add(registrationInfo.lifecycle());
++        this.addCallbacks.forEach(addCallback -> addCallback.onAdd(this, newId, key, value));
+         return holder;
+     }
+ 
+@@ -138,7 +_,7 @@
+ 
+     @Override
+     public @Nullable T getValue(@Nullable ResourceKey<T> key) {
+-        return getValueFromNullable(this.byKey.get(key));
++        return getValueFromNullable(this.byKey.get(resolve(key)));
+     }
+ 
+     @Override
+@@ -153,12 +_,12 @@
+ 
+     @Override
+     public Optional<Holder.Reference<T>> get(Identifier id) {
+-        return Optional.ofNullable(this.byLocation.get(id));
++        return Optional.ofNullable(this.byLocation.get(resolve(id)));
+     }
+ 
+     @Override
+     public Optional<Holder.Reference<T>> get(ResourceKey<T> id) {
+-        return Optional.ofNullable(this.byKey.get(id));
++        return Optional.ofNullable(this.byKey.get(resolve(id)));
+     }
+ 
+     @Override
+@@ -173,7 +_,7 @@
+     }
+ 
+     private Holder.Reference<T> getOrCreateHolderOrThrow(ResourceKey<T> key) {
+-        return this.byKey.computeIfAbsent(key, id -> {
++        return this.byKey.computeIfAbsent(resolve(key), id -> {
+             if (this.unregisteredIntrusiveHolders != null) {
+                 throw new IllegalStateException("This registry can't create new holders without value");
+             }
+@@ -205,7 +_,7 @@
+ 
+     @Override
+     public @Nullable T getValue(@Nullable Identifier key) {
+-        Holder.Reference<T> result = this.byLocation.get(key);
++        Holder.Reference<T> result = this.byLocation.get(key != null ? resolve(key) : null);
+         return getValueFromNullable(result);
+     }
+ 
+@@ -271,6 +_,17 @@
+         return Objects.requireNonNull(this.componentLookup, "Registry not frozen yet");
+     }
+ 
++    /** @deprecated Neo: For internal use only. Use the Register events when registering values. */
++    @Deprecated
++    @Override
++    public void unfreeze(boolean clearTags) {
++        if (clearTags) {
++            // unbind tags which were bound by the previous freeze
++            this.allTags = MappedRegistry.TagSet.unbound();
++        }
++        this.frozen = false;
++    }
++
+     @Override
+     public Registry<T> freeze() {
+         if (this.frozen) {
+@@ -278,7 +_,6 @@
+         }
+ 
+         this.frozen = true;
+-        this.byValue.forEach((value, holder) -> holder.bindValue((T)value));
+         List<Identifier> unboundEntries = this.byKey
+             .entrySet()
+             .stream()
+@@ -295,11 +_,14 @@
+                 throw new IllegalStateException("Some intrusive holders were not registered: " + this.unregisteredIntrusiveHolders.values());
+             }
+ 
+-            this.unregisteredIntrusiveHolders = null;
++            // Neo: We freeze/unfreeze vanilla registries more than once, so we need to keep the unregistered intrusive holders map around.
++            // this.unregisteredIntrusiveHolders = null;
+         }
++        this.bakeCallbacks.forEach(bakeCallback -> bakeCallback.onBake(this));
+ 
+         if (this.allTags.isBound()) {
+-            throw new IllegalStateException("Tags already present before freezing");
++            // Neo: we freeze/unfreeze the registry to apply snapshots and tags need to be preserved in those cases
++            // throw new IllegalStateException("Tags already present before freezing");
+         }
+ 
+         List<Identifier> unboundTags = this.frozenTags
+@@ -443,6 +_,12 @@
+                 return patchedHolder;
+             }
+ 
++            // Neo: Make the underlying staged tag contents accessible for loading condition evaluation.
++            @Override
++            public Map<TagKey<T>, List<Holder<T>>> contents() {
++                return Collections.unmodifiableMap(pendingContents);
++            }
++
+             @Override
+             public void apply() {
+                 pendingTags.forEach((id, tag) -> {
+@@ -453,6 +_,55 @@
+                 MappedRegistry.this.refreshTagsInHolders();
+             }
+         };
++    }
++
++    @Override
++    protected void clear(boolean full) {
++        this.validateWrite();
++        this.clearCallbacks.forEach(clearCallback -> clearCallback.onClear(this, full));
++        super.clear(full);
++        this.byId.clear();
++        this.toId.clear();
++        if (full) {
++            this.byLocation.clear();
++            this.byKey.clear();
++            this.byValue.clear();
++            this.allTags = MappedRegistry.TagSet.unbound();
++            this.frozenTags.entrySet().removeIf(entry -> !entry.getValue().isBound());
++            if (unregisteredIntrusiveHolders != null) {
++                unregisteredIntrusiveHolders.clear();
++                unregisteredIntrusiveHolders = null;
++            }
++        }
++    }
++
++    @Override
++    protected void registerIdMapping(ResourceKey<T> key, int id) {
++        this.validateWrite(key);
++        if (id > this.getMaxId())
++            throw new IllegalStateException(String.format(java.util.Locale.ENGLISH, "Invalid id %d - maximum id range of %d exceeded.", id, this.getMaxId()));
++        if (0 <= id && id < this.byId.size() && this.byId.get(id) != null) { // Don't use byId() method, it will return the default value if the entry is absent
++            throw new IllegalStateException("Duplicate id " + id + " for " + key + " and " + this.getKey(this.byId.get(id).value()));
++        }
++        var holder = byKey.get(key);
++        while (this.byId.size() < (id + 1)) this.byId.add(null);
++        this.byId.set(id, holder);
++        this.toId.put(holder.value(), id);
++    }
++
++    @Override
++    public int getId(Identifier name) {
++        return getId(getValue(name));
++    }
++
++    @Override
++    public int getId(ResourceKey<T> key) {
++        return getId(getValue(key));
++    }
++
++    @Override
++    public boolean containsValue(T value) {
++        return byValue.containsKey(value);
+     }
+ 
+     private interface TagSet<T> {

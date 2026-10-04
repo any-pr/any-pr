@@ -1,0 +1,33 @@
+--- a/net/minecraft/core/dispenser/BoatDispenseItemBehavior.java
++++ b/net/minecraft/core/dispenser/BoatDispenseItemBehavior.java
+@@ -29,11 +_,17 @@
+         double spawnY = center.y() + direction.getStepY() * 1.125F;
+         double spawnZ = center.z() + direction.getStepZ() * justOutsideDispenser;
+         BlockPos frontPos = source.pos().relative(direction);
++        AbstractBoat abstractboat = this.type.create(level, EntitySpawnReason.DISPENSER);
++        if (abstractboat != null) {
++            EntityType.<AbstractBoat>createDefaultStackConfig(level, dispensed, null).apply(abstractboat);
++            abstractboat.setYRot(direction.toYRot());
++            level.addFreshEntity(abstractboat);
++        }
+         double yOffset;
+-        if (level.getFluidState(frontPos).is(FluidTags.WATER)) {
++        if (canBoatInFluid(abstractboat, level.getFluidState(frontPos))) {
+             yOffset = 1.0;
+         } else {
+-            if (!level.getBlockState(frontPos).isAir() || !level.getFluidState(frontPos.below()).is(FluidTags.WATER)) {
++            if (!level.getBlockState(frontPos).isAir() || !canBoatInFluid(abstractboat, level.getFluidState(frontPos.below()))) {
+                 return this.defaultDispenseItemBehavior.dispense(source, dispensed);
+             }
+ 
+@@ -50,6 +_,10 @@
+         }
+ 
+         return dispensed;
++    }
++
++    private static boolean canBoatInFluid(@org.jspecify.annotations.Nullable AbstractBoat boat, net.minecraft.world.level.material.FluidState fluid) {
++        return boat != null ? boat.canBoatInFluid(fluid) : fluid.is(FluidTags.WATER);
+     }
+ 
+     @Override

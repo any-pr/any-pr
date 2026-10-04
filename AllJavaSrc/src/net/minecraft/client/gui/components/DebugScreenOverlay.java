@@ -1,0 +1,486 @@
+package net.minecraft.client.gui.components;
+
+import com.mojang.blaze3d.platform.Window;
+import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.datafixers.DataFixUtils;
+import com.mojang.blaze3d.textures.FilterMode;
+import com.mojang.blaze3d.textures.GpuTextureView;
+import java.util.Collection;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.function.Consumer;
+import net.minecraft.client.KeyMapping;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.Options;
+import net.minecraft.client.gui.Font;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.gui.components.debug.DebugColumn;
+import net.minecraft.client.gui.components.debug.DebugCustomRenderer;
+import net.minecraft.client.gui.components.debug.DebugFact;
+import net.minecraft.client.gui.components.debug.DebugGroup;
+import net.minecraft.client.gui.components.debug.DebugGroupContents;
+import net.minecraft.client.gui.components.debug.DebugGroups;
+import net.minecraft.client.gui.components.debug.DebugScreenDisplayer;
+import net.minecraft.client.gui.components.debug.DebugScreenEntries;
+import net.minecraft.client.gui.components.debug.DebugScreenEntry;
+import net.minecraft.client.gui.components.debug.DebugScreenEntryList;
+import net.minecraft.client.gui.components.debugchart.BandwidthDebugChart;
+import net.minecraft.client.gui.components.debugchart.FpsDebugChart;
+import net.minecraft.client.gui.components.debugchart.PingDebugChart;
+import net.minecraft.client.gui.components.debugchart.ProfilerPieChart;
+import net.minecraft.client.gui.components.debugchart.TpsDebugChart;
+import net.minecraft.client.gui.screens.LevelLoadingScreen;
+import net.minecraft.client.server.IntegratedServer;
+import net.minecraft.core.BlockPos;
+import net.minecraft.resources.Identifier;
+import net.minecraft.server.level.ChunkLevel;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.progress.ChunkLoadStatusView;
+import net.minecraft.util.debugchart.LocalSampleLogger;
+import net.minecraft.util.debugchart.RemoteDebugSampleType;
+import net.minecraft.util.debugchart.TpsDebugDimensions;
+import net.minecraft.util.profiling.Profiler;
+import net.minecraft.util.profiling.ProfilerFiller;
+import net.minecraft.util.profiling.Zone;
+import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.chunk.LevelChunk;
+import net.minecraft.world.level.chunk.status.ChunkStatus;
+import org.jspecify.annotations.Nullable;
+
+public class DebugScreenOverlay {
+   private final Minecraft minecraft;
+   private final Font font;
+   private @Nullable ChunkPos lastPos;
+   private @Nullable LevelChunk clientChunk;
+   private @Nullable CompletableFuture<LevelChunk> serverChunk;
+   private boolean renderProfilerChart;
+   private boolean renderFpsCharts;
+   private boolean renderNetworkCharts;
+   private boolean renderLightmapTexture;
+   private final LocalSampleLogger frameTimeLogger = new LocalSampleLogger(1);
+   private final LocalSampleLogger tickTimeLogger = new LocalSampleLogger(TpsDebugDimensions.values().length);
+   private final LocalSampleLogger pingLogger = new LocalSampleLogger(1);
+   private final LocalSampleLogger bandwidthLogger = new LocalSampleLogger(1);
+   private final Map<RemoteDebugSampleType, LocalSampleLogger> remoteSupportingLoggers = Map.of(RemoteDebugSampleType.TICK_TIME, this.tickTimeLogger);
+   private final FpsDebugChart fpsChart;
+   private final TpsDebugChart tpsChart;
+   private final PingDebugChart pingChart;
+   private final BandwidthDebugChart bandwidthChart;
+   private final ProfilerPieChart profilerPieChart;
+   private final DebugColumn leftColumn = new DebugColumn(DebugColumn.Side.LEFT);
+   private final DebugColumn rightColumn = new DebugColumn(DebugColumn.Side.RIGHT);
+   private long lastDebugEntriesVersion;
+
+   public DebugScreenOverlay(final Minecraft minecraft) {
+      this.minecraft = minecraft;
+      this.font = minecraft.font;
+      this.fpsChart = new FpsDebugChart(this.font, this.frameTimeLogger);
+      this.tpsChart = new TpsDebugChart(
+         this.font, this.tickTimeLogger, () -> minecraft.level == null ? 0.0F : minecraft.level.tickRateManager().millisecondsPerTick()
+      );
+      this.pingChart = new PingDebugChart(this.font, this.pingLogger);
+      this.bandwidthChart = new BandwidthDebugChart(this.font, this.bandwidthLogger);
+      this.profilerPieChart = new ProfilerPieChart(this.font);
+   }
+
+   public void clearChunkCache() {
+      this.serverChunk = null;
+      this.clientChunk = null;
+   }
+
+   public void extractRenderState(final GuiGraphicsExtractor graphics) {
+      Options options = this.minecraft.options;
+      if (this.minecraft.isGameLoadFinished() && (!this.minecraft.gui.hud.isHidden() || this.minecraft.gui.screen() != null)) {
+         Collection<Identifier> visibleEntries = this.minecraft.debugEntries.getCurrentlyEnabled();
+         if (visibleEntries.isEmpty()) {
+            this.clearColumnCache();
+         } else {
+            if (this.lastDebugEntriesVersion != this.minecraft.debugEntries.getCurrentlyEnabledVersion()) {
+               this.lastDebugEntriesVersion = this.minecraft.debugEntries.getCurrentlyEnabledVersion();
+               this.clearColumnCache();
+            }
+
+            graphics.nextStratum();
+            ProfilerFiller profiler = Profiler.get();
+            profiler.push("debug");
+            ChunkPos chunkPos;
+            if (this.minecraft.getCameraEntity() != null && this.minecraft.level != null) {
+               BlockPos feetPos = this.minecraft.getCameraEntity().blockPosition();
+               chunkPos = ChunkPos.containing(feetPos);
+            } else {
+               chunkPos = null;
+            }
+
+            if (!Objects.equals(this.lastPos, chunkPos)) {
+               this.lastPos = chunkPos;
+               this.clearChunkCache();
+            }
+
+            final DebugGroupContents leftPriority = new DebugGroupContents(DebugGroups.PRIORITY);
+            final DebugGroupContents rightPriority = new DebugGroupContents(DebugGroups.PRIORITY);
+            final Map<DebugGroup, DebugGroupContents> groups = new LinkedHashMap<>();
+            DebugScreenDisplayer displayer = new DebugScreenDisplayer() {
+               @Override
+               public void addPriorityLine(final String line) {
+                  if (leftPriority.lines().size() > rightPriority.lines().size()) {
+                     rightPriority.lines().add(line);
+                  } else {
+                     leftPriority.lines().add(line);
+                  }
+               }
+
+               @Override
+               public void addToGroup(final DebugGroup group, final Collection<String> lines) {
+                  groups.computeIfAbsent(group, k -> new DebugGroupContents(group)).lines().addAll(lines);
+               }
+
+               @Override
+               public void addToGroup(final DebugGroup group, final String lines) {
+                  groups.computeIfAbsent(group, k -> new DebugGroupContents(group)).lines().add(lines);
+               }
+
+               @Override
+               public void addFactToGroup(final DebugGroup group, final String name, final Consumer<DebugFact> builder) {
+                  DebugFact fact = new DebugFact();
+                  builder.accept(fact);
+                  groups.computeIfAbsent(group, k -> new DebugGroupContents(group)).addFact(name, fact.result());
+               }
+
+               @Override
+               public void addToGroup(final DebugGroup group, final DebugCustomRenderer customRenderer) {
+                  groups.computeIfAbsent(group, k -> new DebugGroupContents(group)).addCustomRenderer(customRenderer);
+               }
+            };
+            Level level = this.getLevel();
+
+            for (Identifier id : visibleEntries) {
+               DebugScreenEntry entry = DebugScreenEntries.getEntry(id);
+               if (entry != null) {
+                  entry.display(displayer, level, this.getClientChunk(), this.getServerChunk());
+               }
+            }
+
+            DebugGroupContents miscContents = groups.get(DebugGroups.MISC);
+            if (miscContents != null) {
+               groups.remove(DebugGroups.MISC);
+               groups.put(DebugGroups.MISC, miscContents);
+            }
+
+            if (this.minecraft.debugEntries.isOverlayVisible()) {
+               boolean hasServer = this.minecraft.getSingleplayerServer() != null;
+               KeyMapping keyDebugModifier = options.keyDebugModifier;
+               displayer.addToGroup(
+                  DebugGroups.HELP,
+                  List.of(
+                     "Debug charts: "
+                        + formatChart(keyDebugModifier, options.keyDebugPofilingChart, "Profiler", this.renderProfilerChart)
+                        + "; "
+                        + formatChart(keyDebugModifier, options.keyDebugFpsCharts, hasServer ? "fps + tps" : "fps", this.renderFpsCharts)
+                        + ";",
+                     formatChart(
+                           keyDebugModifier,
+                           options.keyDebugNetworkCharts,
+                           !this.minecraft.isLocalServer() ? "Bandwidth + Ping" : "Ping",
+                           this.renderNetworkCharts
+                        )
+                        + "; "
+                        + formatChart(keyDebugModifier, options.keyDebugLightmapTexture, "Lightmap", this.renderLightmapTexture),
+                     "To edit: press " + formatKeybind(keyDebugModifier, options.keyDebugDebugOptions)
+                  )
+               );
+            }
+
+            Window window = this.minecraft.getWindow();
+            int standardGuiScale = window.getGuiScale();
+            int newScale = this.minecraft.options.debugGuiScale().get();
+            if (newScale == -1) {
+               newScale = standardGuiScale;
+            } else if (newScale == 0) {
+               int maxGuiScale = this.minecraft.getWindow().calculateScale(0, this.minecraft.isEnforceUnicode());
+               newScale = maxGuiScale / 2;
+            } else {
+               newScale = window.calculateScale(newScale, this.minecraft.isEnforceUnicode());
+            }
+
+            graphics.pose().pushMatrix();
+            int scaledScreenHeight;
+            int scaledScreenWidth;
+            if (newScale < standardGuiScale && newScale > 0) {
+               graphics.pose().scale((float)newScale / standardGuiScale, (float)newScale / standardGuiScale);
+               scaledScreenWidth = window.getWidth() / newScale;
+               scaledScreenHeight = window.getHeight() / newScale;
+            } else {
+               scaledScreenWidth = graphics.guiWidth();
+               scaledScreenHeight = graphics.guiHeight();
+            }
+
+            this.leftColumn.newFrame();
+            this.rightColumn.newFrame();
+            if (!leftPriority.lines().isEmpty()) {
+               this.leftColumn.add(leftPriority, graphics, this.font, scaledScreenWidth);
+            }
+
+            if (!rightPriority.lines().isEmpty()) {
+               this.rightColumn.add(rightPriority, graphics, this.font, scaledScreenWidth);
+            }
+
+            groups.values().removeIf(contents -> contents.lines().isEmpty() && contents.facts().isEmpty() && contents.customRenderers().isEmpty());
+
+            for (DebugGroup group : this.leftColumn.getPreviousGroups()) {
+               if (!this.leftColumn.isFull(scaledScreenHeight)) {
+                  DebugGroupContents contents = groups.remove(group);
+                  if (contents != null) {
+                     this.leftColumn.add(contents, graphics, this.font, scaledScreenWidth);
+                  }
+               }
+            }
+
+            for (DebugGroup group : this.rightColumn.getPreviousGroups()) {
+               if (!this.rightColumn.isFull(scaledScreenHeight)) {
+                  DebugGroupContents contents = groups.remove(group);
+                  if (contents != null) {
+                     this.rightColumn.add(contents, graphics, this.font, scaledScreenWidth);
+                  }
+               }
+            }
+
+            Iterator<DebugGroupContents> iterator = groups.values().iterator();
+
+            while (iterator.hasNext()) {
+               DebugGroupContents contents = iterator.next();
+               Optional<DebugColumn.Side> preferredSide = contents.group().preferredColumn();
+               if (preferredSide.isPresent()) {
+                  if (preferredSide.get() == DebugColumn.Side.LEFT && !this.leftColumn.isFull(scaledScreenHeight)) {
+                     this.leftColumn.add(contents, graphics, this.font, scaledScreenWidth);
+                     iterator.remove();
+                  } else if (preferredSide.get() == DebugColumn.Side.RIGHT && !this.rightColumn.isFull(scaledScreenHeight)) {
+                     this.rightColumn.add(contents, graphics, this.font, scaledScreenWidth);
+                     iterator.remove();
+                  }
+               }
+            }
+
+            for (DebugGroupContents contents : groups.values()) {
+               if (this.leftColumn.getHeightSoFar() < this.rightColumn.getHeightSoFar() && !this.leftColumn.isFull(scaledScreenHeight)) {
+                  this.leftColumn.add(contents, graphics, this.font, scaledScreenWidth);
+               } else if (!this.rightColumn.isFull(scaledScreenHeight)) {
+                  this.rightColumn.add(contents, graphics, this.font, scaledScreenWidth);
+               }
+            }
+
+            graphics.nextStratum();
+            this.profilerPieChart.setBottomOffset(10);
+            if (this.showFpsCharts()) {
+               int maxWidth = scaledScreenWidth / 2;
+               this.fpsChart.extractRenderState(graphics, 0, this.fpsChart.getWidth(maxWidth));
+               if (this.tickTimeLogger.size() > 0) {
+                  int width = this.tpsChart.getWidth(maxWidth);
+                  this.tpsChart.extractRenderState(graphics, scaledScreenWidth - width, width);
+               }
+
+               this.profilerPieChart.setBottomOffset(this.tpsChart.getFullHeight());
+            }
+
+            if (this.showNetworkCharts() && this.minecraft.getConnection() != null) {
+               int maxWidth = scaledScreenWidth / 2;
+               if (!this.minecraft.isLocalServer()) {
+                  this.bandwidthChart.extractRenderState(graphics, 0, this.bandwidthChart.getWidth(maxWidth));
+               }
+
+               int width = this.pingChart.getWidth(maxWidth);
+               this.pingChart.extractRenderState(graphics, scaledScreenWidth - width, width);
+               this.profilerPieChart.setBottomOffset(this.pingChart.getFullHeight());
+            }
+
+            if (this.showLightmapTexture()) {
+               GpuTextureView lightmapTextureView = this.minecraft.gameRenderer.levelLightmap();
+               int displaySize = 64;
+               int x = scaledScreenWidth - 64 - 2;
+               int y = scaledScreenHeight - 64 - 2;
+               graphics.fill(x - 1, y - 1, x + 64 + 1, y + 64 + 1, -16777216);
+               graphics.blit(
+                  lightmapTextureView, RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST), x, y, x + 64, y + 64, 0.0F, 1.0F, 1.0F, 0.0F
+               );
+            }
+
+            if (this.minecraft.debugEntries.isCurrentlyEnabled(DebugScreenEntries.VISUALIZE_CHUNKS_ON_SERVER)) {
+               IntegratedServer singleplayerServer = this.minecraft.getSingleplayerServer();
+               if (singleplayerServer != null && this.minecraft.player != null) {
+                  ChunkLoadStatusView statusView = singleplayerServer.createChunkLoadStatusView(16 + ChunkLevel.RADIUS_AROUND_FULL_CHUNK);
+                  statusView.moveTo(this.minecraft.player.level().dimension(), this.minecraft.player.chunkPosition());
+                  LevelLoadingScreen.extractChunksForRendering(graphics, scaledScreenWidth / 2, scaledScreenHeight / 2, 4, 1, statusView);
+               }
+            }
+
+            try (Zone ignored = profiler.zone("profilerPie")) {
+               this.profilerPieChart.extractRenderState(graphics);
+            }
+
+            graphics.pose().popMatrix();
+            profiler.pop();
+         }
+      } else {
+         this.clearColumnCache();
+      }
+   }
+
+   public void clearColumnCache() {
+      this.leftColumn.clear();
+      this.rightColumn.clear();
+   }
+
+   private static String formatChart(final KeyMapping keyDebugModifier, final KeyMapping keybind, final String name, final boolean status) {
+      return formatKeybind(keyDebugModifier, keybind) + " " + name + " " + (status ? "visible" : "hidden");
+   }
+
+   private static String formatKeybind(final KeyMapping keyDebugModifier, final KeyMapping keybind) {
+      return "["
+         + (keyDebugModifier.isUnbound() ? "" : keyDebugModifier.getTranslatedKeyMessage().getString() + "+")
+         + keybind.getTranslatedKeyMessage().getString()
+         + "]";
+   }
+
+   private @Nullable ServerLevel getServerLevel() {
+      if (this.minecraft.level == null) {
+         return null;
+      }
+
+      IntegratedServer server = this.minecraft.getSingleplayerServer();
+      return server != null ? server.getLevel(this.minecraft.level.dimension()) : null;
+   }
+
+   private @Nullable Level getLevel() {
+      return this.minecraft.level == null
+         ? null
+         : (Level)DataFixUtils.orElse(
+            Optional.ofNullable(this.minecraft.getSingleplayerServer()).flatMap(s -> Optional.ofNullable(s.getLevel(this.minecraft.level.dimension()))),
+            this.minecraft.level
+         );
+   }
+
+   private @Nullable LevelChunk getServerChunk() {
+      if (this.minecraft.level != null && this.lastPos != null) {
+         if (this.serverChunk == null) {
+            ServerLevel level = this.getServerLevel();
+            if (level == null) {
+               return null;
+            }
+
+            this.serverChunk = level.getChunkSource()
+               .getChunkFuture((int) this.lastPos.x(), (int) this.lastPos.z(), ChunkStatus.FULL, false)
+               .thenApply(chunkResult -> (LevelChunk)chunkResult.orElse(null));
+         }
+
+         return this.serverChunk.getNow(null);
+      } else {
+         return null;
+      }
+   }
+
+   private @Nullable LevelChunk getClientChunk() {
+      if (this.minecraft.level != null && this.lastPos != null) {
+         if (this.clientChunk == null) {
+            this.clientChunk = this.minecraft.level.getChunk((int) this.lastPos.x(), (int) this.lastPos.z());
+         }
+
+         return this.clientChunk;
+      } else {
+         return null;
+      }
+   }
+
+   public boolean showDebugScreen() {
+      DebugScreenEntryList entries = this.minecraft.debugEntries;
+      return (entries.isOverlayVisible() || !entries.getCurrentlyEnabled().isEmpty())
+         && (!this.minecraft.gui.hud.isHidden() || this.minecraft.gui.screen() != null);
+   }
+
+   public boolean showProfilerChart() {
+      return this.minecraft.debugEntries.isOverlayVisible() && this.renderProfilerChart;
+   }
+
+   public boolean showNetworkCharts() {
+      return this.minecraft.debugEntries.isOverlayVisible() && this.renderNetworkCharts;
+   }
+
+   public boolean showFpsCharts() {
+      return this.minecraft.debugEntries.isOverlayVisible() && this.renderFpsCharts;
+   }
+
+   public boolean showLightmapTexture() {
+      return this.minecraft.debugEntries.isOverlayVisible() && this.renderLightmapTexture;
+   }
+
+   public void toggleNetworkCharts() {
+      this.renderNetworkCharts = !this.minecraft.debugEntries.isOverlayVisible() || !this.renderNetworkCharts;
+      if (this.renderNetworkCharts) {
+         this.minecraft.debugEntries.setOverlayVisible(true);
+         this.renderFpsCharts = false;
+         this.renderLightmapTexture = false;
+      }
+   }
+
+   public void toggleFpsCharts() {
+      this.renderFpsCharts = !this.minecraft.debugEntries.isOverlayVisible() || !this.renderFpsCharts;
+      if (this.renderFpsCharts) {
+         this.minecraft.debugEntries.setOverlayVisible(true);
+         this.renderNetworkCharts = false;
+         this.renderLightmapTexture = false;
+      }
+   }
+
+   public void toggleLightmapTexture() {
+      this.renderLightmapTexture = !this.minecraft.debugEntries.isOverlayVisible() || !this.renderLightmapTexture;
+      if (this.renderLightmapTexture) {
+         this.minecraft.debugEntries.setOverlayVisible(true);
+         this.renderFpsCharts = false;
+         this.renderNetworkCharts = false;
+      }
+   }
+
+   public void toggleProfilerChart() {
+      this.renderProfilerChart = !this.minecraft.debugEntries.isOverlayVisible() || !this.renderProfilerChart;
+      if (this.renderProfilerChart) {
+         this.minecraft.debugEntries.setOverlayVisible(true);
+      }
+   }
+
+   public void logFrameDuration(final long frameDuration) {
+      this.frameTimeLogger.logSample(frameDuration);
+   }
+
+   public LocalSampleLogger getTickTimeLogger() {
+      return this.tickTimeLogger;
+   }
+
+   public LocalSampleLogger getPingLogger() {
+      return this.pingLogger;
+   }
+
+   public LocalSampleLogger getBandwidthLogger() {
+      return this.bandwidthLogger;
+   }
+
+   public ProfilerPieChart getProfilerPieChart() {
+      return this.profilerPieChart;
+   }
+
+   public void logRemoteSample(final long[] sample, final RemoteDebugSampleType type) {
+      LocalSampleLogger logger = this.remoteSupportingLoggers.get(type);
+      if (logger != null) {
+         logger.logFullSample(sample);
+      }
+   }
+
+   public void reset() {
+      this.tickTimeLogger.reset();
+      this.pingLogger.reset();
+      this.bandwidthLogger.reset();
+   }
+}

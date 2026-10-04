@@ -1,0 +1,67 @@
+--- a/net/minecraft/world/inventory/EnchantmentMenu.java
++++ b/net/minecraft/world/inventory/EnchantmentMenu.java
+@@ -61,7 +_,7 @@
+         this.addSlot(new Slot(this.enchantSlots, 1, 35, 47) {
+             @Override
+             public boolean mayPlace(ItemStack itemStack) {
+-                return itemStack.is(Items.LAPIS_LAZULI);
++                return itemStack.is(Items.LAPIS_LAZULI); // Neo: TODO - replace with the tag once we have client tags
+             }
+ 
+             @Override
+@@ -89,23 +_,24 @@
+             if (!itemStack.isEmpty() && itemStack.isEnchantable()) {
+                 this.access.execute((level, pos) -> {
+                     IdMap<Holder<Enchantment>> holders = level.registryAccess().lookupOrThrow(Registries.ENCHANTMENT).asHolderIdMap();
+-                    int bookcases = 0;
++                    float bookcases = 0;
+ 
+                     for (BlockPos offset : EnchantingTableBlock.BOOKSHELF_OFFSETS) {
+                         if (EnchantingTableBlock.isValidBookShelf(level, pos, offset)) {
+-                            bookcases++;
++                            bookcases += level.getBlockState(pos.offset(offset)).getEnchantPowerBonus(level, pos.offset(offset));
+                         }
+                     }
+ 
+                     this.random.setSeed(this.enchantmentSeed.get());
+ 
+                     for (int ixx = 0; ixx < 3; ixx++) {
+-                        this.costs[ixx] = EnchantmentHelper.getEnchantmentCost(this.random, ixx, bookcases, itemStack);
++                        this.costs[ixx] = EnchantmentHelper.getEnchantmentCost(this.random, ixx, (int) bookcases, itemStack);
+                         this.enchantClue[ixx] = -1;
+                         this.levelClue[ixx] = -1;
+                         if (this.costs[ixx] < ixx + 1) {
+                             this.costs[ixx] = 0;
+                         }
++                        this.costs[ixx] = net.neoforged.neoforge.event.EventHooks.onEnchantmentLevelSet(level, pos, ixx, (int) bookcases, itemStack, costs[ixx]);
+                     }
+ 
+                     for (int ix = 0; ix < 3; ix++) {
+@@ -152,14 +_,10 @@
+                 List<EnchantmentInstance> newEnchantment = this.getEnchantmentList(level.registryAccess(), enchantmentItem, buttonId, this.costs[buttonId]);
+                 if (!newEnchantment.isEmpty()) {
+                     player.onEnchantmentPerformed(enchantmentItem, enchantmentCost);
+-                    if (enchantmentItem.is(Items.BOOK)) {
+-                        enchantmentItem = itemStack.transmuteCopy(Items.ENCHANTED_BOOK);
+-                        this.enchantSlots.setItem(0, enchantmentItem);
+-                    }
+-
+-                    for (EnchantmentInstance enchantment : newEnchantment) {
+-                        enchantmentItem.enchant(enchantment.enchantment(), enchantment.level());
+-                    }
++                    // Neo: Allow items to transform themselves when enchanted, instead of relying on hardcoded transformations for Items.BOOK
++                    enchantmentItem = itemStack.getItem().applyEnchantments(itemStack, newEnchantment);
++                    this.enchantSlots.setItem(0, enchantmentItem);
++                    net.neoforged.neoforge.common.CommonHooks.onPlayerEnchantItem(player, enchantmentItem, newEnchantment);
+ 
+                     currency.consume(enchantmentCost, player);
+                     if (currency.isEmpty()) {
+@@ -234,7 +_,7 @@
+                 if (!this.moveItemStackTo(stack, 2, 38, true)) {
+                     return ItemStack.EMPTY;
+                 }
+-            } else if (stack.is(Items.LAPIS_LAZULI)) {
++            } else if (stack.is(Items.LAPIS_LAZULI)) { // Neo: TODO - replace with the tag once we have client tags
+                 if (!this.moveItemStackTo(stack, 1, 2, true)) {
+                     return ItemStack.EMPTY;
+                 }

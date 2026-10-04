@@ -1,0 +1,20 @@
+--- a/net/minecraft/util/TriState.java
++++ b/net/minecraft/util/TriState.java
+@@ -39,4 +_,17 @@
+     public String getSerializedName() {
+         return this.name;
+     }
++
++    // Neo: Helper methods for use in patches
++    public boolean isTrue() {
++        return this == TRUE;
++    }
++
++    public boolean isDefault() {
++        return this == DEFAULT;
++    }
++
++    public boolean isFalse() {
++        return this == FALSE;
++    }
+ }

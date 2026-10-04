@@ -1,0 +1,15 @@
+{
+  "pack": {
+    "description": {
+      "translate": "pack.neoforge.description"
+    },
+    "max_format": [
+      107,
+      1
+    ],
+    "min_format": [
+      107,
+      1
+    ]
+  }
+}

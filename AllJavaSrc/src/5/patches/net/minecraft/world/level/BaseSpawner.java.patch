@@ -1,0 +1,35 @@
+--- a/net/minecraft/world/level/BaseSpawner.java
++++ b/net/minecraft/world/level/BaseSpawner.java
+@@ -154,16 +_,15 @@
+ 
+                             entity.snapTo(entity.getX(), entity.getY(), entity.getZ(), random.nextFloat() * 360.0F, 0.0F);
+                             if (entity instanceof Mob mob) {
+-                                if (nextSpawnData.getCustomSpawnRules().isEmpty() && !mob.checkSpawnRules(level, EntitySpawnReason.SPAWNER)
+-                                    || !mob.checkSpawnObstruction(level)) {
++                                if (!net.neoforged.neoforge.event.EventHooks.checkSpawnPositionSpawner(mob, level, EntitySpawnReason.SPAWNER, nextSpawnData, this)) {
+                                     continue;
+                                 }
+ 
+                                 boolean hasNoConfiguration = nextSpawnData.getEntityToSpawn().size() == 1
+                                     && nextSpawnData.getEntityToSpawn().getString("id").isPresent();
+-                                if (hasNoConfiguration) {
+-                                    ((Mob)entity).finalizeSpawn(level, level.getCurrentDifficultyAt(entity.blockPosition()), EntitySpawnReason.SPAWNER, null);
+-                                }
++                                // Neo: Patch in FinalizeSpawn for spawners so it may be fired unconditionally, instead of only when vanilla would normally call it.
++                                // The local hasNoConfiguration is the conditions under which the spawner will normally call Mob#finalizeSpawn.
++                                net.neoforged.neoforge.event.EventHooks.finalizeMobSpawnSpawner(mob, level, level.getCurrentDifficultyAt(entity.blockPosition()), EntitySpawnReason.SPAWNER, null, this, hasNoConfiguration);
+ 
+                                 nextSpawnData.getEquipment().ifPresent(mob::equip);
+                             }
+@@ -281,5 +_,11 @@
+ 
+     public double getOSpin() {
+         return this.oSpin;
++    }
++
++    @Override
++    public com.mojang.datafixers.util.@Nullable Either<net.minecraft.world.level.block.entity.BlockEntity, Entity> getOwner() {
++        // The vanilla anonymous classes have proper overrides, but we return null here for compatibility.
++        return null;
+     }
+ }

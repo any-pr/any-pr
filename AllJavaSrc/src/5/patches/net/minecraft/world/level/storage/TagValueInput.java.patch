@@ -1,0 +1,27 @@
+--- a/net/minecraft/world/level/storage/TagValueInput.java
++++ b/net/minecraft/world/level/storage/TagValueInput.java
+@@ -116,6 +_,12 @@
+     }
+ 
+     @Override
++    public ValueInput rawChildOrEmpty(String key) {
++        CompoundTag compoundtag = this.getOptionalTypedTag(key, CompoundTag.TYPE);
++        return compoundtag != null ? new TagValueInput(this.problemReporter.forChild(new ProblemReporter.FieldPathElement(key)), this.context, compoundtag) : this.context.empty();
++    }
++
++    @Override
+     public Optional<ValueInput.ValueInputList> childrenList(String name) {
+         ListTag list = this.getOptionalTypedTag(name, ListTag.TYPE);
+         return list != null ? Optional.of(this.wrapList(name, this.context, list)) : Optional.empty();
+@@ -214,6 +_,11 @@
+     @Override
+     public HolderLookup.Provider lookup() {
+         return this.context.lookup();
++    }
++
++    @Override
++    public java.util.Set<String> keySet() {
++        return java.util.Collections.unmodifiableSet(input.keySet());
+     }
+ 
+     private ValueInput wrapChild(String name, CompoundTag compoundTag) {

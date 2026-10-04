@@ -1,0 +1,17 @@
+--- a/net/minecraft/world/entity/monster/Monster.java
++++ b/net/minecraft/world/entity/monster/Monster.java
+@@ -137,11 +_,11 @@
+     @Override
+     public ItemStack getProjectile(ItemStack heldWeapon) {
+         if (heldWeapon.getItem() instanceof ProjectileWeaponItem) {
+-            Predicate<ItemStack> supportedProjectiles = ((ProjectileWeaponItem)heldWeapon.getItem()).getSupportedHeldProjectiles();
++            Predicate<ItemStack> supportedProjectiles = ((ProjectileWeaponItem)heldWeapon.getItem()).getSupportedHeldProjectiles(heldWeapon);
+             ItemStack heldProjectile = ProjectileWeaponItem.getHeldProjectile(this, supportedProjectiles);
+-            return heldProjectile.isEmpty() ? new ItemStack(Items.ARROW) : heldProjectile;
++            return net.neoforged.neoforge.common.CommonHooks.getProjectile(this, heldWeapon, heldProjectile.isEmpty() ? new ItemStack(Items.ARROW) : heldProjectile);
+         } else {
+-            return ItemStack.EMPTY;
++            return net.neoforged.neoforge.common.CommonHooks.getProjectile(this, heldWeapon, ItemStack.EMPTY);
+         }
+     }
+ }

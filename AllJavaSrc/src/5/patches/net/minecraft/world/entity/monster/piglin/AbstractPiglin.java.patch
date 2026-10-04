@@ -1,0 +1,23 @@
+--- a/net/minecraft/world/entity/monster/piglin/AbstractPiglin.java
++++ b/net/minecraft/world/entity/monster/piglin/AbstractPiglin.java
+@@ -86,7 +_,7 @@
+             this.timeInOverworld = 0;
+         }
+ 
+-        if (this.timeInOverworld > 300) {
++        if (this.timeInOverworld > 300 && net.neoforged.neoforge.event.EventHooks.canLivingConvert(this, EntityTypes.ZOMBIFIED_PIGLIN, (timer) -> this.timeInOverworld = timer)) {
+             if (level.getDifficulty() != Difficulty.PEACEFUL) {
+                 this.playConvertedSound();
+             }
+@@ -110,7 +_,10 @@
+         this.convertTo(
+             EntityTypes.ZOMBIFIED_PIGLIN,
+             ConversionParams.single(this, true, true),
+-            zombified -> zombified.addEffect(new MobEffectInstance(MobEffects.NAUSEA, 200, 0))
++            zombified -> {
++                zombified.addEffect(new MobEffectInstance(MobEffects.NAUSEA, 200, 0));
++                net.neoforged.neoforge.event.EventHooks.onLivingConvert(this, zombified);
++            }
+         );
+     }
+ 

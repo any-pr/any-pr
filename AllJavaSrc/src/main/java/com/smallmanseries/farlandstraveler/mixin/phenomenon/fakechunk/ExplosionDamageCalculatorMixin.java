@@ -1,0 +1,32 @@
+package com.smallmanseries.farlandstraveler.mixin.phenomenon.fakechunk;
+
+import com.smallmanseries.farlandstraveler.Config;
+import com.smallmanseries.farlandstraveler.common.distance_phenomenon.FakeChunk;
+import com.smallmanseries.farlandstraveler.common.misc.FLTTags;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.BlockGetter;
+import net.minecraft.world.level.Explosion;
+import net.minecraft.world.level.ExplosionDamageCalculator;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.material.FluidState;
+import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
+
+import java.util.Optional;
+
+@Mixin(ExplosionDamageCalculator.class)
+public abstract class ExplosionDamageCalculatorMixin {
+
+    // 使假区块中的方块不阻挡爆炸射线
+    @Inject(method = "getBlockExplosionResistance", at = @At("RETURN"), cancellable = true)
+    private void modifyExplosionResistance(Explosion explosion, BlockGetter level, BlockPos pos, BlockState block, FluidState fluid, CallbackInfoReturnable<Optional<Float>> cir) {
+        if (Config.FC_DISABLE_EXPLOSION_EFFECT.getAsBoolean() && level instanceof Level
+                && FakeChunk.isInFakeChunk((Level) level, pos)
+                && !(block.is(FLTTags.Blocks.ILLUSION_EFFECT_NO_EFFECT))) {
+            cir.setReturnValue(Optional.empty());
+        }
+    }
+}

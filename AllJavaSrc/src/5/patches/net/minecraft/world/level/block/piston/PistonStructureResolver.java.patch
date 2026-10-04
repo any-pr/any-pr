@@ -1,0 +1,20 @@
+--- a/net/minecraft/world/level/block/piston/PistonStructureResolver.java
++++ b/net/minecraft/world/level/block/piston/PistonStructureResolver.java
+@@ -62,15 +_,11 @@
+     }
+ 
+     private static boolean isSticky(BlockState state) {
+-        return state.is(Blocks.SLIME_BLOCK) || state.is(Blocks.HONEY_BLOCK);
++        return state.isStickyBlock();
+     }
+ 
+     private static boolean canStickToEachOther(BlockState state1, BlockState state2) {
+-        if (state1.is(Blocks.HONEY_BLOCK) && state2.is(Blocks.SLIME_BLOCK)) {
+-            return false;
+-        } else {
+-            return state1.is(Blocks.SLIME_BLOCK) && state2.is(Blocks.HONEY_BLOCK) ? false : isSticky(state1) || isSticky(state2);
+-        }
++        return state1.canStickTo(state2) && state2.canStickTo(state1);
+     }
+ 
+     private boolean addBlockLine(BlockPos start, Direction direction) {

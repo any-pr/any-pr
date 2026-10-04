@@ -1,0 +1,18 @@
+--- a/net/minecraft/data/tags/GameEventTagsProvider.java
++++ b/net/minecraft/data/tags/GameEventTagsProvider.java
+@@ -56,8 +_,14 @@
+         GameEvent.UNEQUIP.key()
+     );
+ 
++    /** @deprecated Neo: Use the {@linkplain #GameEventTagsProvider(PackOutput, CompletableFuture, String) mod id variant} */
++    @Deprecated
+     public GameEventTagsProvider(PackOutput output, CompletableFuture<HolderLookup.Provider> lookupProvider) {
+-        super(output, Registries.GAME_EVENT, lookupProvider);
++        this(output, lookupProvider, "vanilla");
++    }
++
++    public GameEventTagsProvider(PackOutput output, CompletableFuture<HolderLookup.Provider> lookupProvider, String modId) {
++        super(output, Registries.GAME_EVENT, lookupProvider, modId);
+     }
+ 
+     @Override

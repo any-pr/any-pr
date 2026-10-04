@@ -1,0 +1,96 @@
+--- a/net/minecraft/network/Connection.java
++++ b/net/minecraft/network/Connection.java
+@@ -81,6 +_,8 @@
+     private volatile @Nullable DisconnectionDetails delayedDisconnect;
+     private @Nullable BandwidthDebugMonitor bandwidthDebugMonitor;
+     private @Nullable UUID intendedProfileId;
++    @Nullable
++    private ProtocolInfo<?> inboundProtocol;
+ 
+     public Connection(PacketFlow receiving) {
+         this.receiving = receiving;
+@@ -94,11 +_,13 @@
+         if (this.delayedDisconnect != null) {
+             this.disconnect(this.delayedDisconnect);
+         }
++        net.neoforged.neoforge.network.connection.ConnectionUtils.setConnection(ctx, this);
+     }
+ 
+     @Override
+     public void channelInactive(ChannelHandlerContext ctx) {
+         this.disconnect(Component.translatable("disconnect.endOfStream"));
++        net.neoforged.neoforge.network.connection.ConnectionUtils.removeConnection(ctx);
+     }
+ 
+     @Override
+@@ -115,6 +_,13 @@
+                 } else {
+                     Component reason = Component.translatable("disconnect.genericReason", "Internal Exception: " + cause);
+                     PacketListener listener = this.packetListener;
++                    if (listener != null) {
++                        ConnectionProtocol protocol = listener.protocol();
++                        if (protocol == ConnectionProtocol.CONFIGURATION || protocol == ConnectionProtocol.PLAY) {
++                            // Neo: Always log critical network exceptions for config and play packets
++                            LOGGER.error("Exception caught in connection", cause);
++                        }
++                    }
+                     DisconnectionDetails details;
+                     if (listener != null) {
+                         details = listener.createDisconnectionInfo(reason, cause);
+@@ -201,6 +_,7 @@
+             throw new IllegalStateException("Invalid inbound protocol: " + protocol.id());
+         }
+ 
++        this.inboundProtocol = protocol;
+         this.packetListener = packetListener;
+         this.disconnectListener = null;
+         UnconfiguredPipelineHandler.InboundConfigurationTask configMessage = UnconfiguredPipelineHandler.setupInboundProtocol(protocol);
+@@ -222,7 +_,12 @@
+         BundlerInfo bundlerInfo = protocol.bundlerInfo();
+         if (bundlerInfo != null) {
+             PacketBundleUnpacker newUnbundler = new PacketBundleUnpacker(bundlerInfo);
+-            configMessage = configMessage.andThen(ctx -> ctx.pipeline().addAfter("encoder", "unbundler", newUnbundler));
++            configMessage = configMessage.andThen(ctx -> {
++                ctx.pipeline().addAfter("encoder", "unbundler", newUnbundler);
++                // Neo: our handlers must be between the encoder and the unbundler, so re-inject them
++                // Note, this call must be inside the .andThen lambda, or it will actually run before the unbundler gets added.
++                net.neoforged.neoforge.network.filters.NetworkFilters.injectIfNecessary(this);
++            });
+         }
+ 
+         boolean isLoginProtocol = protocol.id() == ConnectionProtocol.LOGIN;
+@@ -381,7 +_,7 @@
+         if (this.address == null) {
+             return "local";
+         } else {
+-            return logIPs ? this.address.toString() : "IP hidden";
++            return logIPs ? net.neoforged.neoforge.network.DualStackUtils.getAddressString(this.address) : "IP hidden";
+         }
+     }
+ 
+@@ -424,6 +_,7 @@
+     }
+ 
+     public static ChannelFuture connect(InetSocketAddress address, EventLoopGroupHolder eventLoopGroupHolder, Connection connection) {
++        net.neoforged.neoforge.network.DualStackUtils.checkIPv6(address.getAddress());
+         return new Bootstrap().group(eventLoopGroupHolder.eventLoopGroup()).handler(new ChannelInitializer<Channel>() {
+             @Override
+             protected void initChannel(Channel channel) {
+@@ -598,5 +_,17 @@
+ 
+     public @Nullable UUID getIntendedProfileId() {
+         return this.intendedProfileId;
++    }
++
++    public Channel channel() {
++        return this.channel;
++    }
++
++    public PacketFlow getDirection() {
++        return this.receiving;
++    }
++
++    public ProtocolInfo<?> getInboundProtocol() {
++        return Objects.requireNonNull(this.inboundProtocol, "Inbound protocol not set?");
+     }
+ }

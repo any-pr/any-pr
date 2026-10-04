@@ -1,0 +1,920 @@
+package net.minecraft.client.renderer;
+
+import com.mojang.blaze3d.ProjectionType;
+import com.mojang.blaze3d.buffers.GpuBufferSlice;
+import com.mojang.blaze3d.pipeline.RenderTarget;
+import com.mojang.blaze3d.platform.Lighting;
+import com.mojang.blaze3d.platform.NativeImage;
+import com.mojang.blaze3d.platform.Lighting.Entry;
+import com.mojang.blaze3d.resource.CrossFrameResourcePool;
+import com.mojang.blaze3d.shaders.ShaderSource;
+import com.mojang.blaze3d.systems.GpuDevice;
+import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.blaze3d.vertex.PoseStack;
+import com.mojang.jtracy.TracyClient;
+import com.mojang.logging.LogUtils;
+import com.mojang.math.Axis;
+import java.io.IOException;
+import java.io.Reader;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+import net.minecraft.CrashReport;
+import net.minecraft.CrashReportCategory;
+import net.minecraft.ReportedException;
+import net.minecraft.SharedConstants;
+import net.minecraft.client.Camera;
+import net.minecraft.client.DeltaTracker;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.Options;
+import net.minecraft.client.Screenshot;
+import net.minecraft.client.TextureFilteringMethod;
+import net.minecraft.client.entity.ClientAvatarState;
+import net.minecraft.client.gui.Font;
+import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.gui.components.debug.DebugScreenEntries;
+import net.minecraft.client.gui.font.ActiveArea;
+import net.minecraft.client.gui.font.EmptyArea;
+import net.minecraft.client.gui.font.TextRenderable;
+import net.minecraft.client.gui.render.GuiRenderer;
+import net.minecraft.client.gui.render.TextureSetup;
+import net.minecraft.client.gui.render.pip.GuiBannerResultRenderer;
+import net.minecraft.client.gui.render.pip.GuiBookModelRenderer;
+import net.minecraft.client.gui.render.pip.GuiEntityRenderer;
+import net.minecraft.client.gui.render.pip.GuiProfilerChartRenderer;
+import net.minecraft.client.gui.render.pip.GuiSignRenderer;
+import net.minecraft.client.gui.render.pip.GuiSkinRenderer;
+import net.minecraft.client.gui.render.state.ColoredRectangleRenderState;
+import net.minecraft.client.gui.render.state.GuiRenderState;
+import net.minecraft.client.gui.screens.debug.DebugOptionsScreen;
+import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.player.AbstractClientPlayer;
+import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.client.renderer.block.BlockRenderDispatcher;
+import net.minecraft.client.renderer.feature.FeatureRenderDispatcher;
+import net.minecraft.client.renderer.fog.FogRenderer;
+import net.minecraft.client.renderer.state.CameraRenderState;
+import net.minecraft.client.renderer.state.LevelRenderState;
+import net.minecraft.client.renderer.texture.OverlayTexture;
+import net.minecraft.client.resources.model.AtlasManager;
+import net.minecraft.client.server.IntegratedServer;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Registry;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.network.chat.Style;
+import net.minecraft.resources.Identifier;
+import net.minecraft.server.packs.resources.ResourceProvider;
+import net.minecraft.util.ARGB;
+import net.minecraft.util.Mth;
+import net.minecraft.util.RandomSource;
+import net.minecraft.util.Util;
+import net.minecraft.util.profiling.Profiler;
+import net.minecraft.util.profiling.ProfilerFiller;
+import net.minecraft.util.profiling.Zone;
+import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.effect.MobEffects;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.monster.Creeper;
+import net.minecraft.world.entity.monster.EnderMan;
+import net.minecraft.world.entity.monster.spider.Spider;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.GameType;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.pattern.BlockInWorld;
+import net.minecraft.world.level.material.FogType;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.EntityHitResult;
+import net.minecraft.world.phys.HitResult;
+import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.waypoints.TrackedWaypoint;
+import org.apache.commons.io.IOUtils;
+import org.joml.Matrix4f;
+import org.joml.Matrix4fStack;
+import org.joml.Quaternionf;
+import org.joml.Vector3f;
+import org.joml.Vector4f;
+import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+
+public class GameRenderer implements AutoCloseable, TrackedWaypoint.Projector {
+   private static final Identifier BLUR_POST_CHAIN_ID = Identifier.withDefaultNamespace("blur");
+   public static final int MAX_BLUR_RADIUS = 10;
+   private static final Logger LOGGER = LogUtils.getLogger();
+   public static final float PROJECTION_Z_NEAR = 0.05F;
+   public static final float PROJECTION_3D_HUD_Z_FAR = 100.0F;
+   private static final float PORTAL_SPINNING_SPEED = 20.0F;
+   private static final float NAUSEA_SPINNING_SPEED = 7.0F;
+   private final Minecraft minecraft;
+   private final RandomSource random = RandomSource.create();
+   private float renderDistance;
+   public final ItemInHandRenderer itemInHandRenderer;
+   private final ScreenEffectRenderer screenEffectRenderer;
+   private final RenderBuffers renderBuffers;
+   private float spinningEffectTime;
+   private float spinningEffectSpeed;
+   private float fovModifier;
+   private float oldFovModifier;
+   private float darkenWorldAmount;
+   private float darkenWorldAmountO;
+   private boolean renderBlockOutline = true;
+   private long lastScreenshotAttempt;
+   private boolean hasWorldScreenshot;
+   private long lastActiveTime = Util.getMillis();
+   private final LightTexture lightTexture;
+   private final OverlayTexture overlayTexture = new OverlayTexture();
+   private @Nullable PanoramicScreenshotParameters panoramicScreenshotParameters;
+   protected final CubeMap cubeMap = new CubeMap(Identifier.withDefaultNamespace("textures/gui/title/background/panorama"));
+   protected final PanoramaRenderer panorama = new PanoramaRenderer(this.cubeMap);
+   private final CrossFrameResourcePool resourcePool = new CrossFrameResourcePool(3);
+   private final FogRenderer fogRenderer = new FogRenderer();
+   private final GuiRenderer guiRenderer;
+   private final GuiRenderState guiRenderState;
+   private final LevelRenderState levelRenderState = new LevelRenderState();
+   private final SubmitNodeStorage submitNodeStorage;
+   private final FeatureRenderDispatcher featureRenderDispatcher;
+   private @Nullable Identifier postEffectId;
+   private boolean effectActive;
+   private final Camera mainCamera = new Camera();
+   private final Lighting lighting = new Lighting();
+   private final GlobalSettingsUniform globalSettingsUniform = new GlobalSettingsUniform();
+   private final PerspectiveProjectionMatrixBuffer levelProjectionMatrixBuffer = new PerspectiveProjectionMatrixBuffer("level");
+   private final CachedPerspectiveProjectionMatrixBuffer hud3dProjectionMatrixBuffer = new CachedPerspectiveProjectionMatrixBuffer("3d hud", 0.05F, 100.0F);
+
+   public GameRenderer(
+      final Minecraft minecraft, final ItemInHandRenderer itemInHandRenderer, final RenderBuffers renderBuffers, final BlockRenderDispatcher blockRenderer
+   ) {
+      this.minecraft = minecraft;
+      this.itemInHandRenderer = itemInHandRenderer;
+      this.lightTexture = new LightTexture(this, minecraft);
+      this.renderBuffers = renderBuffers;
+      this.guiRenderState = new GuiRenderState();
+      MultiBufferSource.BufferSource bufferSource = renderBuffers.bufferSource();
+      AtlasManager atlasManager = minecraft.getAtlasManager();
+      this.submitNodeStorage = new SubmitNodeStorage();
+      this.featureRenderDispatcher = new FeatureRenderDispatcher(
+         this.submitNodeStorage,
+         blockRenderer,
+         bufferSource,
+         atlasManager,
+         renderBuffers.outlineBufferSource(),
+         renderBuffers.crumblingBufferSource(),
+         minecraft.font
+      );
+      this.guiRenderer = new GuiRenderer(
+         this.guiRenderState,
+         bufferSource,
+         this.submitNodeStorage,
+         this.featureRenderDispatcher,
+         List.of(
+            new GuiEntityRenderer(bufferSource, minecraft.getEntityRenderDispatcher()),
+            new GuiSkinRenderer(bufferSource),
+            new GuiBookModelRenderer(bufferSource),
+            new GuiBannerResultRenderer(bufferSource, atlasManager),
+            new GuiSignRenderer(bufferSource, atlasManager),
+            new GuiProfilerChartRenderer(bufferSource)
+         )
+      );
+      this.screenEffectRenderer = new ScreenEffectRenderer(minecraft, atlasManager, bufferSource);
+   }
+
+   @Override
+   public void close() {
+      this.globalSettingsUniform.close();
+      this.lightTexture.close();
+      this.overlayTexture.close();
+      this.resourcePool.close();
+      this.guiRenderer.close();
+      this.levelProjectionMatrixBuffer.close();
+      this.hud3dProjectionMatrixBuffer.close();
+      this.lighting.close();
+      this.cubeMap.close();
+      this.fogRenderer.close();
+      this.featureRenderDispatcher.close();
+   }
+
+   public SubmitNodeStorage getSubmitNodeStorage() {
+      return this.submitNodeStorage;
+   }
+
+   public FeatureRenderDispatcher getFeatureRenderDispatcher() {
+      return this.featureRenderDispatcher;
+   }
+
+   public LevelRenderState getLevelRenderState() {
+      return this.levelRenderState;
+   }
+
+   public void setRenderBlockOutline(final boolean renderBlockOutline) {
+      this.renderBlockOutline = renderBlockOutline;
+   }
+
+   public void setPanoramicScreenshotParameters(final @Nullable PanoramicScreenshotParameters panoramicScreenshotParameters) {
+      this.panoramicScreenshotParameters = panoramicScreenshotParameters;
+   }
+
+   public @Nullable PanoramicScreenshotParameters getPanoramicScreenshotParameters() {
+      return this.panoramicScreenshotParameters;
+   }
+
+   public boolean isPanoramicMode() {
+      return this.panoramicScreenshotParameters != null;
+   }
+
+   public void clearPostEffect() {
+      this.postEffectId = null;
+      this.effectActive = false;
+   }
+
+   public void togglePostEffect() {
+      this.effectActive = !this.effectActive;
+   }
+
+   public void checkEntityPostEffect(final @Nullable Entity cameraEntity) {
+      switch (cameraEntity) {
+         case Creeper ignored:
+            this.setPostEffect(Identifier.withDefaultNamespace("creeper"));
+            break;
+         case Spider ignored:
+            this.setPostEffect(Identifier.withDefaultNamespace("spider"));
+            break;
+         case EnderMan ignored:
+            this.setPostEffect(Identifier.withDefaultNamespace("invert"));
+            break;
+         case null:
+         default:
+            this.clearPostEffect();
+      }
+   }
+
+   private void setPostEffect(final Identifier id) {
+      this.postEffectId = id;
+      this.effectActive = true;
+   }
+
+   public void processBlurEffect() {
+      PostChain postChain = this.minecraft.getShaderManager().getPostChain(BLUR_POST_CHAIN_ID, LevelTargetBundle.MAIN_TARGETS);
+      if (postChain != null) {
+         postChain.process(this.minecraft.getMainRenderTarget(), this.resourcePool);
+      }
+   }
+
+   public void preloadUiShader(final ResourceProvider resourceProvider) {
+      GpuDevice device = RenderSystem.getDevice();
+      ShaderSource shaderSource = (id, type) -> {
+         Identifier location = type.idConverter().idToFile(id);
+
+         try (Reader reader = resourceProvider.getResourceOrThrow(location).openAsReader()) {
+            return IOUtils.toString(reader);
+         } catch (IOException exception) {
+            LOGGER.error("Coudln't preload {} shader {}: {}", new Object[]{type, id, exception});
+            return null;
+         }
+      };
+      device.precompilePipeline(RenderPipelines.GUI, shaderSource);
+      device.precompilePipeline(RenderPipelines.GUI_TEXTURED, shaderSource);
+      if (TracyClient.isAvailable()) {
+         device.precompilePipeline(RenderPipelines.TRACY_BLIT, shaderSource);
+      }
+   }
+
+   public void tick() {
+      this.tickFov();
+      this.lightTexture.tick();
+      LocalPlayer player = this.minecraft.player;
+      if (this.minecraft.getCameraEntity() == null) {
+         this.minecraft.setCameraEntity(player);
+      }
+
+      this.mainCamera.tick();
+      this.itemInHandRenderer.tick();
+      float portalIntensity = player.portalEffectIntensity;
+      float nauseaIntensity = player.getEffectBlendFactor(MobEffects.NAUSEA, 1.0F);
+      if (!(portalIntensity > 0.0F) && !(nauseaIntensity > 0.0F)) {
+         this.spinningEffectSpeed = 0.0F;
+      } else {
+         this.spinningEffectSpeed = (portalIntensity * 20.0F + nauseaIntensity * 7.0F) / (portalIntensity + nauseaIntensity);
+         this.spinningEffectTime = this.spinningEffectTime + this.spinningEffectSpeed;
+      }
+
+      if (this.minecraft.level.tickRateManager().runsNormally()) {
+         this.darkenWorldAmountO = this.darkenWorldAmount;
+         if (this.minecraft.gui.getBossOverlay().shouldDarkenScreen()) {
+            this.darkenWorldAmount += 0.05F;
+            if (this.darkenWorldAmount > 1.0F) {
+               this.darkenWorldAmount = 1.0F;
+            }
+         } else if (this.darkenWorldAmount > 0.0F) {
+            this.darkenWorldAmount -= 0.0125F;
+         }
+
+         this.screenEffectRenderer.tick();
+         ProfilerFiller profiler = Profiler.get();
+         profiler.push("levelRenderer");
+         this.minecraft.levelRenderer.tick(this.mainCamera);
+         profiler.pop();
+      }
+   }
+
+   public @Nullable Identifier currentPostEffect() {
+      return this.postEffectId;
+   }
+
+   public void resize(final int width, final int height) {
+      this.resourcePool.clear();
+      this.minecraft.levelRenderer.resize(width, height);
+   }
+
+   public void pick(final float a) {
+      Entity cameraEntity = this.minecraft.getCameraEntity();
+      if (cameraEntity != null) {
+         if (this.minecraft.level != null && this.minecraft.player != null) {
+            Profiler.get().push("pick");
+            this.minecraft.hitResult = this.minecraft.player.raycastHitResult(a, cameraEntity);
+            this.minecraft.crosshairPickEntity = this.minecraft.hitResult instanceof EntityHitResult entityHitResult ? entityHitResult.getEntity() : null;
+            Profiler.get().pop();
+         }
+      }
+   }
+
+   private void tickFov() {
+      float targetFovModifier;
+      if (this.minecraft.getCameraEntity() instanceof AbstractClientPlayer player) {
+         Options options = this.minecraft.options;
+         boolean firstPerson = options.getCameraType().isFirstPerson();
+         float effectScale = options.fovEffectScale().get().floatValue();
+         targetFovModifier = player.getFieldOfViewModifier(firstPerson, effectScale);
+      } else {
+         targetFovModifier = 1.0F;
+      }
+
+      this.oldFovModifier = this.fovModifier;
+      this.fovModifier = this.fovModifier + (targetFovModifier - this.fovModifier) * 0.5F;
+      this.fovModifier = Mth.clamp(this.fovModifier, 0.1F, 1.5F);
+   }
+
+   private float getFov(final Camera camera, final float partialTicks, final boolean applyEffects) {
+      if (this.isPanoramicMode()) {
+         return 90.0F;
+      }
+
+      float fov = 70.0F;
+      if (applyEffects) {
+         fov = this.minecraft.options.fov().get().intValue();
+         fov *= Mth.lerp(partialTicks, this.oldFovModifier, this.fovModifier);
+      }
+
+      if (camera.entity() instanceof LivingEntity cameraEntity && cameraEntity.isDeadOrDying()) {
+         float duration = Math.min(cameraEntity.deathTime + partialTicks, 20.0F);
+         fov /= (1.0F - 500.0F / (duration + 500.0F)) * 2.0F + 1.0F;
+      }
+
+      FogType state = camera.getFluidInCamera();
+      if (state == FogType.LAVA || state == FogType.WATER) {
+         float effectScale = this.minecraft.options.fovEffectScale().get().floatValue();
+         fov *= Mth.lerp(effectScale, 1.0F, 0.85714287F);
+      }
+
+      return fov;
+   }
+
+   private void bobHurt(final PoseStack poseStack, final float a) {
+      if (this.minecraft.getCameraEntity() instanceof LivingEntity camera) {
+         float hurt = camera.hurtTime - a;
+         if (camera.isDeadOrDying()) {
+            float duration = Math.min(camera.deathTime + a, 20.0F);
+            poseStack.mulPose(Axis.ZP.rotationDegrees(40.0F - 8000.0F / (duration + 200.0F)));
+         }
+
+         if (hurt < 0.0F) {
+            return;
+         }
+
+         hurt /= camera.hurtDuration;
+         hurt = Mth.sin(hurt * hurt * hurt * hurt * (float) Math.PI);
+         float rr = camera.getHurtDir();
+         poseStack.mulPose(Axis.YP.rotationDegrees(-rr));
+         float tiltAmount = (float)(-hurt * 14.0 * this.minecraft.options.damageTiltStrength().get());
+         poseStack.mulPose(Axis.ZP.rotationDegrees(tiltAmount));
+         poseStack.mulPose(Axis.YP.rotationDegrees(rr));
+      }
+   }
+
+   private void bobView(final PoseStack poseStack, final float a) {
+      if (this.minecraft.getCameraEntity() instanceof AbstractClientPlayer player) {
+         ClientAvatarState avatarState = player.avatarState();
+         float b = avatarState.getBackwardsInterpolatedWalkDistance(a);
+         float bob = avatarState.getInterpolatedBob(a);
+         poseStack.translate(Mth.sin(b * (float) Math.PI) * bob * 0.5F, -Math.abs(Mth.cos(b * (float) Math.PI) * bob), 0.0F);
+         poseStack.mulPose(Axis.ZP.rotationDegrees(Mth.sin(b * (float) Math.PI) * bob * 3.0F));
+         poseStack.mulPose(Axis.XP.rotationDegrees(Math.abs(Mth.cos(b * (float) Math.PI - 0.2F) * bob) * 5.0F));
+      }
+   }
+
+   private void renderItemInHand(final float deltaPartialTick, final boolean isSleeping, final Matrix4f modelViewMatrix) {
+      if (!this.isPanoramicMode()) {
+         this.featureRenderDispatcher.renderAllFeatures();
+         this.renderBuffers.bufferSource().endBatch();
+         PoseStack poseStack = new PoseStack();
+         poseStack.pushPose();
+         poseStack.mulPose(modelViewMatrix.invert(new Matrix4f()));
+         Matrix4fStack modelViewStack = RenderSystem.getModelViewStack();
+         modelViewStack.pushMatrix().mul(modelViewMatrix);
+         this.bobHurt(poseStack, deltaPartialTick);
+         if (this.minecraft.options.bobView().get()) {
+            this.bobView(poseStack, deltaPartialTick);
+         }
+
+         if (this.minecraft.options.getCameraType().isFirstPerson()
+            && !isSleeping
+            && !this.minecraft.options.hideGui
+            && this.minecraft.gameMode.getPlayerMode() != GameType.SPECTATOR) {
+            this.itemInHandRenderer
+               .renderHandsWithItems(
+                  deltaPartialTick,
+                  poseStack,
+                  this.minecraft.gameRenderer.getSubmitNodeStorage(),
+                  this.minecraft.player,
+                  this.minecraft.getEntityRenderDispatcher().getPackedLightCoords(this.minecraft.player, deltaPartialTick)
+               );
+         }
+
+         modelViewStack.popMatrix();
+         poseStack.popPose();
+      }
+   }
+
+   public Matrix4f getProjectionMatrix(final float fov) {
+      Matrix4f projection = new Matrix4f();
+      return projection.perspective(
+         fov * (float) (Math.PI / 180.0), (float)this.minecraft.getWindow().getWidth() / this.minecraft.getWindow().getHeight(), 0.05F, this.getDepthFar()
+      );
+   }
+
+   public float getDepthFar() {
+      return Math.max(this.renderDistance * 4.0F, this.minecraft.options.cloudRange().get() * 16);
+   }
+
+   public static float getNightVisionScale(final LivingEntity camera, final float a) {
+      MobEffectInstance nightVision = camera.getEffect(MobEffects.NIGHT_VISION);
+      return !nightVision.endsWithin(200) ? 1.0F : 0.7F + Mth.sin((nightVision.getDuration() - a) * (float) Math.PI * 0.2F) * 0.3F;
+   }
+
+   public void render(final DeltaTracker deltaTracker, final boolean renderLevel) {
+      if (!this.minecraft.isWindowActive()
+         && this.minecraft.options.pauseOnLostFocus
+         && (!this.minecraft.options.touchscreen().get() || !this.minecraft.mouseHandler.isRightPressed())) {
+         if (Util.getMillis() - this.lastActiveTime > 500L) {
+            this.minecraft.pauseGame(false);
+         }
+      } else {
+         this.lastActiveTime = Util.getMillis();
+      }
+
+      if (!this.minecraft.noRender) {
+         ProfilerFiller profiler = Profiler.get();
+         profiler.push("camera");
+         this.updateCamera(deltaTracker);
+         profiler.pop();
+         this.globalSettingsUniform
+            .update(
+               this.minecraft.getWindow().getWidth(),
+               this.minecraft.getWindow().getHeight(),
+               this.minecraft.options.glintStrength().get(),
+               this.minecraft.level == null ? 0L : this.minecraft.level.getGameTime(),
+               deltaTracker,
+               this.minecraft.options.getMenuBackgroundBlurriness(),
+               this.mainCamera,
+               this.minecraft.options.textureFiltering().get() == TextureFilteringMethod.RGSS
+            );
+         boolean resourcesLoaded = this.minecraft.isGameLoadFinished();
+         int xMouse = (int)this.minecraft.mouseHandler.getScaledXPos(this.minecraft.getWindow());
+         int yMouse = (int)this.minecraft.mouseHandler.getScaledYPos(this.minecraft.getWindow());
+         if (resourcesLoaded && renderLevel && this.minecraft.level != null) {
+            profiler.push("world");
+            this.renderLevel(deltaTracker);
+            this.tryTakeScreenshotIfNeeded();
+            this.minecraft.levelRenderer.doEntityOutline();
+            if (this.postEffectId != null && this.effectActive) {
+               PostChain postChain = this.minecraft.getShaderManager().getPostChain(this.postEffectId, LevelTargetBundle.MAIN_TARGETS);
+               if (postChain != null) {
+                  postChain.process(this.minecraft.getMainRenderTarget(), this.resourcePool);
+               }
+            }
+
+            profiler.pop();
+         }
+
+         this.fogRenderer.endFrame();
+         RenderTarget mainRenderTarget = this.minecraft.getMainRenderTarget();
+         RenderSystem.getDevice().createCommandEncoder().clearDepthTexture(mainRenderTarget.getDepthTexture(), 1.0);
+         this.minecraft.gameRenderer.getLighting().setupFor(Entry.ITEMS_3D);
+         this.guiRenderState.reset();
+         profiler.push("guiExtraction");
+         GuiGraphics graphics = new GuiGraphics(this.minecraft, this.guiRenderState, xMouse, yMouse);
+         if (resourcesLoaded && renderLevel && this.minecraft.level != null) {
+            this.minecraft.gui.render(graphics, deltaTracker);
+         }
+
+         if (this.minecraft.getOverlay() != null) {
+            try {
+               this.minecraft.getOverlay().render(graphics, xMouse, yMouse, deltaTracker.getGameTimeDeltaTicks());
+            } catch (Throwable t) {
+               CrashReport report = CrashReport.forThrowable(t, "Rendering overlay");
+               CrashReportCategory category = report.addCategory("Overlay render details");
+               category.setDetail("Overlay name", () -> this.minecraft.getOverlay().getClass().getCanonicalName());
+               throw new ReportedException(report);
+            }
+         } else if (resourcesLoaded && this.minecraft.screen != null) {
+            try {
+               this.minecraft.screen.renderWithTooltipAndSubtitles(graphics, xMouse, yMouse, deltaTracker.getGameTimeDeltaTicks());
+            } catch (Throwable t) {
+               CrashReport report = CrashReport.forThrowable(t, "Rendering screen");
+               CrashReportCategory category = report.addCategory("Screen render details");
+               category.setDetail("Screen name", () -> this.minecraft.screen.getClass().getCanonicalName());
+               this.minecraft.mouseHandler.fillMousePositionDetails(category, this.minecraft.getWindow());
+               throw new ReportedException(report);
+            }
+
+            if (SharedConstants.DEBUG_CURSOR_POS) {
+               this.minecraft.mouseHandler.drawDebugMouseInfo(this.minecraft.font, graphics);
+            }
+
+            try {
+               if (this.minecraft.screen != null) {
+                  this.minecraft.screen.handleDelayedNarration();
+               }
+            } catch (Throwable t) {
+               CrashReport report = CrashReport.forThrowable(t, "Narrating screen");
+               CrashReportCategory category = report.addCategory("Screen details");
+               category.setDetail("Screen name", () -> this.minecraft.screen.getClass().getCanonicalName());
+               throw new ReportedException(report);
+            }
+         }
+
+         if (resourcesLoaded && renderLevel && this.minecraft.level != null) {
+            this.minecraft.gui.renderSavingIndicator(graphics, deltaTracker);
+         }
+
+         if (resourcesLoaded) {
+            try (Zone ignored = profiler.zone("toasts")) {
+               this.minecraft.getToastManager().render(graphics);
+            }
+         }
+
+         if (!(this.minecraft.screen instanceof DebugOptionsScreen)) {
+            this.minecraft.gui.renderDebugOverlay(graphics);
+         }
+
+         this.minecraft.gui.renderDeferredSubtitles();
+         if (SharedConstants.DEBUG_ACTIVE_TEXT_AREAS) {
+            this.renderActiveTextDebug();
+         }
+
+         profiler.popPush("guiRendering");
+         this.guiRenderer.render(this.fogRenderer.getBuffer(FogRenderer.FogMode.NONE));
+         this.guiRenderer.incrementFrameNumber();
+         profiler.pop();
+         graphics.applyCursor(this.minecraft.getWindow());
+         this.submitNodeStorage.endFrame();
+         this.featureRenderDispatcher.endFrame();
+         this.resourcePool.endFrame();
+      }
+   }
+
+   private void renderActiveTextDebug() {
+      this.guiRenderState.nextStratum();
+      this.guiRenderState
+         .forEachText(
+            text -> text.ensurePrepared()
+               .visit(
+                  new Font.GlyphVisitor() {
+                     private int index;
+
+                     @Override
+                     public void acceptGlyph(final TextRenderable.Styled glyph) {
+                        this.renderDebugMarkers(glyph, false);
+                     }
+
+                     @Override
+                     public void acceptEmptyArea(final EmptyArea empty) {
+                        this.renderDebugMarkers(empty, true);
+                     }
+
+                     private void renderDebugMarkers(final ActiveArea glyph, final boolean isEmpty) {
+                        int intensity = (isEmpty ? 128 : 255) - (this.index++ & 1) * 64;
+                        Style style = glyph.style();
+                        int red = style.getClickEvent() != null ? intensity : 0;
+                        int green = style.getHoverEvent() != null ? intensity : 0;
+                        int blue = red != 0 && green != 0 ? 0 : intensity;
+                        int color = ARGB.color(128, red, green, blue);
+                        GameRenderer.this.guiRenderState
+                           .submitGuiElement(
+                              new ColoredRectangleRenderState(
+                                 RenderPipelines.GUI,
+                                 TextureSetup.noTexture(),
+                                 text.pose,
+                                 (int)glyph.activeLeft(),
+                                 (int)glyph.activeTop(),
+                                 (int)glyph.activeRight(),
+                                 (int)glyph.activeBottom(),
+                                 color,
+                                 color,
+                                 text.scissor
+                              )
+                           );
+                     }
+                  }
+               )
+         );
+   }
+
+   private void tryTakeScreenshotIfNeeded() {
+      if (!this.hasWorldScreenshot && this.minecraft.isLocalServer()) {
+         long time = Util.getMillis();
+         if (time - this.lastScreenshotAttempt >= 1000L) {
+            this.lastScreenshotAttempt = time;
+            IntegratedServer server = this.minecraft.getSingleplayerServer();
+            if (server != null && !server.isStopped()) {
+               server.getWorldScreenshotFile().ifPresent(path -> {
+                  if (Files.isRegularFile(path)) {
+                     this.hasWorldScreenshot = true;
+                  } else {
+                     this.takeAutoScreenshot(path);
+                  }
+               });
+            }
+         }
+      }
+   }
+
+   private void takeAutoScreenshot(final Path screenshotFile) {
+      if (this.minecraft.levelRenderer.countRenderedSections() > 10 && this.minecraft.levelRenderer.hasRenderedAllSections()) {
+         Screenshot.takeScreenshot(this.minecraft.getMainRenderTarget(), screenshot -> Util.ioPool().execute(() -> {
+            int width = screenshot.getWidth();
+            int height = screenshot.getHeight();
+            int x = 0;
+            int y = 0;
+            if (width > height) {
+               x = (width - height) / 2;
+               width = height;
+            } else {
+               y = (height - width) / 2;
+               height = width;
+            }
+
+            try {
+               NativeImage scaled = new NativeImage(64, 64, false);
+
+               try {
+                  screenshot.resizeSubRectTo(x, y, width, height, scaled);
+                  scaled.writeToFile(screenshotFile);
+               } catch (Throwable var15) {
+                  try {
+                     scaled.close();
+                  } catch (Throwable var14) {
+                     var15.addSuppressed(var14);
+                  }
+
+                  throw var15;
+               }
+
+               scaled.close();
+            } catch (IOException e) {
+               LOGGER.warn("Couldn't save auto screenshot", e);
+            } finally {
+               screenshot.close();
+            }
+         }));
+      }
+   }
+
+   private boolean shouldRenderBlockOutline() {
+      if (!this.renderBlockOutline) {
+         return false;
+      }
+
+      Entity cameraEntity = this.minecraft.getCameraEntity();
+      boolean renderOutline = cameraEntity instanceof Player && !this.minecraft.options.hideGui;
+      if (renderOutline && !((Player)cameraEntity).getAbilities().mayBuild) {
+         ItemStack itemStack = ((LivingEntity)cameraEntity).getMainHandItem();
+         HitResult hitResult = this.minecraft.hitResult;
+         if (hitResult != null && hitResult.getType() == HitResult.Type.BLOCK) {
+            BlockPos pos = ((BlockHitResult)hitResult).getBlockPos();
+            BlockState blockState = this.minecraft.level.getBlockState(pos);
+            if (this.minecraft.gameMode.getPlayerMode() == GameType.SPECTATOR) {
+               renderOutline = blockState.getMenuProvider(this.minecraft.level, pos) != null;
+            } else {
+               BlockInWorld blockInWorld = new BlockInWorld(this.minecraft.level, pos, false);
+               Registry<Block> blockRegistry = this.minecraft.level.registryAccess().lookupOrThrow(Registries.BLOCK);
+               renderOutline = !itemStack.isEmpty()
+                  && (itemStack.canBreakBlockInAdventureMode(blockInWorld) || itemStack.canPlaceOnBlockInAdventureMode(blockInWorld));
+            }
+         }
+      }
+
+      return renderOutline;
+   }
+
+   public void updateCamera(final DeltaTracker deltaTracker) {
+      float deltaPartialTick = deltaTracker.getGameTimeDeltaPartialTick(true);
+      LocalPlayer player = this.minecraft.player;
+      if (player != null && this.minecraft.level != null) {
+         if (this.minecraft.getCameraEntity() == null) {
+            this.minecraft.setCameraEntity(player);
+         }
+
+         Entity cameraEntity = this.minecraft.getCameraEntity() == null ? player : this.minecraft.getCameraEntity();
+         float cameraDeltaPartialTicks = this.minecraft.level.tickRateManager().isEntityFrozen(cameraEntity) ? 1.0F : deltaPartialTick;
+         this.mainCamera
+            .setup(
+               this.minecraft.level,
+               cameraEntity,
+               !this.minecraft.options.getCameraType().isFirstPerson(),
+               this.minecraft.options.getCameraType().isMirrored(),
+               cameraDeltaPartialTicks
+            );
+      }
+   }
+
+   public void renderLevel(final DeltaTracker deltaTracker) {
+      float deltaPartialTick = deltaTracker.getGameTimeDeltaPartialTick(true);
+      LocalPlayer player = this.minecraft.player;
+      this.lightTexture.updateLightTexture(1.0F);
+      this.pick(deltaPartialTick);
+      ProfilerFiller profiler = Profiler.get();
+      boolean renderOutline = this.shouldRenderBlockOutline();
+      this.extractCamera(deltaPartialTick);
+      this.renderDistance = this.minecraft.options.getEffectiveRenderDistance() * 16;
+      profiler.push("matrices");
+      float fovWithEffects = this.getFov(this.mainCamera, deltaPartialTick, true);
+      Matrix4f projectionMatrix = this.getProjectionMatrix(fovWithEffects);
+      PoseStack bobStack = new PoseStack();
+      this.bobHurt(bobStack, this.mainCamera.getPartialTickTime());
+      if (this.minecraft.options.bobView().get()) {
+         this.bobView(bobStack, this.mainCamera.getPartialTickTime());
+      }
+
+      projectionMatrix.mul(bobStack.last().pose());
+      float screenEffectScale = this.minecraft.options.screenEffectScale().get().floatValue();
+      float portalIntensity = Mth.lerp(deltaPartialTick, player.oPortalEffectIntensity, player.portalEffectIntensity);
+      float nauseaIntensity = player.getEffectBlendFactor(MobEffects.NAUSEA, deltaPartialTick);
+      float spinningEffectIntensity = Math.max(portalIntensity, nauseaIntensity) * (screenEffectScale * screenEffectScale);
+      if (spinningEffectIntensity > 0.0F) {
+         float skew = 5.0F / (spinningEffectIntensity * spinningEffectIntensity + 5.0F) - spinningEffectIntensity * 0.04F;
+         skew *= skew;
+         Vector3f axis = new Vector3f(0.0F, Mth.SQRT_OF_TWO / 2.0F, Mth.SQRT_OF_TWO / 2.0F);
+         float angle = (this.spinningEffectTime + deltaPartialTick * this.spinningEffectSpeed) * (float) (Math.PI / 180.0);
+         projectionMatrix.rotate(angle, axis);
+         projectionMatrix.scale(1.0F / skew, 1.0F, 1.0F);
+         projectionMatrix.rotate(-angle, axis);
+      }
+
+      RenderSystem.setProjectionMatrix(this.levelProjectionMatrixBuffer.getBuffer(projectionMatrix), ProjectionType.PERSPECTIVE);
+      Quaternionf inverseRotation = this.mainCamera.rotation().conjugate(new Quaternionf());
+      Matrix4f modelViewMatrix = new Matrix4f().rotation(inverseRotation);
+      profiler.popPush("fog");
+      Vector4f fogColor = this.fogRenderer
+         .setupFog(
+            this.mainCamera,
+            this.minecraft.options.getEffectiveRenderDistance(),
+            deltaTracker,
+            this.getDarkenWorldAmount(deltaPartialTick),
+            this.minecraft.level
+         );
+      GpuBufferSlice terrainFog = this.fogRenderer.getBuffer(FogRenderer.FogMode.WORLD);
+      profiler.popPush("level");
+      boolean shouldCreateBossFog = this.minecraft.gui.getBossOverlay().shouldCreateWorldFog();
+      this.minecraft
+         .levelRenderer
+         .renderLevel(
+            this.resourcePool,
+            deltaTracker,
+            renderOutline,
+            this.mainCamera,
+            modelViewMatrix,
+            projectionMatrix,
+            this.getProjectionMatrixForCulling(fovWithEffects),
+            terrainFog,
+            fogColor,
+            !shouldCreateBossFog
+         );
+      profiler.popPush("hand");
+      boolean isSleeping = this.minecraft.getCameraEntity() instanceof LivingEntity && ((LivingEntity)this.minecraft.getCameraEntity()).isSleeping();
+      RenderSystem.setProjectionMatrix(
+         this.hud3dProjectionMatrixBuffer
+            .getBuffer(this.minecraft.getWindow().getWidth(), this.minecraft.getWindow().getHeight(), this.getFov(this.mainCamera, deltaPartialTick, false)),
+         ProjectionType.PERSPECTIVE
+      );
+      RenderSystem.getDevice().createCommandEncoder().clearDepthTexture(this.minecraft.getMainRenderTarget().getDepthTexture(), 1.0);
+      this.renderItemInHand(deltaPartialTick, isSleeping, modelViewMatrix);
+      profiler.popPush("screenEffects");
+      MultiBufferSource.BufferSource bufferSource = this.renderBuffers.bufferSource();
+      this.screenEffectRenderer.renderScreenEffect(isSleeping, deltaPartialTick, this.submitNodeStorage);
+      this.featureRenderDispatcher.renderAllFeatures();
+      bufferSource.endBatch();
+      profiler.pop();
+      RenderSystem.setShaderFog(this.fogRenderer.getBuffer(FogRenderer.FogMode.NONE));
+      if (this.minecraft.debugEntries.isCurrentlyEnabled(DebugScreenEntries.THREE_DIMENSIONAL_CROSSHAIR)
+         && this.minecraft.options.getCameraType().isFirstPerson()
+         && !this.minecraft.options.hideGui) {
+         this.minecraft.getDebugOverlay().render3dCrosshair(this.mainCamera);
+      }
+   }
+
+   private void extractCamera(final float partialTicks) {
+      CameraRenderState cameraState = this.levelRenderState.cameraRenderState;
+      cameraState.initialized = this.mainCamera.isInitialized();
+      cameraState.pos = this.mainCamera.position();
+      cameraState.blockPos = this.mainCamera.blockPosition();
+      cameraState.entityPos = this.mainCamera.entity().getPosition(partialTicks);
+      cameraState.orientation = new Quaternionf(this.mainCamera.rotation());
+   }
+
+   private Matrix4f getProjectionMatrixForCulling(final float fovWithEffects) {
+      float fovForCulling = Math.max(fovWithEffects, this.minecraft.options.fov().get().intValue());
+      return this.getProjectionMatrix(fovForCulling);
+   }
+
+   public void resetData() {
+      this.screenEffectRenderer.resetItemActivation();
+      this.minecraft.getMapTextureManager().resetData();
+      this.mainCamera.reset();
+      this.hasWorldScreenshot = false;
+   }
+
+   public void displayItemActivation(final ItemStack itemStack) {
+      this.screenEffectRenderer.displayItemActivation(itemStack, this.random);
+   }
+
+   public Minecraft getMinecraft() {
+      return this.minecraft;
+   }
+
+   public float getDarkenWorldAmount(final float a) {
+      return Mth.lerp(a, this.darkenWorldAmountO, this.darkenWorldAmount);
+   }
+
+   public float getRenderDistance() {
+      return this.renderDistance;
+   }
+
+   public Camera getMainCamera() {
+      return this.mainCamera;
+   }
+
+   public LightTexture lightTexture() {
+      return this.lightTexture;
+   }
+
+   public OverlayTexture overlayTexture() {
+      return this.overlayTexture;
+   }
+
+   @Override
+   public Vec3 projectPointToScreen(final Vec3 point) {
+      Matrix4f projectionMatrix = this.getProjectionMatrix(this.getFov(this.mainCamera, 0.0F, true));
+      Quaternionf inverseRotation = this.mainCamera.rotation().conjugate(new Quaternionf());
+      Matrix4f modelViewMatrix = new Matrix4f().rotation(inverseRotation);
+      Matrix4f mvp = projectionMatrix.mul(modelViewMatrix);
+      Vec3 camPos = this.mainCamera.position();
+      Vec3 offset = point.subtract(camPos);
+      Vector3f vector3f = mvp.transformProject(offset.toVector3f());
+      return new Vec3(vector3f);
+   }
+
+   @Override
+   public double projectHorizonToScreen() {
+      float xRot = this.mainCamera.xRot();
+      if (xRot <= -90.0F) {
+         return Double.NEGATIVE_INFINITY;
+      }
+
+      if (xRot >= 90.0F) {
+         return Double.POSITIVE_INFINITY;
+      }
+
+      float fov = this.getFov(this.mainCamera, 0.0F, true);
+      return Math.tan(xRot * (float) (Math.PI / 180.0)) / Math.tan(fov / 2.0F * (float) (Math.PI / 180.0));
+   }
+
+   public GlobalSettingsUniform getGlobalSettingsUniform() {
+      return this.globalSettingsUniform;
+   }
+
+   public Lighting getLighting() {
+      return this.lighting;
+   }
+
+   public void setLevel(final @Nullable ClientLevel level) {
+      if (level != null) {
+         this.lighting.updateLevel(level.dimensionType().cardinalLightType());
+      }
+   }
+
+   public PanoramaRenderer getPanorama() {
+      return this.panorama;
+   }
+}

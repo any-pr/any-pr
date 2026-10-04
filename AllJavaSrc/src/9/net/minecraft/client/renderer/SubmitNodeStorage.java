@@ -1,0 +1,262 @@
+package net.minecraft.client.renderer;
+
+import com.mojang.blaze3d.vertex.PoseStack;
+import com.mojang.blaze3d.vertex.PoseStack.Pose;
+import it.unimi.dsi.fastutil.ints.Int2ObjectAVLTreeMap;
+import java.util.List;
+import net.minecraft.client.gui.Font;
+import net.minecraft.client.model.Model;
+import net.minecraft.client.model.geom.ModelPart;
+import net.minecraft.client.renderer.block.MovingBlockRenderState;
+import net.minecraft.client.renderer.block.model.BakedQuad;
+import net.minecraft.client.renderer.block.model.BlockStateModel;
+import net.minecraft.client.renderer.entity.state.EntityRenderState;
+import net.minecraft.client.renderer.feature.ModelFeatureRenderer;
+import net.minecraft.client.renderer.item.ItemStackRenderState;
+import net.minecraft.client.renderer.rendertype.RenderType;
+import net.minecraft.client.renderer.state.CameraRenderState;
+import net.minecraft.client.renderer.texture.TextureAtlasSprite;
+import net.minecraft.network.chat.Component;
+import net.minecraft.util.FormattedCharSequence;
+import net.minecraft.world.item.ItemDisplayContext;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.Vec3;
+import org.joml.Matrix4f;
+import org.joml.Quaternionf;
+import org.joml.Vector3f;
+import org.jspecify.annotations.Nullable;
+
+public class SubmitNodeStorage implements SubmitNodeCollector {
+   private final Int2ObjectAVLTreeMap<SubmitNodeCollection> submitsPerOrder = new Int2ObjectAVLTreeMap();
+
+   public SubmitNodeCollection order(final int order) {
+      return (SubmitNodeCollection)this.submitsPerOrder.computeIfAbsent(order, ignored -> new SubmitNodeCollection(this));
+   }
+
+   @Override
+   public void submitShadow(final PoseStack poseStack, final float radius, final List<EntityRenderState.ShadowPiece> pieces) {
+      this.order(0).submitShadow(poseStack, radius, pieces);
+   }
+
+   @Override
+   public void submitNameTag(
+      final PoseStack poseStack,
+      final @Nullable Vec3 nameTagAttachment,
+      final int offset,
+      final Component name,
+      final boolean seeThrough,
+      final int lightCoords,
+      final double distanceToCameraSq,
+      final CameraRenderState camera
+   ) {
+      this.order(0).submitNameTag(poseStack, nameTagAttachment, offset, name, seeThrough, lightCoords, distanceToCameraSq, camera);
+   }
+
+   @Override
+   public void submitText(
+      final PoseStack poseStack,
+      final float x,
+      final float y,
+      final FormattedCharSequence string,
+      final boolean dropShadow,
+      final Font.DisplayMode displayMode,
+      final int lightCoords,
+      final int color,
+      final int backgroundColor,
+      final int outlineColor
+   ) {
+      this.order(0).submitText(poseStack, x, y, string, dropShadow, displayMode, lightCoords, color, backgroundColor, outlineColor);
+   }
+
+   @Override
+   public void submitFlame(final PoseStack poseStack, final EntityRenderState renderState, final Quaternionf rotation) {
+      this.order(0).submitFlame(poseStack, renderState, rotation);
+   }
+
+   @Override
+   public void submitLeash(final PoseStack poseStack, final EntityRenderState.LeashState leashState) {
+      this.order(0).submitLeash(poseStack, leashState);
+   }
+
+   @Override
+   public <S> void submitModel(
+      final Model<? super S> model,
+      final S state,
+      final PoseStack poseStack,
+      final RenderType renderType,
+      final int lightCoords,
+      final int overlayCoords,
+      final int tintedColor,
+      final @Nullable TextureAtlasSprite sprite,
+      final int outlineColor,
+      final ModelFeatureRenderer.@Nullable CrumblingOverlay crumblingOverlay
+   ) {
+      this.order(0).submitModel(model, state, poseStack, renderType, lightCoords, overlayCoords, tintedColor, sprite, outlineColor, crumblingOverlay);
+   }
+
+   @Override
+   public void submitModelPart(
+      final ModelPart modelPart,
+      final PoseStack poseStack,
+      final RenderType renderType,
+      final int lightCoords,
+      final int overlayCoords,
+      final @Nullable TextureAtlasSprite sprite,
+      final boolean sheeted,
+      final boolean hasFoil,
+      final int tintedColor,
+      final ModelFeatureRenderer.@Nullable CrumblingOverlay crumblingOverlay,
+      final int outlineColor
+   ) {
+      this.order(0)
+         .submitModelPart(modelPart, poseStack, renderType, lightCoords, overlayCoords, sprite, sheeted, hasFoil, tintedColor, crumblingOverlay, outlineColor);
+   }
+
+   @Override
+   public void submitBlock(final PoseStack poseStack, final BlockState state, final int lightCoords, final int overlayCoords, final int outlineColor) {
+      this.order(0).submitBlock(poseStack, state, lightCoords, overlayCoords, outlineColor);
+   }
+
+   @Override
+   public void submitMovingBlock(final PoseStack poseStack, final MovingBlockRenderState movingBlockRenderState) {
+      this.order(0).submitMovingBlock(poseStack, movingBlockRenderState);
+   }
+
+   @Override
+   public void submitBlockModel(
+      final PoseStack poseStack,
+      final RenderType renderType,
+      final BlockStateModel model,
+      final float r,
+      final float g,
+      final float b,
+      final int lightCoords,
+      final int overlayCoords,
+      final int outlineColor
+   ) {
+      this.order(0).submitBlockModel(poseStack, renderType, model, r, g, b, lightCoords, overlayCoords, outlineColor);
+   }
+
+   @Override
+   public void submitItem(
+      final PoseStack poseStack,
+      final ItemDisplayContext displayContext,
+      final int lightCoords,
+      final int overlayCoords,
+      final int outlineColor,
+      final int[] tintLayers,
+      final List<BakedQuad> quads,
+      final RenderType renderType,
+      final ItemStackRenderState.FoilType foilType
+   ) {
+      this.order(0).submitItem(poseStack, displayContext, lightCoords, overlayCoords, outlineColor, tintLayers, quads, renderType, foilType);
+   }
+
+   @Override
+   public void submitCustomGeometry(
+      final PoseStack poseStack, final RenderType renderType, final SubmitNodeCollector.CustomGeometryRenderer customGeometryRenderer
+   ) {
+      this.order(0).submitCustomGeometry(poseStack, renderType, customGeometryRenderer);
+   }
+
+   @Override
+   public void submitParticleGroup(final SubmitNodeCollector.ParticleGroupRenderer particleGroupRenderer) {
+      this.order(0).submitParticleGroup(particleGroupRenderer);
+   }
+
+   public void clear() {
+      this.submitsPerOrder.values().forEach(SubmitNodeCollection::clear);
+   }
+
+   public void endFrame() {
+      this.submitsPerOrder.values().removeIf(collection -> !collection.wasUsed());
+      this.submitsPerOrder.values().forEach(SubmitNodeCollection::endFrame);
+   }
+
+   public Int2ObjectAVLTreeMap<SubmitNodeCollection> getSubmitsPerOrder() {
+      return this.submitsPerOrder;
+   }
+
+   public record BlockModelSubmit(
+      Pose pose, RenderType renderType, BlockStateModel model, float r, float g, float b, int lightCoords, int overlayCoords, int outlineColor
+   ) {
+   }
+
+   public record BlockSubmit(Pose pose, BlockState state, int lightCoords, int overlayCoords, int outlineColor) {
+   }
+
+   public record CustomGeometrySubmit(Pose pose, SubmitNodeCollector.CustomGeometryRenderer customGeometryRenderer) {
+   }
+
+   public record FlameSubmit(Pose pose, EntityRenderState entityRenderState, Quaternionf rotation) {
+   }
+
+   public record ItemSubmit(
+      Pose pose,
+      ItemDisplayContext displayContext,
+      int lightCoords,
+      int overlayCoords,
+      int outlineColor,
+      int[] tintLayers,
+      List<BakedQuad> quads,
+      RenderType renderType,
+      ItemStackRenderState.FoilType foilType
+   ) {
+   }
+
+   public record LeashSubmit(Matrix4f pose, EntityRenderState.LeashState leashState) {
+   }
+
+   public record ModelPartSubmit(
+      Pose pose,
+      ModelPart modelPart,
+      int lightCoords,
+      int overlayCoords,
+      @Nullable TextureAtlasSprite sprite,
+      boolean sheeted,
+      boolean hasFoil,
+      int tintedColor,
+      ModelFeatureRenderer.@Nullable CrumblingOverlay crumblingOverlay,
+      int outlineColor
+   ) {
+   }
+
+   public record ModelSubmit<S>(
+      Pose pose,
+      Model<? super S> model,
+      S state,
+      int lightCoords,
+      int overlayCoords,
+      int tintedColor,
+      @Nullable TextureAtlasSprite sprite,
+      int outlineColor,
+      ModelFeatureRenderer.@Nullable CrumblingOverlay crumblingOverlay
+   ) {
+   }
+
+   public record MovingBlockSubmit(Matrix4f pose, MovingBlockRenderState movingBlockRenderState) {
+   }
+
+   public record NameTagSubmit(Matrix4f pose, float x, float y, Component text, int lightCoords, int color, int backgroundColor, double distanceToCameraSq) {
+   }
+
+   public record ShadowSubmit(Matrix4f pose, float radius, List<EntityRenderState.ShadowPiece> pieces) {
+   }
+
+   public record TextSubmit(
+      Matrix4f pose,
+      float x,
+      float y,
+      FormattedCharSequence string,
+      boolean dropShadow,
+      Font.DisplayMode displayMode,
+      int lightCoords,
+      int color,
+      int backgroundColor,
+      int outlineColor
+   ) {
+   }
+
+   public record TranslucentModelSubmit<S>(SubmitNodeStorage.ModelSubmit<S> modelSubmit, RenderType renderType, Vector3f position) {
+   }
+}

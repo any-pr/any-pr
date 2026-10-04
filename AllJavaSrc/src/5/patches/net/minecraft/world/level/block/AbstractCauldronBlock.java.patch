@@ -1,0 +1,25 @@
+--- a/net/minecraft/world/level/block/AbstractCauldronBlock.java
++++ b/net/minecraft/world/level/block/AbstractCauldronBlock.java
+@@ -99,4 +_,22 @@
+ 
+     protected void receiveStalactiteDrip(BlockState state, Level level, BlockPos pos, Fluid fluid) {
+     }
++
++    @Override
++    public void onPlace(BlockState state, Level level, BlockPos pos, BlockState oldState, boolean movedByPiston) {
++        super.onPlace(state, level, pos, oldState, movedByPiston);
++        // Neo: Invalidate cauldron capabilities when a cauldron is added
++        if (net.neoforged.neoforge.fluids.CauldronFluidContent.getForBlock(oldState.getBlock()) == null) {
++            level.invalidateCapabilities(pos);
++        }
++    }
++
++    @Override
++    protected void affectNeighborsAfterRemoval(BlockState state, ServerLevel level, BlockPos pos, boolean movedByPiston) {
++        super.affectNeighborsAfterRemoval(state, level, pos, movedByPiston);
++        // Neo: Invalidate cauldron capabilities when a cauldron is removed
++        if (net.neoforged.neoforge.fluids.CauldronFluidContent.getForBlock(level.getBlockState(pos).getBlock()) == null) {
++            level.invalidateCapabilities(pos);
++        }
++    }
+ }

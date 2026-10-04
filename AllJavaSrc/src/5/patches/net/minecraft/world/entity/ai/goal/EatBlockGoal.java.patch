@@ -1,0 +1,20 @@
+--- a/net/minecraft/world/entity/ai/goal/EatBlockGoal.java
++++ b/net/minecraft/world/entity/ai/goal/EatBlockGoal.java
+@@ -61,7 +_,7 @@
+         if (this.eatAnimationTick == this.adjustedTickDelay(4)) {
+             BlockPos pos = this.mob.blockPosition();
+             if (IS_EDIBLE.test(this.level.getBlockState(pos))) {
+-                if (getServerLevel(this.level).getGameRules().get(GameRules.MOB_GRIEFING)) {
++                if (net.neoforged.neoforge.event.EventHooks.canEntityGrief(getServerLevel(this.level), this.mob)) {
+                     this.level.destroyBlock(pos, false);
+                 }
+ 
+@@ -69,7 +_,7 @@
+             } else {
+                 BlockPos below = pos.below();
+                 if (this.level.getBlockState(below).is(Blocks.GRASS_BLOCK)) {
+-                    if (getServerLevel(this.level).getGameRules().get(GameRules.MOB_GRIEFING)) {
++                    if (net.neoforged.neoforge.event.EventHooks.canEntityGrief(getServerLevel(this.level), this.mob)) {
+                         this.level.levelEvent(2001, below, Block.getId(Blocks.GRASS_BLOCK.defaultBlockState()));
+                         this.level.setBlock(below, Blocks.DIRT.defaultBlockState(), 2);
+                     }

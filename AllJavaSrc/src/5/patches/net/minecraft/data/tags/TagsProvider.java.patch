@@ -1,0 +1,79 @@
+--- a/net/minecraft/data/tags/TagsProvider.java
++++ b/net/minecraft/data/tags/TagsProvider.java
+@@ -31,26 +_,49 @@
+     private final CompletableFuture<TagsProvider.TagLookup<T>> parentProvider;
+     protected final ResourceKey<? extends Registry<T>> registryKey;
+     protected final Map<Identifier, TagBuilder> builders = Maps.newLinkedHashMap();
++    protected final String modId;
+ 
++    /**
++     * @deprecated Forge: Use the {@linkplain #TagsProvider(PackOutput, ResourceKey, CompletableFuture, String) mod id variant}
++     */
++    @Deprecated
+     protected TagsProvider(PackOutput output, ResourceKey<? extends Registry<T>> registryKey, CompletableFuture<HolderLookup.Provider> lookupProvider) {
+-        this(output, registryKey, lookupProvider, CompletableFuture.completedFuture(TagsProvider.TagLookup.empty()));
++        this(output, registryKey, lookupProvider, "vanilla");
++    }
++    protected TagsProvider(PackOutput output, ResourceKey<? extends Registry<T>> registryKey, CompletableFuture<HolderLookup.Provider> lookupProvider, String modId) {
++        this(output, registryKey, lookupProvider, CompletableFuture.completedFuture(TagsProvider.TagLookup.empty()), modId);
+     }
+ 
++    /**
++     * @deprecated Forge: Use the {@linkplain #TagsProvider(PackOutput, ResourceKey, CompletableFuture, CompletableFuture, String) mod id variant}
++     */
++    @Deprecated
+     protected TagsProvider(
+         PackOutput output,
+         ResourceKey<? extends Registry<T>> registryKey,
+         CompletableFuture<HolderLookup.Provider> lookupProvider,
+         CompletableFuture<TagsProvider.TagLookup<T>> parentProvider
+     ) {
++        this(output, registryKey, lookupProvider, parentProvider, "vanilla");
++    }
++
++    protected TagsProvider(PackOutput output, ResourceKey<? extends Registry<T>> registryKey, CompletableFuture<HolderLookup.Provider> lookupProvider, CompletableFuture<TagsProvider.TagLookup<T>> parentProvider, String modId) {
+         this.pathProvider = output.createRegistryTagsPathProvider(registryKey);
+         this.registryKey = registryKey;
+         this.parentProvider = parentProvider;
+         this.lookupProvider = lookupProvider;
++        this.modId = modId;
++    }
++
++    // Forge: Allow customizing the path for a given tag or returning null
++    @org.jspecify.annotations.Nullable
++    protected Path getPath(Identifier id) {
++        return this.pathProvider.json(id);
+     }
+ 
+     @Override
+     public String getName() {
+-        return "Tags for " + this.registryKey.identifier();
++        return "Tags for " + this.registryKey.identifier() + " mod id " + this.modId;
+     }
+ 
+     protected abstract void addTags(HolderLookup.Provider registries);
+@@ -80,7 +_,10 @@
+                                     Identifier id = entry.getKey();
+                                     TagBuilder builder = entry.getValue();
+                                     List<TagEntry> entries = builder.build();
+-                                    List<TagEntry> unresolvedEntries = entries.stream().filter(e -> !e.verifyIfPresent(elementCheck, tagCheck)).toList();
++                                    List<TagEntry> unresolvedEntries = java.util.stream.Stream.concat(entries.stream(), builder.getRemoveEntries())
++                                               // Neo: Assume tags from other namespaces always exists
++                                              .filter((e) -> e.getId().getNamespace().equals(modId) && !e.verifyIfPresent(elementCheck, tagCheck))
++                                              .toList();
+                                     if (!unresolvedEntries.isEmpty()) {
+                                         throw new IllegalArgumentException(
+                                             String.format(
+@@ -92,8 +_,10 @@
+                                         );
+                                     }
+ 
+-                                    Path path = this.pathProvider.json(id);
+-                                    return DataProvider.saveStable(cache, c.contents, TagFile.CODEC, new TagFile(entries, builder.shouldReplace()), path);
++                                    Path path = this.getPath(id);
++                                    if (path == null) return CompletableFuture.completedFuture(null); // Neo: Allow running this data provider without writing it. Recipe provider needs valid tags.
++                                    var removed = builder.getRemoveEntries().toList();
++                                    return DataProvider.saveStable(cache, c.contents, TagFile.CODEC, new TagFile(entries, builder.shouldReplace(), removed), path);
+                                 }
+                             )
+                             .toArray(CompletableFuture[]::new)

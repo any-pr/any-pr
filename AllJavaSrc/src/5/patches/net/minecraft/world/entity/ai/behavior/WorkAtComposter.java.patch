@@ -1,0 +1,26 @@
+--- a/net/minecraft/world/entity/ai/behavior/WorkAtComposter.java
++++ b/net/minecraft/world/entity/ai/behavior/WorkAtComposter.java
+@@ -40,18 +_,18 @@
+ 
+         int totalItemsToUse = 20;
+         int minStackSize = 10;
+-        int[] itemsSeenSoFar = new int[COMPOSTABLE_ITEMS.size()];
++        it.unimi.dsi.fastutil.objects.Reference2IntMap<Item> amounts = new it.unimi.dsi.fastutil.objects.Reference2IntOpenHashMap<>(COMPOSTABLE_ITEMS.size() * 2); // Neo: let's assume that there's roughly twice more villager compostables than in vanilla
+         SimpleContainer inventory = body.getInventory();
+         int containerSize = inventory.getContainerSize();
+         BlockState tempState = blockState;
+ 
+         for (int i = containerSize - 1; i >= 0 && totalItemsToUse > 0; i--) {
+             ItemStack itemStack = inventory.getItem(i);
+-            int itemIndex = COMPOSTABLE_ITEMS.indexOf(itemStack.getItem());
+-            if (itemIndex != -1) {
++            var compostable = itemStack.getData(net.neoforged.neoforge.registries.datamaps.builtin.NeoForgeDataMaps.COMPOSTABLES);
++            if (compostable != null && compostable.canVillagerCompost()) {
+                 int stackSize = itemStack.getCount();
+-                int totalItemCount = itemsSeenSoFar[itemIndex] + stackSize;
+-                itemsSeenSoFar[itemIndex] = totalItemCount;
++                int totalItemCount = amounts.getInt(itemStack.getItem()) + stackSize;
++                amounts.put(itemStack.getItem(), totalItemCount);
+                 int itemsToUse = Math.min(Math.min(totalItemCount - 10, totalItemsToUse), stackSize);
+                 if (itemsToUse > 0) {
+                     totalItemsToUse -= itemsToUse;

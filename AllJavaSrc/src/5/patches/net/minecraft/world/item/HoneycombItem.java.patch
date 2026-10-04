@@ -1,0 +1,33 @@
+--- a/net/minecraft/world/item/HoneycombItem.java
++++ b/net/minecraft/world/item/HoneycombItem.java
+@@ -30,6 +_,10 @@
+ import net.minecraft.world.level.gameevent.GameEvent;
+ 
+ public class HoneycombItem extends Item implements SignApplicator {
++    /**
++     * @deprecated Neo: Use the {@link net.neoforged.neoforge.registries.datamaps.builtin.NeoForgeDataMaps#WAXABLES data map}, this field will be ignored in a future version
++     */
++    @Deprecated
+     public static final Supplier<BiMap<Block, Block>> WAXABLES = Suppliers.memoize(
+         () -> {
+             Builder<Block, Block> builderx = ImmutableBiMap.builder();
+@@ -54,6 +_,10 @@
+             return builderx.build();
+         }
+     );
++    /**
++     * @deprecated Use the {@link net.neoforged.neoforge.common.DataMapHooks#INVERSE_WAXABLES_DATAMAP inverse map} generated from the data map, this field will be ignored in a future version
++     */
++    @Deprecated
+     public static final Supplier<BiMap<Block, Block>> WAX_OFF_BY_BLOCK = Suppliers.memoize(() -> WAXABLES.get().inverse());
+     public static final ImmutableMap<Block, Pair<RecipeCategory, String>> WAXED_RECIPES;
+ 
+@@ -88,7 +_,7 @@
+     }
+ 
+     public static Optional<BlockState> getWaxed(BlockState oldState) {
+-        return Optional.ofNullable(WAXABLES.get().get(oldState.getBlock())).map(b -> b.withPropertiesOf(oldState));
++        return Optional.ofNullable(net.neoforged.neoforge.common.DataMapHooks.getBlockWaxed(oldState.getBlock())).map(b -> b.withPropertiesOf(oldState));
+     }
+ 
+     @Override

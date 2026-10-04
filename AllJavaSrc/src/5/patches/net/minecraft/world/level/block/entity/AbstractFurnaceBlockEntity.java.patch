@@ -1,0 +1,152 @@
+--- a/net/minecraft/world/level/block/entity/AbstractFurnaceBlockEntity.java
++++ b/net/minecraft/world/level/block/entity/AbstractFurnaceBlockEntity.java
+@@ -67,9 +_,14 @@
+         public int get(int dataId) {
+             switch (dataId) {
+                 case 0:
++                    if (litTotalTime > Short.MAX_VALUE) {
++                        // Neo: preserve litTime / litDuration ratio on the client as data slots are synced as shorts.
++                        return net.minecraft.util.Mth.floor(((double) litTimeRemaining / litTotalTime) * Short.MAX_VALUE);
++                    }
++
+                     return AbstractFurnaceBlockEntity.this.litTimeRemaining;
+                 case 1:
+-                    return AbstractFurnaceBlockEntity.this.litTotalTime;
++                    return Math.min(AbstractFurnaceBlockEntity.this.litTotalTime, Short.MAX_VALUE);
+                 case 2:
+                     return AbstractFurnaceBlockEntity.this.cookingTimer;
+                 case 3:
+@@ -103,12 +_,14 @@
+     };
+     private final Reference2IntOpenHashMap<ResourceKey<Recipe<?>>> recipesUsed = new Reference2IntOpenHashMap<>();
+     private final RecipeManager.CachedCheck<SingleRecipeInput, ? extends AbstractCookingRecipe> quickCheck;
++    private final RecipeType<? extends AbstractCookingRecipe> recipeType;
+ 
+     protected AbstractFurnaceBlockEntity(
+         BlockEntityType<?> type, BlockPos worldPosition, BlockState blockState, RecipeType<? extends AbstractCookingRecipe> recipeType
+     ) {
+         super(type, worldPosition, blockState);
+         this.quickCheck = RecipeManager.createCheck(recipeType);
++        this.recipeType = recipeType;
+     }
+ 
+     @Override
+@@ -116,10 +_,10 @@
+         super.loadAdditional(input);
+         this.items = NonNullList.withSize(this.getContainerSize(), ItemStack.EMPTY);
+         ContainerHelper.loadAllItems(input, this.items);
+-        this.cookingTimer = input.getShortOr("cooking_time_spent", (short)0);
+-        this.cookingTotalTime = input.getShortOr("cooking_total_time", (short)0);
+-        this.litTimeRemaining = input.getShortOr("lit_time_remaining", (short)0);
+-        this.litTotalTime = input.getShortOr("lit_total_time", (short)0);
++        this.cookingTimer = input.getIntOr("cooking_time_spent", (short)0);
++        this.cookingTotalTime = input.getIntOr("cooking_total_time", (short)0);
++        this.litTimeRemaining = input.getIntOr("lit_time_remaining", (short)0);
++        this.litTotalTime = input.getIntOr("lit_total_time", (short)0);
+         this.recipesUsed.clear();
+         this.recipesUsed.putAll(input.read("RecipesUsed", RECIPES_USED_CODEC).orElse(Map.of()));
+     }
+@@ -127,10 +_,10 @@
+     @Override
+     protected void saveAdditional(ValueOutput output) {
+         super.saveAdditional(output);
+-        output.putShort("cooking_time_spent", (short)this.cookingTimer);
+-        output.putShort("cooking_total_time", (short)this.cookingTotalTime);
+-        output.putShort("lit_time_remaining", (short)this.litTimeRemaining);
+-        output.putShort("lit_total_time", (short)this.litTotalTime);
++        output.putInt("cooking_time_spent", this.cookingTimer);
++        output.putInt("cooking_total_time", this.cookingTotalTime);
++        output.putInt("lit_time_remaining", this.litTimeRemaining);
++        output.putInt("lit_total_time", this.litTotalTime);
+         ContainerHelper.saveAllItems(output, this.items);
+         output.store("RecipesUsed", RECIPES_USED_CODEC, this.recipesUsed);
+     }
+@@ -207,9 +_,10 @@
+ 
+     private static void consumeFuel(NonNullList<ItemStack> items, ItemStack fuel) {
+         Item fuelItem = fuel.getItem();
++        // Neo: Query the crafting remainder prior to stack mutation (shrink) in order to grab the correct value
++        ItemStackTemplate remainder = fuel.getCraftingRemainder();
+         fuel.shrink(1);
+         if (fuel.isEmpty()) {
+-            ItemStackTemplate remainder = fuelItem.getCraftingRemainder();
+             items.set(1, remainder != null ? remainder.create() : ItemStack.EMPTY);
+         }
+     }
+@@ -245,7 +_,7 @@
+     }
+ 
+     protected int getBurnDuration(FuelValues fuelValues, ItemStack itemStack) {
+-        return fuelValues.burnDuration(itemStack);
++        return itemStack.getBurnTime(this.recipeType, fuelValues);
+     }
+ 
+     private static int getTotalCookTime(ServerLevel level, AbstractFurnaceBlockEntity entity) {
+@@ -289,17 +_,57 @@
+ 
+     @Override
+     public void setItem(int slot, ItemStack itemStack) {
++        setItem(slot, itemStack, false);
++    }
++
++    // Neo: Skip side-effects if insideTransaction is true so the caller can defer them until the transaction commits
++    @Override
++    public void setItem(int slot, ItemStack itemStack, boolean insideTransaction) {
+         ItemStack oldStack = this.items.get(slot);
+         boolean same = !itemStack.isEmpty() && ItemStack.isSameItemSameComponents(oldStack, itemStack);
+         this.items.set(slot, itemStack);
+         itemStack.limitSize(this.getMaxStackSize(itemStack));
+-        if (slot == 0 && !same && this.level instanceof ServerLevel serverLevel) {
++        if (slot == 0 && !same && this.level instanceof ServerLevel serverLevel && !insideTransaction) {
+             this.cookingTotalTime = getTotalCookTime(serverLevel, this);
+             this.cookingTimer = 0;
+             this.setChanged();
+         }
+     }
+ 
++    // Neo: Reset cooking time when the input changes inside a transaction
++    private boolean needsCookingReset = false;
++    private final net.neoforged.neoforge.transfer.transaction.SnapshotJournal<Boolean> cookingResetJournal = new net.neoforged.neoforge.transfer.transaction.SnapshotJournal<Boolean>() {
++        @Override
++        protected Boolean createSnapshot() {
++            return needsCookingReset;
++        }
++        @Override
++        protected void revertToSnapshot(Boolean snapshot) {
++            needsCookingReset = snapshot;
++        }
++        @Override
++        protected void onRootCommit(Boolean originalState) {
++            if (needsCookingReset) {
++                if (level instanceof ServerLevel serverLevel) {
++                    cookingTotalTime = getTotalCookTime(serverLevel, AbstractFurnaceBlockEntity.this);
++                    cookingTimer = 0;
++                }
++                needsCookingReset = false;
++            }
++        }
++    };
++
++    @Override
++    public void onTransfer(int slot, int amountChange, net.neoforged.neoforge.transfer.transaction.TransactionContext transaction) {
++        if (slot == 0) {
++            int currentAmount = getItem(slot).getCount();
++            if (currentAmount == 0 || currentAmount == amountChange) {
++                cookingResetJournal.updateSnapshots(transaction);
++                needsCookingReset = true;
++            }
++        }
++    }
++
+     @Override
+     public boolean canPlaceItem(int slot, ItemStack itemStack) {
+         if (slot == 2) {
+@@ -311,7 +_,7 @@
+         }
+ 
+         ItemStack fuelSlot = this.items.get(1);
+-        return this.level.fuelValues().isFuel(itemStack) || itemStack.is(Items.BUCKET) && !fuelSlot.is(Items.BUCKET);
++        return itemStack.getBurnTime(this.recipeType, this.level.fuelValues()) > 0 || itemStack.is(Items.BUCKET) && !fuelSlot.is(Items.BUCKET);
+     }
+ 
+     @Override

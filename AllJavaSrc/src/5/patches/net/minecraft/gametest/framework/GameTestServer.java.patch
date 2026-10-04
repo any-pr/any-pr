@@ -1,0 +1,66 @@
+--- a/net/minecraft/gametest/framework/GameTestServer.java
++++ b/net/minecraft/gametest/framework/GameTestServer.java
+@@ -91,6 +_,11 @@
+     private final Stopwatch stopwatch = Stopwatch.createUnstarted();
+     private static final WorldOptions WORLD_OPTIONS = new WorldOptions(0L, false, false);
+     private @Nullable MultipleTestTracker testTracker;
++    // Neo: disable mob spawning and weather cycling when running game tests, same as for the ephemeral test server
++    private static final GameRules TEST_GAME_RULES = Util.make(new GameRules(ENABLED_FEATURES), rules -> {
++        rules.set(GameRules.SPAWN_MOBS, false, null);
++        rules.set(GameRules.ADVANCE_WEATHER, false, null);
++    });
+ 
+     public static GameTestServer create(
+         Thread serverThread,
+@@ -159,7 +_,7 @@
+             levelStorageSource,
+             packRepository,
+             worldStem,
+-            Optional.of(new GameRules(ENABLED_FEATURES)),
++            Optional.of(TEST_GAME_RULES),
+             Proxy.NO_PROXY,
+             DataFixers.getDataFixer(),
+             NO_SERVICES,
+@@ -176,10 +_,12 @@
+     protected boolean initServer() {
+         this.setPlayerList(new PlayerList(this, this.registries(), this.playerDataStorage, new EmptyNotificationService()) {});
+         Gizmos.withCollector(GizmoCollector.NOOP);
++        net.neoforged.neoforge.server.ServerLifecycleHooks.handleServerAboutToStart(this);
+         this.loadLevel();
+         ServerLevel level = this.overworld();
+         this.testBatches = this.evaluateTestsToRun(level);
+         LOGGER.info("Started game test server");
++        net.neoforged.neoforge.server.ServerLifecycleHooks.handleServerStarting(this);
+         return true;
+     }
+ 
+@@ -258,8 +_,14 @@
+             GlobalTestReporter.finish();
+             LOGGER.info("========= {} GAME TESTS COMPLETE IN {} ======================", this.testTracker.getTotalCount(), this.stopwatch.stop());
+             if (this.testTracker.hasFailedRequired()) {
+-                LOGGER.info("{} required tests failed :(", this.testTracker.getFailedRequiredCount());
++                LOGGER.error("{} required tests failed :(", this.testTracker.getFailedRequiredCount());
+                 this.testTracker.getFailedRequired().forEach(GameTestServer::logFailedTest);
++
++                // Neo: when running in GitHub actions emit actions-specific error annotations to make finding the error message easier
++                // See https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/workflow-commands-for-github-actions#example-creating-an-annotation-for-an-error
++                if (System.getenv().getOrDefault("CI", "false").equals("true") && System.getenv().getOrDefault("GITHUB_ACTIONS", "false").equals("true")) {
++                    System.out.printf("\n::error title=GameTest Failure::%s required game tests failed: %s\n\n", testTracker.getFailedRequiredCount(), testTracker.getFailedRequired().stream().map(info -> info.id().toString()).collect(java.util.stream.Collectors.joining(", ")));
++                }
+             } else {
+                 LOGGER.info("All {} required tests passed :)", this.testTracker.getTotalCount());
+             }
+@@ -275,11 +_,11 @@
+ 
+     private static void logFailedTest(GameTestInfo testInfo) {
+         if (testInfo.getRotation() != Rotation.NONE) {
+-            LOGGER.info(
++            LOGGER.error(
+                 "   - {} with rotation {}: {}", testInfo.id(), testInfo.getRotation().getSerializedName(), testInfo.getError().getDescription().getString()
+             );
+         } else {
+-            LOGGER.info("   - {}: {}", testInfo.id(), testInfo.getError().getDescription().getString());
++            LOGGER.error("   - {}: {}", testInfo.id(), testInfo.getError().getDescription().getString());
+         }
+     }
+ 

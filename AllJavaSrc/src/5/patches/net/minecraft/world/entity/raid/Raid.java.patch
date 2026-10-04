@@ -1,0 +1,47 @@
+--- a/net/minecraft/world/entity/raid/Raid.java
++++ b/net/minecraft/world/entity/raid/Raid.java
+@@ -533,7 +_,7 @@
+             int ravagersSpawned = 0;
+ 
+             for (int i = 0; i < numSpawns; i++) {
+-                Raider raider = raiderType.entityType.create(level, EntitySpawnReason.EVENT);
++                Raider raider = raiderType.entityTypeSupplier.get().create(level, EntitySpawnReason.EVENT);
+                 if (raider == null) {
+                     break;
+                 }
+@@ -545,7 +_,7 @@
+                 }
+ 
+                 this.joinRaid(level, groupNumber, raider, pos, false);
+-                if (raiderType.entityType == EntityTypes.RAVAGER) {
++                if (raiderType.entityTypeSupplier.get() == EntityTypes.RAVAGER) {
+                     Raider ridingRaider = null;
+                     if (groupNumber == this.getNumGroups(Difficulty.NORMAL)) {
+                         ridingRaider = EntityTypes.PILLAGER.create(level, EntitySpawnReason.EVENT);
+@@ -838,12 +_,26 @@
+         RAVAGER(EntityTypes.RAVAGER, new int[]{0, 0, 0, 1, 0, 1, 0, 2});
+ 
+         private static final Raid.RaiderType[] VALUES = values();
++        @Deprecated // Neo: null for custom types, use the supplier instead
+         private final EntityType<? extends Raider> entityType;
+         private final int[] spawnsPerWaveBeforeBonus;
++        final java.util.function.Supplier<EntityType<? extends Raider>> entityTypeSupplier;
+ 
++        @net.neoforged.fml.common.asm.enumextension.ReservedConstructor
+         RaiderType(EntityType<? extends Raider> entityType, int[] spawnsPerWaveBeforeBonus) {
+             this.entityType = entityType;
+             this.spawnsPerWaveBeforeBonus = spawnsPerWaveBeforeBonus;
++            this.entityTypeSupplier = () -> entityType;
++        }
++
++        private RaiderType(java.util.function.Supplier<EntityType<? extends Raider>> entityTypeSupplier, int[] spawnsPerWave) {
++            this.entityType = null;
++            this.spawnsPerWaveBeforeBonus = spawnsPerWave;
++            this.entityTypeSupplier = entityTypeSupplier;
++        }
++
++        public static net.neoforged.fml.common.asm.enumextension.ExtensionInfo getExtensionInfo() {
++            return net.neoforged.fml.common.asm.enumextension.ExtensionInfo.nonExtended(Raid.RaiderType.class);
+         }
+     }
+ }

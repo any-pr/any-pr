@@ -1,0 +1,10 @@
+--- a/net/minecraft/server/commands/ReloadCommand.java
++++ b/net/minecraft/server/commands/ReloadCommand.java
+@@ -34,6 +_,7 @@
+             }
+         }
+ 
++        net.neoforged.neoforge.resource.ResourcePackLoader.reorderNewlyDiscoveredPacks(selected, currentPacks, packRepository);
+         return selected;
+     }
+ 

@@ -1,0 +1,20 @@
+--- a/net/minecraft/world/entity/animal/golem/SnowGolem.java
++++ b/net/minecraft/world/entity/animal/golem/SnowGolem.java
+@@ -95,7 +_,7 @@
+                 this.hurtServer(serverLevel, this.damageSources().onFire(), 1.0F);
+             }
+ 
+-            if (!serverLevel.getGameRules().get(GameRules.MOB_GRIEFING)) {
++            if (!net.neoforged.neoforge.event.EventHooks.canEntityGrief(serverLevel, this)) {
+                 return;
+             }
+ 
+@@ -136,7 +_,7 @@
+     @Override
+     protected InteractionResult mobInteract(Player player, InteractionHand hand) {
+         ItemStack itemStack = player.getItemInHand(hand);
+-        if (itemStack.is(Items.SHEARS) && this.readyForShearing()) {
++        if (false && itemStack.is(Items.SHEARS) && this.readyForShearing()) { // Neo: Shear logic is handled by IShearable
+             if (this.level() instanceof ServerLevel level) {
+                 this.shear(level, SoundSource.PLAYERS, itemStack);
+                 this.gameEvent(GameEvent.SHEAR, player);

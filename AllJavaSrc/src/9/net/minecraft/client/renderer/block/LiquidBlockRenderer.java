@@ -1,0 +1,365 @@
+package net.minecraft.client.renderer.block;
+
+import com.mojang.blaze3d.vertex.VertexConsumer;
+import net.minecraft.client.renderer.BiomeColors;
+import net.minecraft.client.renderer.LevelRenderer;
+import net.minecraft.client.renderer.texture.TextureAtlasSprite;
+import net.minecraft.client.resources.model.MaterialSet;
+import net.minecraft.client.resources.model.ModelBakery;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.tags.FluidTags;
+import net.minecraft.util.Mth;
+import net.minecraft.world.level.BlockAndTintGetter;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.HalfTransparentBlock;
+import net.minecraft.world.level.block.LeavesBlock;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.material.Fluid;
+import net.minecraft.world.level.material.FluidState;
+import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.phys.shapes.Shapes;
+import net.minecraft.world.phys.shapes.VoxelShape;
+
+public class LiquidBlockRenderer {
+   private static final float MAX_FLUID_HEIGHT = 0.8888889F;
+   private final TextureAtlasSprite lavaStill;
+   private final TextureAtlasSprite lavaFlowing;
+   private final TextureAtlasSprite waterStill;
+   private final TextureAtlasSprite waterFlowing;
+   private final TextureAtlasSprite waterOverlay;
+
+   public LiquidBlockRenderer(final MaterialSet materials) {
+      this.lavaStill = materials.get(ModelBakery.LAVA_STILL);
+      this.lavaFlowing = materials.get(ModelBakery.LAVA_FLOW);
+      this.waterStill = materials.get(ModelBakery.WATER_STILL);
+      this.waterFlowing = materials.get(ModelBakery.WATER_FLOW);
+      this.waterOverlay = materials.get(ModelBakery.WATER_OVERLAY);
+   }
+
+   private static boolean isNeighborSameFluid(final FluidState fluidState, final FluidState neighborFluidState) {
+      return neighborFluidState.getType().isSame(fluidState.getType());
+   }
+
+   private static boolean isFaceOccludedByState(final Direction direction, final float height, final BlockState state) {
+      VoxelShape occluder = state.getFaceOcclusionShape(direction.getOpposite());
+      if (occluder == Shapes.empty()) {
+         return false;
+      } else if (occluder == Shapes.block()) {
+         boolean fullBlock = height == 1.0F;
+         return direction != Direction.UP || fullBlock;
+      } else {
+         VoxelShape shape = Shapes.box(0.0, 0.0, 0.0, 1.0, height, 1.0);
+         return Shapes.blockOccludes(shape, occluder, direction);
+      }
+   }
+
+   private static boolean isFaceOccludedByNeighbor(final Direction direction, final float height, final BlockState neighborState) {
+      return isFaceOccludedByState(direction, height, neighborState);
+   }
+
+   private static boolean isFaceOccludedBySelf(final BlockState state, final Direction direction) {
+      return isFaceOccludedByState(direction.getOpposite(), 1.0F, state);
+   }
+
+   public static boolean shouldRenderFace(
+      final FluidState fluidState, final BlockState blockState, final Direction direction, final FluidState neighborFluidState
+   ) {
+      return !isFaceOccludedBySelf(blockState, direction) && !isNeighborSameFluid(fluidState, neighborFluidState);
+   }
+
+   public void tesselate(
+      final BlockAndTintGetter level, final BlockPos pos, final VertexConsumer builder, final BlockState blockState, final FluidState fluidState
+   ) {
+      boolean isLava = fluidState.is(FluidTags.LAVA);
+      TextureAtlasSprite stillSprite = isLava ? this.lavaStill : this.waterStill;
+      TextureAtlasSprite flowingSprite = isLava ? this.lavaFlowing : this.waterFlowing;
+      int col = isLava ? 16777215 : BiomeColors.getAverageWaterColor(level, pos);
+      float r = (col >> 16 & 0xFF) / 255.0F;
+      float g = (col >> 8 & 0xFF) / 255.0F;
+      float b = (col & 0xFF) / 255.0F;
+      BlockState blockStateDown = level.getBlockState(pos.relative(Direction.DOWN));
+      FluidState fluidStateDown = blockStateDown.getFluidState();
+      BlockState blockStateUp = level.getBlockState(pos.relative(Direction.UP));
+      FluidState fluidStateUp = blockStateUp.getFluidState();
+      BlockState blockStateNorth = level.getBlockState(pos.relative(Direction.NORTH));
+      FluidState fluidStateNorth = blockStateNorth.getFluidState();
+      BlockState blockStateSouth = level.getBlockState(pos.relative(Direction.SOUTH));
+      FluidState fluidStateSouth = blockStateSouth.getFluidState();
+      BlockState blockStateWest = level.getBlockState(pos.relative(Direction.WEST));
+      FluidState fluidStateWest = blockStateWest.getFluidState();
+      BlockState blockStateEast = level.getBlockState(pos.relative(Direction.EAST));
+      FluidState fluidStateEast = blockStateEast.getFluidState();
+      boolean renderUp = !isNeighborSameFluid(fluidState, fluidStateUp);
+      boolean renderDown = shouldRenderFace(fluidState, blockState, Direction.DOWN, fluidStateDown)
+         && !isFaceOccludedByNeighbor(Direction.DOWN, 0.8888889F, blockStateDown);
+      boolean renderNorth = shouldRenderFace(fluidState, blockState, Direction.NORTH, fluidStateNorth);
+      boolean renderSouth = shouldRenderFace(fluidState, blockState, Direction.SOUTH, fluidStateSouth);
+      boolean renderWest = shouldRenderFace(fluidState, blockState, Direction.WEST, fluidStateWest);
+      boolean renderEast = shouldRenderFace(fluidState, blockState, Direction.EAST, fluidStateEast);
+      if (renderUp || renderDown || renderEast || renderWest || renderNorth || renderSouth) {
+         float c10 = level.getShade(Direction.DOWN, true);
+         float c11 = level.getShade(Direction.UP, true);
+         float c2 = level.getShade(Direction.NORTH, true);
+         float c3 = level.getShade(Direction.WEST, true);
+         Fluid type = fluidState.getType();
+         float heightSelf = this.getHeight(level, type, pos, blockState, fluidState);
+         float heightNorthEast;
+         float heightNorthWest;
+         float heightSouthEast;
+         float heightSouthWest;
+         if (heightSelf >= 1.0F) {
+            heightNorthEast = 1.0F;
+            heightNorthWest = 1.0F;
+            heightSouthEast = 1.0F;
+            heightSouthWest = 1.0F;
+         } else {
+            float heightNorth = this.getHeight(level, type, pos.north(), blockStateNorth, fluidStateNorth);
+            float heightSouth = this.getHeight(level, type, pos.south(), blockStateSouth, fluidStateSouth);
+            float heightEast = this.getHeight(level, type, pos.east(), blockStateEast, fluidStateEast);
+            float heightWest = this.getHeight(level, type, pos.west(), blockStateWest, fluidStateWest);
+            heightNorthEast = this.calculateAverageHeight(
+               level, type, heightSelf, heightNorth, heightEast, pos.relative(Direction.NORTH).relative(Direction.EAST)
+            );
+            heightNorthWest = this.calculateAverageHeight(
+               level, type, heightSelf, heightNorth, heightWest, pos.relative(Direction.NORTH).relative(Direction.WEST)
+            );
+            heightSouthEast = this.calculateAverageHeight(
+               level, type, heightSelf, heightSouth, heightEast, pos.relative(Direction.SOUTH).relative(Direction.EAST)
+            );
+            heightSouthWest = this.calculateAverageHeight(
+               level, type, heightSelf, heightSouth, heightWest, pos.relative(Direction.SOUTH).relative(Direction.WEST)
+            );
+         }
+
+         float x = pos.getX() & 15;
+         float y = pos.getY() & 15;
+         float z = pos.getZ() & 15;
+         float offs = 0.001F;
+         float bottomOffs = renderDown ? 0.001F : 0.0F;
+         if (renderUp
+            && !isFaceOccludedByNeighbor(
+               Direction.UP, Math.min(Math.min(heightNorthWest, heightSouthWest), Math.min(heightSouthEast, heightNorthEast)), blockStateUp
+            )) {
+            heightNorthWest -= 0.001F;
+            heightSouthWest -= 0.001F;
+            heightSouthEast -= 0.001F;
+            heightNorthEast -= 0.001F;
+            Vec3 flow = fluidState.getFlow(level, pos);
+            float u00;
+            float u01;
+            float u10;
+            float u11;
+            float v00;
+            float v01;
+            float v10;
+            float v11;
+            if (flow.x == 0.0 && flow.z == 0.0) {
+               u00 = stillSprite.getU(0.0F);
+               v00 = stillSprite.getV(0.0F);
+               u01 = u00;
+               v01 = stillSprite.getV(1.0F);
+               u10 = stillSprite.getU(1.0F);
+               v10 = v01;
+               u11 = u10;
+               v11 = v00;
+            } else {
+               float angle = (float)Mth.atan2(flow.z, flow.x) - (float) (Math.PI / 2);
+               float s = Mth.sin(angle) * 0.25F;
+               float c = Mth.cos(angle) * 0.25F;
+               float cc = 0.5F;
+               u00 = flowingSprite.getU(0.5F + (-c - s));
+               v00 = flowingSprite.getV(0.5F + (-c + s));
+               u01 = flowingSprite.getU(0.5F + (-c + s));
+               v01 = flowingSprite.getV(0.5F + (c + s));
+               u10 = flowingSprite.getU(0.5F + (c + s));
+               v10 = flowingSprite.getV(0.5F + (c - s));
+               u11 = flowingSprite.getU(0.5F + (c - s));
+               v11 = flowingSprite.getV(0.5F + (-c - s));
+            }
+
+            int topColor = this.getLightColor(level, pos);
+            float topRed = c11 * r;
+            float topGreen = c11 * g;
+            float topBlue = c11 * b;
+            this.vertex(builder, x + 0.0F, y + heightNorthWest, z + 0.0F, topRed, topGreen, topBlue, u00, v00, topColor);
+            this.vertex(builder, x + 0.0F, y + heightSouthWest, z + 1.0F, topRed, topGreen, topBlue, u01, v01, topColor);
+            this.vertex(builder, x + 1.0F, y + heightSouthEast, z + 1.0F, topRed, topGreen, topBlue, u10, v10, topColor);
+            this.vertex(builder, x + 1.0F, y + heightNorthEast, z + 0.0F, topRed, topGreen, topBlue, u11, v11, topColor);
+            if (fluidState.shouldRenderBackwardUpFace(level, pos.above())) {
+               this.vertex(builder, x + 0.0F, y + heightNorthWest, z + 0.0F, topRed, topGreen, topBlue, u00, v00, topColor);
+               this.vertex(builder, x + 1.0F, y + heightNorthEast, z + 0.0F, topRed, topGreen, topBlue, u11, v11, topColor);
+               this.vertex(builder, x + 1.0F, y + heightSouthEast, z + 1.0F, topRed, topGreen, topBlue, u10, v10, topColor);
+               this.vertex(builder, x + 0.0F, y + heightSouthWest, z + 1.0F, topRed, topGreen, topBlue, u01, v01, topColor);
+            }
+         }
+
+         if (renderDown) {
+            float u0 = stillSprite.getU0();
+            float u1 = stillSprite.getU1();
+            float v0 = stillSprite.getV0();
+            float v1 = stillSprite.getV1();
+            int belowColor = this.getLightColor(level, pos.below());
+            float belowRed = c10 * r;
+            float belowGreen = c10 * g;
+            float belowBlue = c10 * b;
+            this.vertex(builder, x, y + bottomOffs, z + 1.0F, belowRed, belowGreen, belowBlue, u0, v1, belowColor);
+            this.vertex(builder, x, y + bottomOffs, z, belowRed, belowGreen, belowBlue, u0, v0, belowColor);
+            this.vertex(builder, x + 1.0F, y + bottomOffs, z, belowRed, belowGreen, belowBlue, u1, v0, belowColor);
+            this.vertex(builder, x + 1.0F, y + bottomOffs, z + 1.0F, belowRed, belowGreen, belowBlue, u1, v1, belowColor);
+         }
+
+         int sideColor = this.getLightColor(level, pos);
+
+         for (Direction faceDir : Direction.Plane.HORIZONTAL) {
+            float hh0;
+            float hh1;
+            float x0;
+            float z0;
+            float x1;
+            float z1;
+            boolean renderCondition;
+            switch (faceDir) {
+               case NORTH:
+                  hh0 = heightNorthWest;
+                  hh1 = heightNorthEast;
+                  x0 = x;
+                  x1 = x + 1.0F;
+                  z0 = z + 0.001F;
+                  z1 = z + 0.001F;
+                  renderCondition = renderNorth;
+                  break;
+               case SOUTH:
+                  hh0 = heightSouthEast;
+                  hh1 = heightSouthWest;
+                  x0 = x + 1.0F;
+                  x1 = x;
+                  z0 = z + 1.0F - 0.001F;
+                  z1 = z + 1.0F - 0.001F;
+                  renderCondition = renderSouth;
+                  break;
+               case WEST:
+                  hh0 = heightSouthWest;
+                  hh1 = heightNorthWest;
+                  x0 = x + 0.001F;
+                  x1 = x + 0.001F;
+                  z0 = z + 1.0F;
+                  z1 = z;
+                  renderCondition = renderWest;
+                  break;
+               default:
+                  hh0 = heightNorthEast;
+                  hh1 = heightSouthEast;
+                  x0 = x + 1.0F - 0.001F;
+                  x1 = x + 1.0F - 0.001F;
+                  z0 = z;
+                  z1 = z + 1.0F;
+                  renderCondition = renderEast;
+            }
+
+            if (renderCondition && !isFaceOccludedByNeighbor(faceDir, Math.max(hh0, hh1), level.getBlockState(pos.relative(faceDir)))) {
+               BlockPos tPos = pos.relative(faceDir);
+               TextureAtlasSprite sprite = flowingSprite;
+               if (!isLava) {
+                  Block relativeBlock = level.getBlockState(tPos).getBlock();
+                  if (relativeBlock instanceof HalfTransparentBlock || relativeBlock instanceof LeavesBlock) {
+                     sprite = this.waterOverlay;
+                  }
+               }
+
+               float u0 = sprite.getU(0.0F);
+               float u1 = sprite.getU(0.5F);
+               float v01 = sprite.getV((1.0F - hh0) * 0.5F);
+               float v02 = sprite.getV((1.0F - hh1) * 0.5F);
+               float v1 = sprite.getV(0.5F);
+               float br = faceDir.getAxis() == Direction.Axis.Z ? c2 : c3;
+               float red = c11 * br * r;
+               float green = c11 * br * g;
+               float blue = c11 * br * b;
+               this.vertex(builder, x0, y + hh0, z0, red, green, blue, u0, v01, sideColor);
+               this.vertex(builder, x1, y + hh1, z1, red, green, blue, u1, v02, sideColor);
+               this.vertex(builder, x1, y + bottomOffs, z1, red, green, blue, u1, v1, sideColor);
+               this.vertex(builder, x0, y + bottomOffs, z0, red, green, blue, u0, v1, sideColor);
+               if (sprite != this.waterOverlay) {
+                  this.vertex(builder, x0, y + bottomOffs, z0, red, green, blue, u0, v1, sideColor);
+                  this.vertex(builder, x1, y + bottomOffs, z1, red, green, blue, u1, v1, sideColor);
+                  this.vertex(builder, x1, y + hh1, z1, red, green, blue, u1, v02, sideColor);
+                  this.vertex(builder, x0, y + hh0, z0, red, green, blue, u0, v01, sideColor);
+               }
+            }
+         }
+      }
+   }
+
+   private float calculateAverageHeight(
+      final BlockAndTintGetter level, final Fluid type, final float heightSelf, final float height2, final float height1, final BlockPos cornerPos
+   ) {
+      if (!(height1 >= 1.0F) && !(height2 >= 1.0F)) {
+         float[] weightedHeight = new float[2];
+         if (height1 > 0.0F || height2 > 0.0F) {
+            float heightCorner = this.getHeight(level, type, cornerPos);
+            if (heightCorner >= 1.0F) {
+               return 1.0F;
+            }
+
+            this.addWeightedHeight(weightedHeight, heightCorner);
+         }
+
+         this.addWeightedHeight(weightedHeight, heightSelf);
+         this.addWeightedHeight(weightedHeight, height1);
+         this.addWeightedHeight(weightedHeight, height2);
+         return weightedHeight[0] / weightedHeight[1];
+      } else {
+         return 1.0F;
+      }
+   }
+
+   private void addWeightedHeight(final float[] weightedHeight, final float height) {
+      if (height >= 0.8F) {
+         weightedHeight[0] += height * 10.0F;
+         weightedHeight[1] += 10.0F;
+      } else if (height >= 0.0F) {
+         weightedHeight[0] += height;
+         weightedHeight[1]++;
+      }
+   }
+
+   private float getHeight(final BlockAndTintGetter level, final Fluid fluidType, final BlockPos pos) {
+      BlockState state = level.getBlockState(pos);
+      return this.getHeight(level, fluidType, pos, state, state.getFluidState());
+   }
+
+   private float getHeight(final BlockAndTintGetter level, final Fluid fluidType, final BlockPos pos, final BlockState state, final FluidState fluidState) {
+      if (fluidType.isSame(fluidState.getType())) {
+         BlockState aboveState = level.getBlockState(pos.above());
+         return fluidType.isSame(aboveState.getFluidState().getType()) ? 1.0F : fluidState.getOwnHeight();
+      } else {
+         return !state.isSolid() ? 0.0F : -1.0F;
+      }
+   }
+
+   private void vertex(
+      final VertexConsumer builder,
+      final float x,
+      final float y,
+      final float z,
+      final float red,
+      final float green,
+      final float blue,
+      final float u,
+      final float v,
+      final int light
+   ) {
+      builder.addVertex(x, y, z).setColor(red, green, blue, 1.0F).setUv(u, v).setLight(light).setNormal(0.0F, 1.0F, 0.0F);
+   }
+
+   private int getLightColor(final BlockAndTintGetter level, final BlockPos pos) {
+      int a = LevelRenderer.getLightColor(level, pos);
+      int b = LevelRenderer.getLightColor(level, pos.above());
+      int aa = a & 0xFF;
+      int ba = b & 0xFF;
+      int ab = a >> 16 & 0xFF;
+      int bb = b >> 16 & 0xFF;
+      return (aa > ba ? aa : ba) | (ab > bb ? ab : bb) << 16;
+   }
+}

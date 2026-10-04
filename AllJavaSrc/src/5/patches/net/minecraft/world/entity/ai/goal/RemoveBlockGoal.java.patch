@@ -1,0 +1,19 @@
+--- a/net/minecraft/world/entity/ai/goal/RemoveBlockGoal.java
++++ b/net/minecraft/world/entity/ai/goal/RemoveBlockGoal.java
+@@ -34,7 +_,7 @@
+ 
+     @Override
+     public boolean canUse() {
+-        if (!getServerLevel(this.removerMob).getGameRules().get(GameRules.MOB_GRIEFING)) {
++        if (!net.neoforged.neoforge.event.EventHooks.canEntityGrief(getServerLevel(this.removerMob.level()), this.removerMob)) {
+             return false;
+         } else if (this.nextStartTick > 0) {
+             this.nextStartTick--;
+@@ -139,6 +_,6 @@
+         ChunkAccess chunk = level.getChunk(SectionPos.blockToSectionCoord(pos.getX()), SectionPos.blockToSectionCoord(pos.getZ()), ChunkStatus.FULL, false);
+         return chunk == null
+             ? false
+-            : chunk.getBlockState(pos).is(this.blockToRemove) && chunk.getBlockState(pos.above()).isAir() && chunk.getBlockState(pos.above(2)).isAir();
++            : chunk.getBlockState(pos).canEntityDestroy(level, pos, this.removerMob) && chunk.getBlockState(pos).is(this.blockToRemove) && chunk.getBlockState(pos.above()).isAir() && chunk.getBlockState(pos.above(2)).isAir();
+     }
+ }

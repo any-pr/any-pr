@@ -1,0 +1,34 @@
+package net.minecraft.world.level.levelgen.structure.templatesystem;
+
+import com.mojang.serialization.MapCodec;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.LevelReader;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
+import org.jspecify.annotations.Nullable;
+
+public class LavaSubmergedBlockProcessor extends StructureProcessor {
+   public static final MapCodec<LavaSubmergedBlockProcessor> CODEC = MapCodec.unit(() -> LavaSubmergedBlockProcessor.INSTANCE);
+   public static final LavaSubmergedBlockProcessor INSTANCE = new LavaSubmergedBlockProcessor();
+
+   @Override
+   public StructureTemplate.@Nullable StructureBlockInfo processBlock(
+      final LevelReader level,
+      final BlockPos targetPosition,
+      final BlockPos referencePos,
+      final StructureTemplate.StructureBlockInfo originalBlockInfo,
+      final StructureTemplate.StructureBlockInfo processedBlockInfo,
+      final StructurePlaceSettings settings
+   ) {
+      BlockPos pos = processedBlockInfo.pos();
+      boolean wasLavaBefore = level.getBlockState(pos).is(Blocks.LAVA);
+      return wasLavaBefore && !Block.isShapeFullBlock(processedBlockInfo.state().getShape(level, pos))
+         ? new StructureTemplate.StructureBlockInfo(pos, Blocks.LAVA.defaultBlockState(), processedBlockInfo.nbt())
+         : processedBlockInfo;
+   }
+
+   @Override
+   protected StructureProcessorType<?> getType() {
+      return StructureProcessorType.LAVA_SUBMERGED_BLOCK;
+   }
+}

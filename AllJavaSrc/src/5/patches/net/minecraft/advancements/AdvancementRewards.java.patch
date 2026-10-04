@@ -1,0 +1,10 @@
+--- a/net/minecraft/advancements/AdvancementRewards.java
++++ b/net/minecraft/advancements/AdvancementRewards.java
+@@ -43,6 +_,7 @@
+         LootParams params = new LootParams.Builder(level)
+             .withParameter(LootContextParams.THIS_ENTITY, player)
+             .withParameter(LootContextParams.ORIGIN, player.position())
++            .withLuck(player.getLuck()) // Forge: Add luck to LootContext
+             .create(LootContextParamSets.ADVANCEMENT_REWARD);
+         boolean changes = false;
+ 

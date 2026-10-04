@@ -1,0 +1,42 @@
+--- a/net/minecraft/server/dedicated/ServerWatchdog.java
++++ b/net/minecraft/server/dedicated/ServerWatchdog.java
+@@ -48,7 +_,13 @@
+                     String.format(Locale.ROOT, "%.2f", this.server.tickRateManager().millisecondsPerTick() / (float)TimeUtil.MILLISECONDS_PER_SECOND)
+                 );
+                 LOGGER.error(LogUtils.FATAL_MARKER, "Considering it to be crashed, server will forcibly shutdown.");
+-                CrashReport report = createWatchdogCrashReport("Watching Server", this.server.getRunningThread().threadId());
++                // Neo: don't just make a crash report with a seemingly-inexplicable Error
++                String message = String.format(
++                        Locale.ROOT,
++                        "ServerWatchdog detected that a single server tick took %.2f seconds (should be max %.2f)",
++                        (float)deltaNanos / (float)TimeUtil.NANOSECONDS_PER_SECOND,
++                        this.server.tickRateManager().millisecondsPerTick() / (float)TimeUtil.MILLISECONDS_PER_SECOND);
++                CrashReport report = createWatchdogCrashReport("Watching Server", this.server.getRunningThread().threadId(), message);
+                 this.server.fillSystemReport(report.getSystemReport());
+                 CrashReportCategory serverStats = report.addCategory("Performance stats");
+                 serverStats.setDetail("Random tick rate", () -> this.server.getGameRules().getAsString(GameRules.RANDOM_TICK_SPEED));
+@@ -77,10 +_,14 @@
+     }
+ 
+     public static CrashReport createWatchdogCrashReport(String message, long mainThreadId) {
++        return createWatchdogCrashReport(message, mainThreadId, "Watchdog");
++    }
++
++    public static CrashReport createWatchdogCrashReport(String message, long mainThreadId, String messageSource) {
+         ThreadInfo[] threadInfos = Util.dumpThreadInfo();
+         Arrays.sort(threadInfos, THREAD_INFO_COMPARATOR);
+         StringBuilder builder = new StringBuilder();
+-        Error exception = new Error("Watchdog (" + message + ")");
++        Error exception = new Error(messageSource + " (" + message + ")");
+ 
+         for (ThreadInfo threadInfo : threadInfos) {
+             if (threadInfo.getThreadId() == mainThreadId) {
+@@ -88,7 +_,7 @@
+             }
+ 
+             builder.append("\n");
+-            builder.append(threadInfo);
++            builder.append(net.neoforged.neoforge.logging.ThreadInfoUtil.getEntireStacktrace(threadInfo));
+         }
+ 
+         CrashReport report = new CrashReport(message, exception);

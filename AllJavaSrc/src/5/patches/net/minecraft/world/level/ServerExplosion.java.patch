@@ -1,0 +1,43 @@
+--- a/net/minecraft/world/level/ServerExplosion.java
++++ b/net/minecraft/world/level/ServerExplosion.java
+@@ -169,7 +_,12 @@
+         return new ObjectArrayList<>(toBlowSet);
+     }
+ 
++    @Deprecated
+     private void hurtEntities() {
++        this.hurtEntities(List.of());
++    }
++
++    private void hurtEntities(List<BlockPos> blocks) {
+         if (!(this.radius < 1.0E-5F)) {
+             float doubleRadius = this.radius * 2.0F;
+             int x0 = Mth.floor(this.center.x - doubleRadius - 1.0);
+@@ -179,7 +_,9 @@
+             int z0 = Mth.floor(this.center.z - doubleRadius - 1.0);
+             int z1 = Mth.floor(this.center.z + doubleRadius + 1.0);
+ 
+-            for (Entity entity : this.level.getEntities(this.source, new AABB(x0, y0, z0, x1, y1, z1))) {
++            List<Entity> list = this.level.getEntities(this.source, new AABB(x0, y0, z0, x1, y1, z1));
++            net.neoforged.neoforge.event.EventHooks.onExplosionDetonate(this.level, this, list, blocks);
++            for (Entity entity : list) {
+                 if (!entity.ignoreExplosion(this)) {
+                     double dist = Math.sqrt(entity.distanceToSqr(this.center)) / doubleRadius;
+                     if (!(dist > 1.0)) {
+@@ -197,6 +_,7 @@
+                             : 0.0;
+                         double knockbackPower = (1.0 - dist) * exposure * knockbackMultiplier * (1.0 - knockbackResistance);
+                         Vec3 knockback = direction.scale(knockbackPower);
++                        knockback = net.neoforged.neoforge.event.EventHooks.getExplosionKnockback(this.level, this, entity, knockback, blocks);
+                         entity.push(knockback);
+                         if (entity.is(EntityTypeTags.REDIRECTABLE_PROJECTILE) && entity instanceof Projectile projectile) {
+                             projectile.setOwner(this.damageSource.getEntity());
+@@ -235,7 +_,7 @@
+     public int explode() {
+         this.level.gameEvent(this.source, GameEvent.EXPLODE, this.center);
+         List<BlockPos> toBlow = this.calculateExplodedPositions();
+-        this.hurtEntities();
++        this.hurtEntities(toBlow);
+         if (this.interactsWithBlocks()) {
+             ProfilerFiller profiler = Profiler.get();
+             profiler.push("explosion_blocks");

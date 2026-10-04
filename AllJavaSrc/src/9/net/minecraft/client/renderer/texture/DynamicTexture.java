@@ -1,0 +1,88 @@
+package net.minecraft.client.renderer.texture;
+
+import com.mojang.blaze3d.platform.NativeImage;
+import com.mojang.blaze3d.systems.GpuDevice;
+import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.blaze3d.textures.FilterMode;
+import com.mojang.blaze3d.textures.TextureFormat;
+import com.mojang.logging.LogUtils;
+import java.io.IOException;
+import java.nio.file.Path;
+import java.util.function.Supplier;
+import net.minecraft.resources.Identifier;
+import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+
+public class DynamicTexture extends AbstractTexture implements Dumpable {
+   private static final Logger LOGGER = LogUtils.getLogger();
+   private @Nullable NativeImage pixels;
+
+   public DynamicTexture(final Supplier<String> label, final NativeImage image) {
+      this.pixels = image;
+      this.createTexture(label);
+      this.upload();
+   }
+
+   public DynamicTexture(final String label, final int width, final int height, final boolean zero) {
+      this.pixels = new NativeImage(width, height, zero);
+      this.createTexture(label);
+   }
+
+   public DynamicTexture(final Supplier<String> label, final int width, final int height, final boolean zero) {
+      this.pixels = new NativeImage(width, height, zero);
+      this.createTexture(label);
+   }
+
+   private void createTexture(final Supplier<String> label) {
+      GpuDevice device = RenderSystem.getDevice();
+      this.texture = device.createTexture(label, 5, TextureFormat.RGBA8, this.pixels.getWidth(), this.pixels.getHeight(), 1, 1);
+      this.sampler = RenderSystem.getSamplerCache().getRepeat(FilterMode.NEAREST);
+      this.textureView = device.createTextureView(this.texture);
+   }
+
+   private void createTexture(final String label) {
+      GpuDevice device = RenderSystem.getDevice();
+      this.texture = device.createTexture(label, 5, TextureFormat.RGBA8, this.pixels.getWidth(), this.pixels.getHeight(), 1, 1);
+      this.sampler = RenderSystem.getSamplerCache().getRepeat(FilterMode.NEAREST);
+      this.textureView = device.createTextureView(this.texture);
+   }
+
+   public void upload() {
+      if (this.pixels != null && this.texture != null) {
+         RenderSystem.getDevice().createCommandEncoder().writeToTexture(this.texture, this.pixels);
+      } else {
+         LOGGER.warn("Trying to upload disposed texture {}", this.getTexture().getLabel());
+      }
+   }
+
+   public @Nullable NativeImage getPixels() {
+      return this.pixels;
+   }
+
+   public void setPixels(final NativeImage pixels) {
+      if (this.pixels != null) {
+         this.pixels.close();
+      }
+
+      this.pixels = pixels;
+   }
+
+   @Override
+   public void close() {
+      if (this.pixels != null) {
+         this.pixels.close();
+         this.pixels = null;
+      }
+
+      super.close();
+   }
+
+   @Override
+   public void dumpContents(final Identifier selfId, final Path dir) throws IOException {
+      if (this.pixels != null) {
+         String outputId = selfId.toDebugFileName() + ".png";
+         Path path = dir.resolve(outputId);
+         this.pixels.writeToFile(path);
+      }
+   }
+}

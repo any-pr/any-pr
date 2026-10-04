@@ -1,0 +1,66 @@
+package net.minecraft.client.renderer.feature;
+
+import com.mojang.blaze3d.vertex.VertexConsumer;
+import com.mojang.blaze3d.vertex.PoseStack.Pose;
+import net.minecraft.client.renderer.MultiBufferSource;
+import net.minecraft.client.renderer.Sheets;
+import net.minecraft.client.renderer.SubmitNodeCollection;
+import net.minecraft.client.renderer.SubmitNodeStorage;
+import net.minecraft.client.renderer.entity.state.EntityRenderState;
+import net.minecraft.client.renderer.texture.TextureAtlasSprite;
+import net.minecraft.client.resources.model.AtlasManager;
+import net.minecraft.client.resources.model.ModelBakery;
+import org.joml.Quaternionf;
+
+public class FlameFeatureRenderer {
+   public void render(final SubmitNodeCollection nodeCollection, final MultiBufferSource.BufferSource bufferSource, final AtlasManager atlasManager) {
+      for (SubmitNodeStorage.FlameSubmit flameSubmit : nodeCollection.getFlameSubmits()) {
+         this.renderFlame(flameSubmit.pose(), bufferSource, flameSubmit.entityRenderState(), flameSubmit.rotation(), atlasManager);
+      }
+   }
+
+   private void renderFlame(
+      final Pose pose, final MultiBufferSource bufferSource, final EntityRenderState state, final Quaternionf rotation, final AtlasManager atlasManager
+   ) {
+      TextureAtlasSprite fire1 = atlasManager.get(ModelBakery.FIRE_0);
+      TextureAtlasSprite fire2 = atlasManager.get(ModelBakery.FIRE_1);
+      float s = state.boundingBoxWidth * 1.4F;
+      pose.scale(s, s, s);
+      float r = 0.5F;
+      float xo = 0.0F;
+      float h = state.boundingBoxHeight / s;
+      float yo = 0.0F;
+      pose.rotate(rotation);
+      pose.translate(0.0F, 0.0F, 0.3F - (int)h * 0.02F);
+      float zo = 0.0F;
+      int ss = 0;
+      VertexConsumer buffer = bufferSource.getBuffer(Sheets.cutoutBlockSheet());
+
+      while (h > 0.0F) {
+         TextureAtlasSprite tex = ss % 2 == 0 ? fire1 : fire2;
+         float u0 = tex.getU0();
+         float v0 = tex.getV0();
+         float u1 = tex.getU1();
+         float v1 = tex.getV1();
+         if (ss / 2 % 2 == 0) {
+            float tmp = u1;
+            u1 = u0;
+            u0 = tmp;
+         }
+
+         fireVertex(pose, buffer, -r - 0.0F, 0.0F - yo, zo, u1, v1);
+         fireVertex(pose, buffer, r - 0.0F, 0.0F - yo, zo, u0, v1);
+         fireVertex(pose, buffer, r - 0.0F, 1.4F - yo, zo, u0, v0);
+         fireVertex(pose, buffer, -r - 0.0F, 1.4F - yo, zo, u1, v0);
+         h -= 0.45F;
+         yo -= 0.45F;
+         r *= 0.9F;
+         zo -= 0.03F;
+         ss++;
+      }
+   }
+
+   private static void fireVertex(final Pose pose, final VertexConsumer buffer, final float x, final float y, final float z, final float u, final float v) {
+      buffer.addVertex(pose, x, y, z).setColor(-1).setUv(u, v).setUv1(0, 10).setLight(240).setNormal(pose, 0.0F, 1.0F, 0.0F);
+   }
+}

@@ -1,0 +1,99 @@
+--- a/net/minecraft/world/item/enchantment/Enchantment.java
++++ b/net/minecraft/world/item/enchantment/Enchantment.java
+@@ -119,6 +_,10 @@
+         return itemStacks;
+     }
+ 
++    /**
++     * @deprecated Neo: Use {@link ItemStack#supportsEnchantment(Holder)}
++     */
++    @Deprecated
+     public HolderSet<Item> getSupportedItems() {
+         return this.definition.supportedItems();
+     }
+@@ -127,10 +_,20 @@
+         return this.definition.slots().stream().anyMatch(group -> group.test(slot));
+     }
+ 
++    /**
++     * @deprecated Neo: Use {@link ItemStack#isPrimaryItemFor(Holder)}
++     *
++     * This method does not respect {@link ItemStack#supportsEnchantment(Holder)} since the {@link Holder} is not available, which makes the result of calling it invalid.
++     */
++    @Deprecated
+     public boolean isPrimaryItem(ItemStack item) {
+         return this.isSupportedItem(item) && (this.definition.primaryItems.isEmpty() || item.is(this.definition.primaryItems.get()));
+     }
+ 
++    /**
++     * @deprecated Neo: Use {@link ItemStack#supportsEnchantment(Holder)}
++     */
++    @Deprecated
+     public boolean isSupportedItem(ItemStack item) {
+         return item.is(this.definition.supportedItems);
+     }
+@@ -183,6 +_,10 @@
+         return result;
+     }
+ 
++    /**
++     * @deprecated Neo: Use {@link ItemStack#supportsEnchantment(Holder)}
++     */
++    @Deprecated
+     public boolean canEnchant(ItemStack itemStack) {
+         return this.definition.supportedItems().contains(itemStack.typeHolder());
+     }
+@@ -522,12 +_,26 @@
+         return new Enchantment.Builder(definition);
+     }
+ 
++//    TODO: Reimplement. Not sure if we want to patch EnchantmentDefinition or hack this in as an EnchantmentEffectComponent.
++//    /**
++//     * Is this enchantment allowed to be enchanted on books via Enchantment Table
++//     * @return false to disable the vanilla feature
++//     */
++//    public boolean isAllowedOnBooks() {
++//        return true;
++//    }
++
+     public static class Builder {
+         private final Enchantment.EnchantmentDefinition definition;
+         private HolderSet<Enchantment> exclusiveSet = HolderSet.empty();
+         private final Map<DataComponentType<?>, List<?>> effectLists = new HashMap<>();
+         private final DataComponentMap.Builder effectMapBuilder = DataComponentMap.builder();
+ 
++        /**
++         * Neo: Allow customizing or changing the {@link Component} created by the enchantment builder.
++         */
++        protected java.util.function.UnaryOperator<MutableComponent> nameFactory = java.util.function.UnaryOperator.identity();
++
+         public Builder(Enchantment.EnchantmentDefinition definition) {
+             this.definition = definition;
+         }
+@@ -580,6 +_,16 @@
+             return this;
+         }
+ 
++        /**
++         * Allows specifying an operator that can customize the default {@link Component} created by {@link #build(Identifier)}.
++         *
++         * @return this
++         */
++        public Enchantment.Builder withCustomName(java.util.function.UnaryOperator<MutableComponent> nameFactory) {
++            this.nameFactory = nameFactory;
++            return this;
++        }
++
+         private <E> List<E> getEffectsList(DataComponentType<List<E>> type) {
+             return (List<E>)this.effectLists.computeIfAbsent(type, k -> {
+                 ArrayList<E> newList = new ArrayList<>();
+@@ -590,7 +_,8 @@
+ 
+         public Enchantment build(Identifier descriptionKey) {
+             return new Enchantment(
+-                Component.translatable(Util.makeDescriptionId("enchantment", descriptionKey)),
++                // Neo: permit custom name components instead of a single hardcoded translatable component.
++                this.nameFactory.apply(Component.translatable(Util.makeDescriptionId("enchantment", descriptionKey))),
+                 this.definition,
+                 this.exclusiveSet,
+                 this.effectMapBuilder.build()

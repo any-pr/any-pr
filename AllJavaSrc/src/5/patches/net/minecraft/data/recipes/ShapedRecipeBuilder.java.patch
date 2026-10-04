@@ -1,0 +1,13 @@
+--- a/net/minecraft/data/recipes/ShapedRecipeBuilder.java
++++ b/net/minecraft/data/recipes/ShapedRecipeBuilder.java
+@@ -45,6 +_,10 @@
+         return new ShapedRecipeBuilder(items, category, item, count);
+     }
+ 
++    public static ShapedRecipeBuilder shaped(HolderGetter<Item> items, RecipeCategory category, ItemStackTemplate result) {
++        return new ShapedRecipeBuilder(items, category, result);
++    }
++
+     public ShapedRecipeBuilder define(Character symbol, TagKey<Item> tag) {
+         return this.define(symbol, Ingredient.of(this.items.getOrThrow(tag)));
+     }

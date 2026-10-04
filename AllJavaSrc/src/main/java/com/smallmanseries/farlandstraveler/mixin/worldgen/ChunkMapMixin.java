@@ -1,0 +1,68 @@
+package com.smallmanseries.farlandstraveler.mixin.worldgen;
+
+import com.smallmanseries.farlandstraveler.Config;
+import com.smallmanseries.farlandstraveler.common.DataRegister;
+import com.smallmanseries.farlandstraveler.common.worldgen.farlands.FarLands;
+import net.minecraft.server.level.ChunkMap;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.chunk.ChunkAccess;
+import net.minecraft.world.level.chunk.ChunkGenerator;
+import net.minecraft.world.level.chunk.status.WorldGenContext;
+import net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator;
+import net.minecraft.world.level.levelgen.RandomState;
+import org.spongepowered.asm.mixin.Final;
+import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Shadow;
+import org.spongepowered.asm.mixin.Unique;
+import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.ModifyArgs;
+import org.spongepowered.asm.mixin.injection.invoke.arg.Args;
+
+@Mixin(ChunkMap.class)
+public abstract class ChunkMapMixin {
+
+    @Shadow
+    @Final
+    private RandomState randomState;
+
+    @Unique
+    public RandomState randomStateFarLands = this.randomState;
+
+    // 应用世界生成器
+    @ModifyArgs(method = "applyStep", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/level/chunk/status/ChunkStep;apply(Lnet/minecraft/world/level/chunk/status/WorldGenContext;Lnet/minecraft/util/StaticCache2D;Lnet/minecraft/world/level/chunk/ChunkAccess;)Ljava/util/concurrent/CompletableFuture;"))
+    private void modifyGenerator(Args args) {
+        // 获取一些必要的数据
+        WorldGenContext context = args.get(0);
+        ChunkAccess chunk = args.get(2);
+        ChunkGenerator generator = context.generator();
+        ServerLevel level = context.level();
+        // 开始替换生成器。这里就不用管noise_router了，它使用Mixson事件注入的规则切换
+
+        // 边境之地
+        if (level.dimension() == Level.OVERWORLD && context.generator() instanceof NoiseBasedChunkGenerator &&
+                (Math.max(chunk.getPos().getMaxBlockX(), chunk.getPos().getMaxBlockZ()) >= Config.FAR_LANDS_DISTANCE.getAsInt()
+                        || Math.min(chunk.getPos().getMinBlockX(), chunk.getPos().getMinBlockZ()) <= -(Config.FAR_LANDS_DISTANCE.getAsInt()))) {
+
+            generator = new NoiseBasedChunkGenerator(
+                    // level.registryAccess().lookupOrThrow(DataRegister.FAR_LANDS).getValueOrThrow(FarLands.FAR_LANDS).biomeSource(),
+                    context.generator().getBiomeSource(),
+                    level.registryAccess().lookupOrThrow(DataRegister.FAR_LANDS).getValueOrThrow(FarLands.FAR_LANDS).settings()
+            );
+        }
+
+        // 岩石之令实验室
+        if (level.dimension() == Level.OVERWORLD && context.generator() instanceof NoiseBasedChunkGenerator && Config.GENERATE_OOTS_LABORATORY.getAsBoolean() &&
+                (chunk.getPos().getMinBlockX() >= -12551424 && chunk.getPos().getMaxBlockX() <= -12550896 && chunk.getPos().getMinBlockZ() >= -12550944 && chunk.getPos().getMaxBlockZ() <= -12550560)) {
+
+            generator = new NoiseBasedChunkGenerator(
+                    context.generator().getBiomeSource(),
+                    level.registryAccess().lookupOrThrow(DataRegister.FAR_LANDS).getValueOrThrow(FarLands.OOTS_LABORATORY).settings()
+            );
+        }
+
+        // 应用生成器
+        WorldGenContext modifiedContext = new WorldGenContext(level, generator, context.structureManager(), context.lightEngine(), context.mainThreadExecutor(), context.unsavedListener());
+        args.set(0, modifiedContext);
+    }
+}

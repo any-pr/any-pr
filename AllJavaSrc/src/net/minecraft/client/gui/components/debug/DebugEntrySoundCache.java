@@ -1,0 +1,37 @@
+package net.minecraft.client.gui.components.debug;
+
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.sounds.SoundBufferLibrary;
+import net.minecraft.util.Mth;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.chunk.LevelChunk;
+import org.jspecify.annotations.Nullable;
+import net.minecraftforge.api.distmarker.Dist;
+import net.minecraftforge.api.distmarker.OnlyIn;
+
+
+@OnlyIn(Dist.CLIENT)
+public class DebugEntrySoundCache implements DebugScreenEntry {
+   @Override
+   public boolean isAllowed(final boolean reducedDebugInfo) {
+      return true;
+   }
+
+   @Override
+   public void display(
+      final DebugScreenDisplayer displayer,
+      final @Nullable Level serverOrClientLevel,
+      final @Nullable LevelChunk clientChunk,
+      final @Nullable LevelChunk serverChunk
+   ) {
+      SoundBufferLibrary.DebugOutput.Counter counter = new SoundBufferLibrary.DebugOutput.Counter();
+      Minecraft.getInstance().getSoundManager().getSoundCacheDebugStats(counter);
+      displayer.addFactToGroup(
+         DebugGroups.MISC, "Sound Cache", fact -> fact.value(counter.totalCount()).text(" buffers, ").value(bytesToMegabytes(counter.totalSize())).text(" MiB")
+      );
+   }
+
+   private static long bytesToMegabytes(final long used) {
+      return Mth.ceilLong(used / 1024.0 / 1024.0);
+   }
+}

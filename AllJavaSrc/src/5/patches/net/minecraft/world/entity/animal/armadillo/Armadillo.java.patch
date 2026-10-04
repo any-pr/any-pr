@@ -1,0 +1,20 @@
+--- a/net/minecraft/world/entity/animal/armadillo/Armadillo.java
++++ b/net/minecraft/world/entity/animal/armadillo/Armadillo.java
+@@ -236,7 +_,7 @@
+     }
+ 
+     public static boolean checkArmadilloSpawnRules(
+-        EntityType<Armadillo> type, LevelAccessor level, EntitySpawnReason spawnReason, BlockPos pos, RandomSource random
++        EntityType<? extends Armadillo> type, LevelAccessor level, EntitySpawnReason spawnReason, BlockPos pos, RandomSource random
+     ) {
+         return level.getBlockState(pos.below()).is(BlockTags.ARMADILLO_SPAWNABLE_ON) && isBrightEnoughToSpawn(level, pos);
+     }
+@@ -314,7 +_,7 @@
+     @Override
+     public InteractionResult mobInteract(Player player, InteractionHand hand) {
+         ItemStack itemStack = player.getItemInHand(hand);
+-        if (itemStack.is(Items.BRUSH) && this.brushOffScute(player, itemStack)) {
++        if (itemStack.canPerformAction(net.neoforged.neoforge.common.ItemAbilities.BRUSH_BRUSH) && this.brushOffScute(player, itemStack)) {
+             itemStack.hurtAndBreak(16, player, hand.asEquipmentSlot());
+             return InteractionResult.SUCCESS;
+         } else {

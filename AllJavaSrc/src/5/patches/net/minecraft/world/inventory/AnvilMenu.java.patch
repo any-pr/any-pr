@@ -1,0 +1,76 @@
+--- a/net/minecraft/world/inventory/AnvilMenu.java
++++ b/net/minecraft/world/inventory/AnvilMenu.java
+@@ -73,6 +_,16 @@
+ 
+     @Override
+     protected void onTake(Player player, ItemStack carried) {
++        // Neo: Fire the AnvilCraftEvent.Pre here, before any changes are made to the anvil or the contained items.
++        // If a user cancels the event, we presume they are handling any of the below logic themselves.
++        var event = net.neoforged.neoforge.common.CommonHooks.fireAnvilCraftPre(this, player, carried, this.inputSlots.getItem(0), this.inputSlots.getItem(1));
++        if (event.isCanceled()) {
++            return;
++        }
++
++        ItemStack leftInputSnapshot = this.inputSlots.getItem(0).copy();
++        ItemStack rightInputSnapshot = this.inputSlots.getItem(1).copy();
++
+         if (!player.hasInfiniteMaterials()) {
+             player.giveExperienceLevels(-this.cost.get());
+         }
+@@ -112,10 +_,30 @@
+                 level.levelEvent(1030, pos, 0);
+             }
+         });
++
++        // Neo: Fire post after all logic has taken place. For ease of use, we record the original input stacks and pass them to this method.
++        // The modified stacks are available through the menu.
++        net.neoforged.neoforge.common.CommonHooks.fireAnvilCraftPost(this, player, carried, leftInputSnapshot, rightInputSnapshot);
+     }
+ 
+     @Override
+-    public void createResult() {
++    public final void createResult() {
++        // Neo: Override the real createResult() method to invoke the vanilla logic, and then call the event hook.
++        // Since the vanilla createResult() has multiple returns, we need to wrap it. The choices are this, or pack it in a lambda.
++        this.createResultInternal();
++        ItemStack leftInput = this.inputSlots.getItem(0);
++        ItemStack rightInput = this.inputSlots.getItem(1);
++        net.neoforged.neoforge.common.CommonHooks.onAnvilUpdate(this, leftInput, rightInput, resultSlots, itemName, this.player);
++    }
++
++    /**
++     * Neo: This is the original createResult() method, which is called by the above method ({@link #createResult()}.
++     * <p>
++     * If you would normally override {@link #createResult()}, you should override this method instead.
++     *
++     * @implNote This replacement exists so we can fire the AnvilUpdateEvent with the vanilla result, despite the multiple returns in the original method.
++     */
++    protected void createResultInternal() {
+         ItemStack input = this.inputSlots.getItem(0);
+         this.onlyRenaming = false;
+         this.cost.set(1);
+@@ -180,8 +_,10 @@
+                         int level = entry.getIntValue();
+                         level = current == level ? level + 1 : Math.max(level, current);
+                         Enchantment enchantment = enchantmentHolder.value();
+-                        boolean compatible = enchantment.canEnchant(input);
+-                        if (this.player.hasInfiniteMaterials() || input.is(Items.ENCHANTED_BOOK)) {
++                        // Neo: Respect IItemExtension#supportsEnchantment - we also delegate the logic for Enchanted Books to this method.
++                        // Though we still allow creative players to combine any item with any enchantment in the anvil here.
++                        boolean compatible = input.supportsEnchantment(enchantmentHolder);
++                        if (this.player.getAbilities().instabuild) {
+                             compatible = true;
+                         }
+ 
+@@ -305,4 +_,11 @@
+     public int getCost() {
+         return this.cost.get();
+     }
++
++    /**
++     * Neo: Sets the cost. Negative values are clamped to zero.
++     */
++    public void setCost(int value) {
++        this.cost.set(Math.max(0, value));
++     }
+ }

@@ -1,0 +1,18 @@
+--- a/net/minecraft/server/network/config/SynchronizeRegistriesTask.java
++++ b/net/minecraft/server/network/config/SynchronizeRegistriesTask.java
+@@ -44,11 +_,10 @@
+     }
+ 
+     public void handleResponse(List<KnownPack> acceptedPacks, Consumer<Packet<?>> connection) {
+-        if (acceptedPacks.equals(this.requestedPacks)) {
+-            this.sendRegistries(connection, Set.copyOf(this.requestedPacks));
+-        } else {
+-            this.sendRegistries(connection, Set.of());
+-        }
++        // Neo: instead of using either all available KnownPacks or none, allow partial fallback to normal syncing
++        Set<KnownPack> requested = new java.util.HashSet<>(this.requestedPacks);
++        requested.retainAll(acceptedPacks);
++        this.sendRegistries(connection, requested);
+     }
+ 
+     @Override

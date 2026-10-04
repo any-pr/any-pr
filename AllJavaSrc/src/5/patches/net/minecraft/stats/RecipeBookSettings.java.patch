@@ -1,0 +1,96 @@
+--- a/net/minecraft/stats/RecipeBookSettings.java
++++ b/net/minecraft/stats/RecipeBookSettings.java
+@@ -12,7 +_,8 @@
+ import net.minecraft.world.inventory.RecipeBookType;
+ 
+ public final class RecipeBookSettings {
+-    public static final StreamCodec<FriendlyByteBuf, RecipeBookSettings> STREAM_CODEC = StreamCodec.composite(
++    // Neo: We need RegistryFriendlyByteBuf to detect the connection type for Vanilla client/server compatibility
++    public static final StreamCodec<net.minecraft.network.RegistryFriendlyByteBuf, RecipeBookSettings> STREAM_CODEC = StreamCodec.composite(
+         RecipeBookSettings.TypeSettings.STREAM_CODEC,
+         o -> o.crafting,
+         RecipeBookSettings.TypeSettings.STREAM_CODEC,
+@@ -21,6 +_,9 @@
+         o -> o.blastFurnace,
+         RecipeBookSettings.TypeSettings.STREAM_CODEC,
+         o -> o.smoker,
++        // Neo: Also send settings for modded recipe book types
++        net.neoforged.neoforge.common.CommonHooks.MODDED_RECIPE_BOOK_TYPES_SETTINGS_STREAM_CODEC,
++        settings -> settings.moddedSettings,
+         RecipeBookSettings::new
+     );
+     public static final MapCodec<RecipeBookSettings> MAP_CODEC = RecordCodecBuilder.mapCodec(
+@@ -29,6 +_,7 @@
+                 RecipeBookSettings.TypeSettings.FURNACE_MAP_CODEC.forGetter(o -> o.furnace),
+                 RecipeBookSettings.TypeSettings.BLAST_FURNACE_MAP_CODEC.forGetter(o -> o.blastFurnace),
+                 RecipeBookSettings.TypeSettings.SMOKER_MAP_CODEC.forGetter(o -> o.smoker)
++                , net.neoforged.neoforge.common.CommonHooks.makeModdedRecipeBookTypesSettingsCodec().forGetter(settings -> settings.moddedSettings)
+             )
+             .apply(i, RecipeBookSettings::new)
+     );
+@@ -36,6 +_,7 @@
+     private RecipeBookSettings.TypeSettings furnace;
+     private RecipeBookSettings.TypeSettings blastFurnace;
+     private RecipeBookSettings.TypeSettings smoker;
++    private final java.util.Map<RecipeBookType, RecipeBookSettings.TypeSettings> moddedSettings;
+ 
+     public RecipeBookSettings() {
+         this(
+@@ -52,10 +_,21 @@
+         RecipeBookSettings.TypeSettings blastFurnace,
+         RecipeBookSettings.TypeSettings smoker
+     ) {
++        this(crafting, furnace, blastFurnace, smoker, new java.util.EnumMap<>(RecipeBookType.class));
++    }
++
++    private RecipeBookSettings(
++            RecipeBookSettings.TypeSettings crafting,
++            RecipeBookSettings.TypeSettings furnace,
++            RecipeBookSettings.TypeSettings blastFurnace,
++            RecipeBookSettings.TypeSettings smoker,
++            java.util.Map<RecipeBookType, RecipeBookSettings.TypeSettings> moddedSettings
++    ) {
+         this.crafting = crafting;
+         this.furnace = furnace;
+         this.blastFurnace = blastFurnace;
+         this.smoker = smoker;
++        this.moddedSettings = moddedSettings;
+     }
+ 
+     @VisibleForTesting
+@@ -65,6 +_,7 @@
+             case FURNACE -> this.furnace;
+             case BLAST_FURNACE -> this.blastFurnace;
+             case SMOKER -> this.smoker;
++            default -> this.moddedSettings.getOrDefault(type, RecipeBookSettings.TypeSettings.DEFAULT);
+         };
+     }
+ 
+@@ -81,6 +_,9 @@
+                 break;
+             case SMOKER:
+                 this.smoker = operator.apply(this.smoker);
++                break;
++            default:
++                this.moddedSettings.put(recipeBookType, operator.apply(this.moddedSettings.getOrDefault(recipeBookType, RecipeBookSettings.TypeSettings.DEFAULT)));
+         }
+     }
+ 
+@@ -101,7 +_,7 @@
+     }
+ 
+     public RecipeBookSettings copy() {
+-        return new RecipeBookSettings(this.crafting, this.furnace, this.blastFurnace, this.smoker);
++        return new RecipeBookSettings(this.crafting, this.furnace, this.blastFurnace, this.smoker, new java.util.EnumMap<>(this.moddedSettings));
+     }
+ 
+     public void replaceFrom(RecipeBookSettings other) {
+@@ -109,6 +_,8 @@
+         this.furnace = other.furnace;
+         this.blastFurnace = other.blastFurnace;
+         this.smoker = other.smoker;
++        this.moddedSettings.clear();
++        this.moddedSettings.putAll(other.moddedSettings);
+     }
+ 
+     public record TypeSettings(boolean open, boolean filtering) {

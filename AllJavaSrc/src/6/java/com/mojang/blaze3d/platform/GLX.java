@@ -1,0 +1,99 @@
+package com.mojang.blaze3d.platform;
+
+import com.google.common.base.Joiner;
+import com.google.common.collect.Lists;
+import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.logging.LogUtils;
+import java.util.List;
+import java.util.Locale;
+import java.util.function.Consumer;
+import java.util.function.LongSupplier;
+import java.util.function.Supplier;
+import org.jspecify.annotations.Nullable;
+import org.lwjgl.Version;
+import org.lwjgl.glfw.GLFW;
+import org.lwjgl.glfw.GLFWErrorCallback;
+import org.lwjgl.glfw.GLFWErrorCallbackI;
+import org.lwjgl.glfw.GLFWVidMode;
+import org.lwjgl.system.MemoryUtil;
+import org.slf4j.Logger;
+import oshi.SystemInfo;
+import oshi.hardware.CentralProcessor;
+
+public class GLX {
+   private static final Logger LOGGER = LogUtils.getLogger();
+   private static @Nullable String cpuInfo;
+
+   public static int _getRefreshRate(final Window window) {
+      RenderSystem.assertOnRenderThread();
+      long monitor = GLFW.glfwGetWindowMonitor(window.handle());
+      if (monitor == 0L) {
+         monitor = GLFW.glfwGetPrimaryMonitor();
+      }
+
+      GLFWVidMode videoMode = monitor == 0L ? null : GLFW.glfwGetVideoMode(monitor);
+      return videoMode == null ? 0 : videoMode.refreshRate();
+   }
+
+   public static String _getLWJGLVersion() {
+      return Version.getVersion();
+   }
+
+   public static LongSupplier _initGlfw() {
+      Window.checkGlfwError((errorx, description) -> {
+         throw new IllegalStateException(String.format(Locale.ROOT, "GLFW error before init: [0x%X]%s", errorx, description));
+      });
+      List<String> collectedErrors = Lists.newArrayList();
+      GLFWErrorCallback prevCallback = GLFW.glfwSetErrorCallback((errorx, descriptionPtr) -> {
+         String description = descriptionPtr == 0L ? "" : MemoryUtil.memUTF8(descriptionPtr);
+         collectedErrors.add(String.format(Locale.ROOT, "GLFW error during init: [0x%X]%s", errorx, description));
+      });
+      if (!GLFW.glfwInit()) {
+         throw new IllegalStateException("Failed to initialize GLFW, errors: " + Joiner.on(",").join(collectedErrors));
+      }
+
+      LongSupplier timeSource = () -> (long)(GLFW.glfwGetTime() * 1.0E9);
+
+      for (String error : collectedErrors) {
+         LOGGER.error("GLFW error collected during initialization: {}", error);
+      }
+
+      RenderSystem.setErrorCallback(prevCallback);
+      return timeSource;
+   }
+
+   public static void _setGlfwErrorCallback(final GLFWErrorCallbackI onFullscreenError) {
+      GLFWErrorCallback previousCallback = GLFW.glfwSetErrorCallback(onFullscreenError);
+      if (previousCallback != null) {
+         previousCallback.free();
+      }
+   }
+
+   public static boolean _shouldClose(final Window window) {
+      return GLFW.glfwWindowShouldClose(window.handle());
+   }
+
+   public static String _getCpuInfo() {
+      if (cpuInfo == null) {
+         cpuInfo = "<unknown>";
+
+         try {
+            CentralProcessor processor = new SystemInfo().getHardware().getProcessor();
+            cpuInfo = String.format(Locale.ROOT, "%dx %s", processor.getLogicalProcessorCount(), processor.getProcessorIdentifier().getName())
+               .replaceAll("\\s+", " ");
+         } catch (Throwable var1) {
+         }
+      }
+
+      return cpuInfo;
+   }
+
+   public static <T> T make(final Supplier<T> factory) {
+      return factory.get();
+   }
+
+   public static <T> T make(final T t, final Consumer<T> consumer) {
+      consumer.accept(t);
+      return t;
+   }
+}

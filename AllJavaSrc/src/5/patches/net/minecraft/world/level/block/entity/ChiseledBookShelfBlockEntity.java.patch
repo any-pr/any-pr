@@ -1,0 +1,54 @@
+--- a/net/minecraft/world/level/block/entity/ChiseledBookShelfBlockEntity.java
++++ b/net/minecraft/world/level/block/entity/ChiseledBookShelfBlockEntity.java
+@@ -88,12 +_,50 @@
+ 
+     @Override
+     public void setItem(int slot, ItemStack itemStack) {
++        setItem(slot, itemStack, false);
++    }
++
++    // Neo: Skip side-effects if insideTransaction is true so the caller can defer them until the transaction commits
++    @Override
++    public void setItem(int slot, ItemStack itemStack, boolean insideTransaction) {
+         if (this.acceptsItemType(itemStack)) {
+             this.getItems().set(slot, itemStack);
+-            this.updateState(slot);
++            if (!insideTransaction) {
++                this.updateState(slot);
++            }
+         } else if (itemStack.isEmpty()) {
++            if (insideTransaction) {
++                // Skip the updateState call in removeItem
++                this.getItems().set(slot, itemStack);
++                return;
++            }
+             this.removeItem(slot, this.getMaxStackSize());
+         }
++    }
++
++    // Neo: Make lastInteractedSlot transactional, and defer updateState until end of a transaction
++    private final net.neoforged.neoforge.transfer.transaction.SnapshotJournal<Integer> lastInteractedSlotJournal = new net.neoforged.neoforge.transfer.transaction.SnapshotJournal<>() {
++        @Override
++        protected Integer createSnapshot() {
++            return lastInteractedSlot;
++        }
++        @Override
++        protected void revertToSnapshot(Integer snapshot) {
++            lastInteractedSlot = snapshot;
++        }
++        @Override
++        protected void onRootCommit(Integer originalState) {
++            // If the block entity was removed, skip updateState to avoid the setBlock call that would overwrite the current block
++            if (!isRemoved()) {
++                updateState(lastInteractedSlot);
++            }
++        }
++    };
++
++    @Override
++    public void onTransfer(int slot, int amountChange, net.neoforged.neoforge.transfer.transaction.TransactionContext transaction) {
++        this.lastInteractedSlotJournal.updateSnapshots(transaction);
++        lastInteractedSlot = slot;
+     }
+ 
+     @Override

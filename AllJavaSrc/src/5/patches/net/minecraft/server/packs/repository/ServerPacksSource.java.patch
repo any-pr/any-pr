@@ -1,0 +1,20 @@
+--- a/net/minecraft/server/packs/repository/ServerPacksSource.java
++++ b/net/minecraft/server/packs/repository/ServerPacksSource.java
+@@ -70,11 +_,15 @@
+     }
+ 
+     public static PackRepository createPackRepository(Path datapackDir, DirectoryValidator validator) {
+-        return new PackRepository(new ServerPacksSource(validator), new FolderRepositorySource(datapackDir, PackType.SERVER_DATA, PackSource.WORLD, validator));
++        final PackRepository packRepository = new PackRepository(new ServerPacksSource(validator), new FolderRepositorySource(datapackDir, PackType.SERVER_DATA, PackSource.WORLD, validator));
++        net.neoforged.neoforge.resource.ResourcePackLoader.populatePackRepository(packRepository, PackType.SERVER_DATA, false);
++        return packRepository;
+     }
+ 
+     public static PackRepository createVanillaTrustedRepository() {
+-        return new PackRepository(new ServerPacksSource(new DirectoryValidator(path -> true)));
++        final PackRepository packRepository = new PackRepository(new ServerPacksSource(new DirectoryValidator(path -> true)));
++        net.neoforged.neoforge.resource.ResourcePackLoader.populatePackRepository(packRepository, PackType.SERVER_DATA, true);
++        return packRepository;
+     }
+ 
+     public static PackRepository createPackRepository(LevelStorageSource.LevelStorageAccess levelSourceAccess) {

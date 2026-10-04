@@ -1,0 +1,156 @@
+--- a/net/minecraft/world/level/chunk/LevelChunk.java
++++ b/net/minecraft/world/level/chunk/LevelChunk.java
+@@ -156,6 +_,7 @@
+         this.setAllStarts(protoChunk.getAllStarts());
+         this.setAllReferences(protoChunk.getAllReferences());
+ 
++        net.neoforged.neoforge.attachment.AttachmentInternals.copyChunkAttachmentsOnPromotion(level.registryAccess(), protoChunk.getAttachmentHolder(), this.getAttachmentHolder());
+         for (Entry<Heightmap.Types, Heightmap> entry : protoChunk.getHeightmaps()) {
+             if (ChunkStatus.FULL.heightmapsAfter().contains(entry.getKey())) {
+                 this.setHeightmap(entry.getKey(), entry.getValue().getRawData());
+@@ -294,7 +_,7 @@
+             this.level.getChunkSource().onSectionEmptinessChanged(this.chunkPos.x(), SectionPos.blockToSectionCoord(y), this.chunkPos.z(), isEmpty);
+         }
+ 
+-        if (LightEngine.hasDifferentLightProperties(oldState, state)) {
++        if (LightEngine.hasDifferentLightProperties(this, pos, oldState, state)) {
+             ProfilerFiller profiler = Profiler.get();
+             profiler.push("updateSkyLightSources");
+             this.skyLightSources.update(this, localX, y, localZ);
+@@ -325,7 +_,7 @@
+             return null;
+         }
+ 
+-        if (!this.level.isClientSide() && (flags & 512) == 0) {
++        if (!this.level.isClientSide() && !this.level.captureBlockSnapshots && (flags & 512) == 0) {
+             state.onPlace(this.level, pos, oldState, movedByPiston);
+         }
+ 
+@@ -369,6 +_,10 @@
+ 
+     public @Nullable BlockEntity getBlockEntity(BlockPos pos, LevelChunk.EntityCreationType creationType) {
+         BlockEntity blockEntity = this.blockEntities.get(pos);
++        if (blockEntity != null && blockEntity.isRemoved()) {
++            blockEntities.remove(pos);
++            blockEntity = null;
++        }
+         if (blockEntity == null) {
+             CompoundTag tag = this.pendingBlockEntities.remove(pos);
+             if (tag != null) {
+@@ -386,9 +_,6 @@
+                     this.addAndRegisterBlockEntity(blockEntity);
+                 }
+             }
+-        } else if (blockEntity.isRemoved()) {
+-            this.blockEntities.remove(pos);
+-            return null;
+         }
+ 
+         return blockEntity;
+@@ -403,6 +_,7 @@
+ 
+             this.level.onBlockEntityAdded(blockEntity);
+             this.updateBlockEntityTicker(blockEntity);
++            this.level.addFreshBlockEntities(java.util.List.of(blockEntity));
+         }
+     }
+ 
+@@ -446,6 +_,7 @@
+             BlockEntity previousEntry = this.blockEntities.put(pos.immutable(), blockEntity);
+             if (previousEntry != null && previousEntry != blockEntity) {
+                 previousEntry.setRemoved();
++                auxLightManager.removeLightAt(pos);
+             }
+         }
+     }
+@@ -454,9 +_,14 @@
+     public @Nullable CompoundTag getBlockEntityNbtForSaving(BlockPos blockPos, HolderLookup.Provider registryAccess) {
+         BlockEntity blockEntity = this.getBlockEntity(blockPos);
+         if (blockEntity != null && !blockEntity.isRemoved()) {
++            try {
+             CompoundTag result = blockEntity.saveWithFullMetadata(this.level.registryAccess());
+             result.putBoolean("keepPacked", false);
+             return result;
++            } catch (Exception e) {
++                LOGGER.error("A BlockEntity type {} has thrown an exception trying to write state. It will not persist, Report this to the mod author", blockEntity.getClass().getName(), e);
++                return null;
++            }
+         }
+ 
+         CompoundTag result = this.pendingBlockEntities.get(blockPos);
+@@ -479,6 +_,7 @@
+                 }
+ 
+                 removeThis.setRemoved();
++                auxLightManager.removeLightAt(pos);
+             }
+         }
+ 
+@@ -534,7 +_,7 @@
+             blockEntities.accept((pos, type, tag) -> {
+                 BlockEntity blockEntity = this.getBlockEntity(pos, LevelChunk.EntityCreationType.IMMEDIATE);
+                 if (blockEntity != null && tag != null && blockEntity.getType() == type) {
+-                    blockEntity.loadWithComponents(TagValueInput.create(reporter.forChild(blockEntity.problemPath()), this.level.registryAccess(), tag));
++                    blockEntity.handleUpdateTag(TagValueInput.create(reporter.forChild(blockEntity.problemPath()), this.level.registryAccess(), tag));
+                 }
+             });
+         }
+@@ -673,6 +_,7 @@
+     }
+ 
+     public void clearAllBlockEntities() {
++        this.blockEntities.values().forEach(BlockEntity::onChunkUnloaded);
+         this.blockEntities.values().forEach(BlockEntity::setRemoved);
+         this.blockEntities.clear();
+         this.tickersInLevel.values().forEach(ticker -> ticker.rebind(NULL_TICKER));
+@@ -680,6 +_,7 @@
+     }
+ 
+     public void registerAllBlockEntitiesAfterLevelLoad() {
++        this.level.addFreshBlockEntities(this.blockEntities.values());
+         this.blockEntities.values().forEach(blockEntity -> {
+             if (this.level instanceof ServerLevel serverLevel) {
+                 this.addGameEventListener(blockEntity, serverLevel);
+@@ -725,6 +_,19 @@
+         return new LevelChunk.BoundTickingBlockEntity<>(blockEntity, ticker);
+     }
+ 
++    // Neo: Threadsafe lighting system for BlockEntities that change lighting based on dynamic data changing.
++    private final net.neoforged.neoforge.common.world.LevelChunkAuxiliaryLightManager auxLightManager = new net.neoforged.neoforge.common.world.LevelChunkAuxiliaryLightManager(this);
++
++    @Override
++    public net.neoforged.neoforge.common.world.LevelChunkAuxiliaryLightManager getAuxLightManager(ChunkPos pos) {
++        return auxLightManager;
++    }
++
++    @Override
++    public final void syncData(net.neoforged.neoforge.attachment.AttachmentType<?> type) {
++        net.neoforged.neoforge.attachment.AttachmentSync.syncChunkUpdate(this, getAttachmentHolder(), type);
++    }
++
+     private class BoundTickingBlockEntity<T extends BlockEntity> implements TickingBlockEntity {
+         private final T blockEntity;
+         private final BlockEntityTicker<T> ticker;
+@@ -742,6 +_,7 @@
+                 if (LevelChunk.this.isTicking(pos)) {
+                     try {
+                         ProfilerFiller profiler = Profiler.get();
++                        net.neoforged.neoforge.server.timings.TimeTracker.BLOCK_ENTITY_UPDATE.trackStart(blockEntity);
+                         profiler.push(this::getType);
+                         BlockState blockState = LevelChunk.this.getBlockState(pos);
+                         if (this.blockEntity.getType().isValid(blockState)) {
+@@ -763,7 +_,14 @@
+                         CrashReport report = CrashReport.forThrowable(t, "Ticking block entity");
+                         CrashReportCategory category = report.addCategory("Block entity being ticked");
+                         this.blockEntity.fillCrashReportCategory(category);
++                        if (net.neoforged.neoforge.common.config.NeoForgeServerConfig.INSTANCE.removeErroringBlockEntities.get()) {
++                            LOGGER.error("{}", report.getFriendlyReport(net.minecraft.ReportType.CRASH));
++                            blockEntity.setRemoved();
++                            LevelChunk.this.removeBlockEntity(blockEntity.getBlockPos());
++                        } else
+                         throw new ReportedException(report);
++                    } finally {
++                        net.neoforged.neoforge.server.timings.TimeTracker.BLOCK_ENTITY_UPDATE.trackEnd(blockEntity);
+                     }
+                 }
+             }

@@ -1,0 +1,11 @@
+--- a/net/minecraft/commands/arguments/TeamArgument.java
++++ b/net/minecraft/commands/arguments/TeamArgument.java
+@@ -28,7 +_,7 @@
+ 
+     public static PlayerTeam getTeam(CommandContext<CommandSourceStack> context, String name) throws CommandSyntaxException {
+         String id = context.getArgument(name, String.class);
+-        Scoreboard scoreboard = context.getSource().getServer().getScoreboard();
++        Scoreboard scoreboard = context.getSource().getScoreboard();
+         PlayerTeam team = scoreboard.getPlayerTeam(id);
+         if (team == null) {
+             throw ERROR_TEAM_NOT_FOUND.create(id);

@@ -1,0 +1,78 @@
+--- a/net/minecraft/network/chat/contents/TranslatableContents.java
++++ b/net/minecraft/network/chat/contents/TranslatableContents.java
+@@ -76,6 +_,16 @@
+         this.key = key;
+         this.fallback = fallback;
+         this.args = args;
++        // Neo: This is transitively called by some static initializers. To allow using Minecraft classes from tests
++        // without fully initializing FML, we disable the validation if FML is not initialized.
++        var loader = net.neoforged.fml.loading.FMLLoader.getCurrentOrNull();
++        if (loader != null && !loader.isProduction()) {
++            for (Object arg : this.args) {
++                if (!(arg instanceof Component) && !isAllowedPrimitiveArgument(arg)) {
++                    throw new IllegalArgumentException("TranslatableContents' arguments must be either a Component, Number, Boolean, or a String. Was given " + arg + " for " + this.key);
++                }
++            }
++        }
+     }
+ 
+     @Override
+@@ -87,6 +_,13 @@
+         Language currentLanguage = Language.getInstance();
+         if (currentLanguage != this.decomposedWith) {
+             this.decomposedWith = currentLanguage;
++
++            Component langComponent = currentLanguage.getComponent(this.key);
++            if (langComponent != null) {
++                this.decomposedParts = ImmutableList.of(langComponent);
++                return;
++            }
++
+             String format = this.fallback != null ? currentLanguage.getOrDefault(this.key, this.fallback) : currentLanguage.getOrDefault(this.key);
+ 
+             try {
+@@ -165,6 +_,12 @@
+     public <T> Optional<T> visit(FormattedText.StyledContentConsumer<T> output, Style currentStyle) {
+         this.decompose();
+ 
++        if (!net.neoforged.neoforge.common.util.InsertingContents.pushTranslation(this)) {
++            // Reference cycle.
++            return Optional.empty();
++        }
++
++        try {
+         for (FormattedText part : this.decomposedParts) {
+             Optional<T> result = part.visit(output, currentStyle);
+             if (result.isPresent()) {
+@@ -173,12 +_,21 @@
+         }
+ 
+         return Optional.empty();
++        } finally {
++            net.neoforged.neoforge.common.util.InsertingContents.popTranslation();
++        }
+     }
+ 
+     @Override
+     public <T> Optional<T> visit(FormattedText.ContentConsumer<T> output) {
+         this.decompose();
+ 
++        if (!net.neoforged.neoforge.common.util.InsertingContents.pushTranslation(this)) {
++            // Reference cycle.
++            return Optional.empty();
++        }
++
++        try {
+         for (FormattedText part : this.decomposedParts) {
+             Optional<T> result = part.visit(output);
+             if (result.isPresent()) {
+@@ -187,6 +_,9 @@
+         }
+ 
+         return Optional.empty();
++        } finally {
++            net.neoforged.neoforge.common.util.InsertingContents.popTranslation();
++        }
+     }
+ 
+     @Override

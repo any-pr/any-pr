@@ -1,0 +1,12 @@
+--- a/net/minecraft/world/level/block/ChestBlock.java
++++ b/net/minecraft/world/level/block/ChestBlock.java
+@@ -364,7 +_,8 @@
+ 
+     @Override
+     protected BlockState mirror(BlockState state, Mirror mirror) {
+-        return state.rotate(mirror.getRotation(state.getValue(FACING)));
++        BlockState rotated = state.rotate(mirror.getRotation(state.getValue(FACING)));
++        return mirror == Mirror.NONE ? rotated : rotated.setValue(TYPE, rotated.getValue(TYPE).getOpposite());  // Forge: Fixed MC-134110 Structure mirroring breaking apart double chests
+     }
+ 
+     @Override

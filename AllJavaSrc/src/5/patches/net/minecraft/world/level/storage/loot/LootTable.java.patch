@@ -1,0 +1,163 @@
+--- a/net/minecraft/world/level/storage/loot/LootTable.java
++++ b/net/minecraft/world/level/storage/loot/LootTable.java
+@@ -39,12 +_,14 @@
+             i -> i.group(
+                     LootContextParamSets.CODEC.lenientOptionalFieldOf("type", DEFAULT_PARAM_SET).forGetter(t -> t.paramSet),
+                     Identifier.CODEC.optionalFieldOf("random_sequence").forGetter(t -> t.randomSequence),
+-                    LootPool.CODEC.listOf().optionalFieldOf("pools", List.of()).forGetter(t -> t.pools),
+-                    LootItemFunctions.ROOT_CODEC.listOf().optionalFieldOf("functions", List.of()).forGetter(t -> t.functions)
++                    net.neoforged.neoforge.common.CommonHooks.lootPoolsCodec(LootPool::setName).optionalFieldOf("pools", List.of()).forGetter(t -> t.pools),
++                    net.neoforged.neoforge.common.conditions.ConditionalOps.decodeListWithElementConditions(LootItemFunctions.ROOT_CODEC).optionalFieldOf("functions", List.of()).forGetter(t -> t.functions)
+                 )
+                 .apply(i, LootTable::new)
+         )
+     );
++    public static final Codec<Optional<net.neoforged.neoforge.common.conditions.WithConditions<LootTable>>> CONDITIONAL_DIRECT_CODEC =
++            net.neoforged.neoforge.common.conditions.ConditionalOps.createConditionalCodecWithConditions(DIRECT_CODEC);
+     public static final Codec<Holder<LootTable>> CODEC = RegistryFileCodec.create(Registries.LOOT_TABLE, DIRECT_CODEC);
+     public static final LootTable EMPTY = new LootTable(LootContextParamSets.EMPTY, Optional.empty(), List.of(), List.of());
+     private final ContextKeySet paramSet;
+@@ -56,7 +_,7 @@
+     private LootTable(ContextKeySet paramSet, Optional<Identifier> randomSequence, List<LootPool> pools, List<LootItemFunction> functions) {
+         this.paramSet = paramSet;
+         this.randomSequence = randomSequence;
+-        this.pools = pools;
++        this.pools = Lists.newArrayList(pools);
+         this.functions = functions;
+         this.compositeFunction = LootItemFunctions.compose(functions);
+     }
+@@ -79,10 +_,12 @@
+         };
+     }
+ 
++    @Deprecated // Use a non-'Raw' version of 'getRandomItems', so that the Forge Global Loot Modifiers will be applied
+     public void getRandomItemsRaw(LootParams params, Consumer<ItemStack> output) {
+         this.getRandomItemsRaw(new LootContext.Builder(params).create(this.randomSequence), output);
+     }
+ 
++    @Deprecated // Use a non-'Raw' version of 'getRandomItems', so that the Forge Global Loot Modifiers will be applied
+     public void getRandomItemsRaw(LootContext context, Consumer<ItemStack> output) {
+         LootContext.VisitedEntry<?> breadcrumb = LootContext.createVisitedEntry(this);
+         if (context.pushVisitedElement(breadcrumb)) {
+@@ -99,18 +_,15 @@
+     }
+ 
+     public void getRandomItems(LootParams params, long optionalLootTableSeed, Consumer<ItemStack> output) {
+-        this.getRandomItemsRaw(
+-            new LootContext.Builder(params).withOptionalRandomSeed(optionalLootTableSeed).create(this.randomSequence),
+-            createStackSplitter(params.getLevel(), output)
+-        );
++        this.getRandomItems((new LootContext.Builder(params)).withOptionalRandomSeed(optionalLootTableSeed).create(this.randomSequence)).forEach(output);
+     }
+ 
+     public void getRandomItems(LootParams params, Consumer<ItemStack> output) {
+-        this.getRandomItemsRaw(params, createStackSplitter(params.getLevel(), output));
++        this.getRandomItems(params).forEach(output);
+     }
+ 
+     public void getRandomItems(LootContext context, Consumer<ItemStack> output) {
+-        this.getRandomItemsRaw(context, createStackSplitter(context.getLevel(), output));
++        this.getRandomItems(context).forEach(output);
+     }
+ 
+     public ObjectArrayList<ItemStack> getRandomItems(LootParams params, RandomSource randomSource) {
+@@ -127,7 +_,8 @@
+ 
+     private ObjectArrayList<ItemStack> getRandomItems(LootContext context) {
+         ObjectArrayList<ItemStack> result = new ObjectArrayList<>();
+-        this.getRandomItems(context, result::add);
++        this.getRandomItemsRaw(context, createStackSplitter(context.getLevel(), result::add));
++        result = net.neoforged.neoforge.common.CommonHooks.modifyLoot(this.getLootTableId(), result, context);
+         return result;
+     }
+ 
+@@ -214,11 +_,68 @@
+         return new LootTable.Builder();
+     }
+ 
++    // Neo: Implement LootTable freezing to prevent manipulation outside of Neo APIs
++    private boolean isFrozen = false;
++
++    public void freeze() {
++        this.isFrozen = true;
++        this.pools.forEach(LootPool::freeze);
++    }
++
++    public boolean isFrozen() {
++        return this.isFrozen;
++    }
++
++    private void checkFrozen() {
++        if (this.isFrozen())
++            throw new RuntimeException("Attempted to modify LootTable after being finalized!");
++    }
++
++    // Neo: Linking the LootTable to its ID for easier retrieval
++    private Identifier lootTableId;
++
++    public void setLootTableId(final Identifier id) {
++        if (this.lootTableId != null) throw new IllegalStateException("Attempted to rename loot table from '" + this.lootTableId + "' to '" + id + "': this is not supported");
++        this.lootTableId = java.util.Objects.requireNonNull(id);
++    }
++
++    public Identifier getLootTableId() {
++        return this.lootTableId;
++    }
++
++    // Neo: Retrieve LootPools by name
++    @org.jspecify.annotations.Nullable
++    public LootPool getPool(String name) {
++        return pools.stream().filter(e -> name.equals(e.getName())).findFirst().orElse(null);
++    }
++
++    // Neo: Remove LootPools by name
++    @org.jspecify.annotations.Nullable
++    public LootPool removePool(String name) {
++        checkFrozen();
++        for (LootPool pool : this.pools) {
++            if (name.equals(pool.getName())) {
++                this.pools.remove(pool);
++                return pool;
++            }
++        }
++        return null;
++    }
++
++    // Neo: Allow adding new pools to LootTable
++    public void addPool(LootPool pool) {
++        checkFrozen();
++        if (pools.stream().anyMatch(e -> e == pool || e.getName() != null && e.getName().equals(pool.getName())))
++            throw new RuntimeException("Attempted to add a duplicate pool to loot table: " + pool.getName());
++        this.pools.add(pool);
++    }
++
+     public static class Builder implements FunctionUserBuilder<LootTable.Builder> {
+         private final ImmutableList.Builder<LootPool> pools = ImmutableList.builder();
+         private final ImmutableList.Builder<LootItemFunction> functions = ImmutableList.builder();
+         private ContextKeySet paramSet = LootTable.DEFAULT_PARAM_SET;
+         private Optional<Identifier> randomSequence = Optional.empty();
++        private final List<net.neoforged.neoforge.common.conditions.ICondition> conditions = new java.util.ArrayList<>();
+ 
+         public LootTable.Builder withPool(LootPool.Builder pool) {
+             this.pools.add(pool.build());
+@@ -246,6 +_,20 @@
+ 
+         public LootTable build() {
+             return new LootTable(this.paramSet, this.randomSequence, this.pools.build(), this.functions.build());
++        }
++
++        public LootTable.Builder withCondition(net.neoforged.neoforge.common.conditions.ICondition condition) {
++            this.conditions.add(condition);
++            return this;
++        }
++
++        public LootTable.Builder withConditions(List<net.neoforged.neoforge.common.conditions.ICondition> conditions) {
++            this.conditions.addAll(conditions);
++            return this;
++        }
++
++        public List<net.neoforged.neoforge.common.conditions.ICondition> buildConditions() {
++            return List.copyOf(this.conditions);
+         }
+     }
+ }

@@ -1,0 +1,28 @@
+--- a/net/minecraft/world/flag/FeatureFlag.java
++++ b/net/minecraft/world/flag/FeatureFlag.java
+@@ -3,9 +_,25 @@
+ public class FeatureFlag {
+     final FeatureFlagUniverse universe;
+     final long mask;
++    final int extMaskIndex;
++    final boolean modded;
+ 
++    /**
++     * @deprecated Neo: use {@link #FeatureFlag(FeatureFlagUniverse, int, int, boolean)} instead
++     */
++    @Deprecated
+     FeatureFlag(FeatureFlagUniverse universe, int bit) {
++        this(universe, bit, 0, false);
++    }
++
++    FeatureFlag(FeatureFlagUniverse universe, int bit, int offset, boolean modded) {
+         this.universe = universe;
+         this.mask = 1L << bit;
++        this.extMaskIndex = offset - 1;
++        this.modded = modded;
++    }
++
++    public boolean isModded() {
++        return modded;
+     }
+ }

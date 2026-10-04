@@ -1,0 +1,142 @@
+--- a/net/minecraft/world/level/block/FireBlock.java
++++ b/net/minecraft/world/level/block/FireBlock.java
+@@ -115,13 +_,13 @@
+     protected BlockState getStateForPlacement(BlockGetter level, BlockPos pos) {
+         BlockPos below = pos.below();
+         BlockState belowState = level.getBlockState(below);
+-        if (!this.canBurn(belowState) && !belowState.isFaceSturdy(level, below, Direction.UP)) {
++        if (!this.canCatchFire(level, below, Direction.UP) && !belowState.isFaceSturdy(level, below, Direction.UP)) {
+             BlockState result = this.defaultBlockState();
+ 
+             for (Direction direction : Direction.values()) {
+                 BooleanProperty property = PROPERTY_BY_DIRECTION.get(direction);
+                 if (property != null) {
+-                    result = result.setValue(property, this.canBurn(level.getBlockState(pos.relative(direction))));
++                    result = result.setValue(property, Boolean.valueOf(this.canCatchFire(level, pos.relative(direction), direction.getOpposite())));
+                 }
+             }
+ 
+@@ -146,7 +_,7 @@
+             }
+ 
+             BlockState belowState = level.getBlockState(pos.below());
+-            boolean infiniBurn = belowState.is(level.dimensionType().infiniburn());
++            boolean infiniBurn = belowState.isFireSource(level, pos.below(), Direction.UP);
+             int age = state.getValue(AGE);
+             if (!infiniBurn && level.isRaining() && this.isNearRain(level, pos) && random.nextFloat() < 0.2F + age * 0.03F) {
+                 level.removeBlock(pos, false);
+@@ -167,7 +_,7 @@
+                         return;
+                     }
+ 
+-                    if (age == 15 && random.nextInt(4) == 0 && !this.canBurn(level.getBlockState(pos.below()))) {
++                    if (age == 15 && random.nextInt(4) == 0 && !this.canCatchFire(level, pos.below(), Direction.UP)) {
+                         level.removeBlock(pos, false);
+                         return;
+                     }
+@@ -175,12 +_,12 @@
+ 
+                 boolean increasedBurnout = level.environmentAttributes().getValue(EnvironmentAttributes.INCREASED_FIRE_BURNOUT, pos);
+                 int extra = increasedBurnout ? -50 : 0;
+-                this.checkBurnOut(level, pos.east(), 300 + extra, random, age);
+-                this.checkBurnOut(level, pos.west(), 300 + extra, random, age);
+-                this.checkBurnOut(level, pos.below(), 250 + extra, random, age);
+-                this.checkBurnOut(level, pos.above(), 250 + extra, random, age);
+-                this.checkBurnOut(level, pos.north(), 300 + extra, random, age);
+-                this.checkBurnOut(level, pos.south(), 300 + extra, random, age);
++                this.checkBurnOut(level, pos.east(), 300 + extra, random, age, Direction.WEST);
++                this.checkBurnOut(level, pos.west(), 300 + extra, random, age, Direction.EAST);
++                this.checkBurnOut(level, pos.below(), 250 + extra, random, age, Direction.UP);
++                this.checkBurnOut(level, pos.above(), 250 + extra, random, age, Direction.DOWN);
++                this.checkBurnOut(level, pos.north(), 300 + extra, random, age, Direction.SOUTH);
++                this.checkBurnOut(level, pos.south(), 300 + extra, random, age, Direction.NORTH);
+                 BlockPos.MutableBlockPos testPos = new BlockPos.MutableBlockPos();
+ 
+                 for (int xx = -1; xx <= 1; xx++) {
+@@ -221,33 +_,32 @@
+             || level.isRainingAt(testPos.south());
+     }
+ 
++    @Deprecated //Forge: Use IForgeBlockState.getFlammability, Public for default implementation only.
+     public int getBurnOdds(BlockState state) {
+         return state.hasProperty(BlockStateProperties.WATERLOGGED) && state.getValue(BlockStateProperties.WATERLOGGED)
+             ? 0
+             : this.burnOdds.getInt(state.getBlock());
+     }
+ 
++    @Deprecated //Forge: Use IForgeBlockState.getFireSpreadSpeed
+     public int getIgniteOdds(BlockState state) {
+         return state.hasProperty(BlockStateProperties.WATERLOGGED) && state.getValue(BlockStateProperties.WATERLOGGED)
+             ? 0
+             : this.igniteOdds.getInt(state.getBlock());
+     }
+ 
+-    private void checkBurnOut(Level level, BlockPos pos, int chance, RandomSource random, int age) {
+-        int odds = this.getBurnOdds(level.getBlockState(pos));
++    private void checkBurnOut(Level level, BlockPos pos, int chance, RandomSource random, int age, Direction face) {
++        int odds = level.getBlockState(pos).getFlammability(level, pos, face);
+         if (random.nextInt(chance) < odds) {
+             BlockState oldState = level.getBlockState(pos);
++            oldState.onCaughtFire(level, pos, face, null);
++
+             if (random.nextInt(age + 10) < 5 && !level.isRainingAt(pos)) {
+                 int newAge = Math.min(age + random.nextInt(5) / 4, 15);
+                 level.setBlock(pos, this.getStateWithAge(level, pos, newAge), 3);
+             } else {
+                 level.removeBlock(pos, false);
+             }
+-
+-            Block block = oldState.getBlock();
+-            if (block instanceof TntBlock) {
+-                TntBlock.prime(level, pos);
+-            }
+         }
+     }
+ 
+@@ -258,7 +_,7 @@
+ 
+     private boolean isValidFireLocation(BlockGetter level, BlockPos pos) {
+         for (Direction direction : Direction.values()) {
+-            if (this.canBurn(level.getBlockState(pos.relative(direction)))) {
++            if (this.canCatchFire(level, pos.relative(direction), direction.getOpposite())) {
+                 return true;
+             }
+         }
+@@ -275,13 +_,14 @@
+ 
+         for (Direction direction : Direction.values()) {
+             BlockState blockState = level.getBlockState(pos.relative(direction));
+-            odds = Math.max(this.getIgniteOdds(blockState), odds);
++            odds = Math.max(blockState.getFireSpreadSpeed(level, pos.relative(direction), direction.getOpposite()), odds);
+         }
+ 
+         return odds;
+     }
+ 
+     @Override
++    @Deprecated //Forge: Use canCatchFire with more context
+     protected boolean canBurn(BlockState state) {
+         return this.getIgniteOdds(state) > 0;
+     }
+@@ -302,8 +_,21 @@
+     }
+ 
+     private void setFlammable(Block block, int igniteOdds, int burnOdds) {
++        if (block == Blocks.AIR) throw new IllegalArgumentException("Tried to set air on fire... This is bad.");
+         this.igniteOdds.put(block, igniteOdds);
+         this.burnOdds.put(block, burnOdds);
++    }
++
++    /**
++     * Side sensitive version that calls the block function.
++     *
++     * @param world The current world
++     * @param pos Block position
++     * @param face The side the fire is coming from
++     * @return True if the face can catch fire.
++     */
++    public boolean canCatchFire(BlockGetter world, BlockPos pos, Direction face) {
++        return world.getBlockState(pos).isFlammable(world, pos, face);
+     }
+ 
+     public static void bootStrap() {

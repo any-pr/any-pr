@@ -1,0 +1,15 @@
+--- a/net/minecraft/world/entity/animal/pig/Pig.java
++++ b/net/minecraft/world/entity/animal/pig/Pig.java
+@@ -200,10 +_,11 @@
+ 
+     @Override
+     public void thunderHit(ServerLevel level, LightningBolt lightningBolt) {
+-        if (level.getDifficulty() != Difficulty.PEACEFUL) {
++        if (level.getDifficulty() != Difficulty.PEACEFUL && net.neoforged.neoforge.event.EventHooks.canLivingConvert(this, EntityTypes.ZOMBIFIED_PIGLIN, (timer) -> {})) {
+             ZombifiedPiglin zombifiedPiglin = this.convertTo(EntityTypes.ZOMBIFIED_PIGLIN, ConversionParams.single(this, false, true), zp -> {
+                 zp.populateDefaultEquipmentSlots(this.getRandom(), level.getCurrentDifficultyAt(this.blockPosition()));
+                 zp.setPersistenceRequired();
++                net.neoforged.neoforge.event.EventHooks.onLivingConvert(this, zp);
+             });
+             if (zombifiedPiglin == null) {
+                 super.thunderHit(level, lightningBolt);

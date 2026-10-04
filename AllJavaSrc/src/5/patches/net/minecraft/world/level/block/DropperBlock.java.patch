@@ -1,0 +1,22 @@
+--- a/net/minecraft/world/level/block/DropperBlock.java
++++ b/net/minecraft/world/level/block/DropperBlock.java
+@@ -58,12 +_,16 @@
+                 ItemStack itemStack = blockEntity.getItem(slot);
+                 if (!itemStack.isEmpty()) {
+                     Direction direction = level.getBlockState(pos).getValue(FACING);
+-                    Container into = HopperBlockEntity.getContainerAt(level, pos.relative(direction));
++                    var into = HopperBlockEntity.getContainerOrHandlerAt(level, pos.relative(direction), direction.getOpposite());
+                     ItemStack remaining;
+-                    if (into == null) {
++                    if (into.isEmpty()) {
+                         remaining = DISPENSE_BEHAVIOUR.dispense(source, itemStack);
+                     } else {
+-                        remaining = HopperBlockEntity.addItem(blockEntity, into, itemStack.copyWithCount(1), direction.getOpposite());
++                        if (into.container() != null) {
++                            remaining = HopperBlockEntity.addItem(blockEntity, into.container(), itemStack.copyWithCount(1), direction.getOpposite());
++                        } else {
++                            remaining = net.neoforged.neoforge.transfer.item.ItemUtil.insertItemReturnRemaining(into.itemHandler(), itemStack.copyWithCount(1), false, null);
++                        }
+                         if (remaining.isEmpty()) {
+                             remaining = itemStack.copy();
+                             remaining.shrink(1);

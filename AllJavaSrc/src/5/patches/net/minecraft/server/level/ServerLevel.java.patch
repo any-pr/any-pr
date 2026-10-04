@@ -1,0 +1,340 @@
+--- a/net/minecraft/server/level/ServerLevel.java
++++ b/net/minecraft/server/level/ServerLevel.java
+@@ -216,11 +_,17 @@
+     private boolean handlingTick;
+     private final List<CustomSpawner> customSpawners;
+     private @Nullable EnderDragonFight dragonFight;
+-    private final Int2ObjectMap<EnderDragonPart> dragonParts = new Int2ObjectOpenHashMap<>();
++    final Int2ObjectMap<net.neoforged.neoforge.entity.PartEntity<?>> dragonParts = new Int2ObjectOpenHashMap<>();
+     private final StructureManager structureManager;
+     private final StructureCheck structureCheck;
+     private final boolean tickTime;
+     private final LevelDebugSynchronizers debugSynchronizers = new LevelDebugSynchronizers(this);
++    // NeoForge: If present, this level uses its own seed instead of the server's global seed
++    private final java.util.OptionalLong seedOverride;
++    /// {@return the override for the seed, specified in the [LevelStem] this level was constructed from}, if any
++    public java.util.OptionalLong getSeedOverride() {
++        return this.seedOverride;
++    }
+ 
+     public ServerLevel(
+         MinecraftServer server,
+@@ -234,10 +_,12 @@
+         List<CustomSpawner> customSpawners,
+         boolean tickTime
+     ) {
++        // NeoForge: set seed override asap because things like the chunk cache constructor check level.getSeed()
++        this.seedOverride = levelStem.seedOverride();
++        biomeZoomSeed = net.minecraft.util.ExtraCodecs.fromOptionalLong.apply(levelStem.seedOverride()).map(net.minecraft.world.level.biome.BiomeManager::obfuscateSeed).orElse(biomeZoomSeed);
+         super(levelData, dimension, server.registryAccess(), levelStem.type(), false, isDebug, biomeZoomSeed, server.getMaxChainedNeighborUpdates());
+         this.tickTime = tickTime;
+         this.server = server;
+-        this.customSpawners = customSpawners;
+         this.serverLevelData = levelData;
+         ChunkGenerator generator = levelStem.generator();
+         boolean syncWrites = server.forceSynchronousWrites();
+@@ -280,7 +_,7 @@
+ 
+         WorldGenSettings worldGenSettings = server.getWorldGenSettings();
+         WorldOptions options = worldGenSettings.options();
+-        long seed = options.seed();
++        long seed = seedOverride.orElse(options.seed()); // NeoForge: use the seed override here too
+         this.structureCheck = new StructureCheck(
+             this.chunkSource.chunkScanner(),
+             this.registryAccess(),
+@@ -304,6 +_,11 @@
+         this.waypointManager = new ServerWaypointManager();
+         this.environmentAttributes = EnvironmentAttributeSystem.builder().addDefaultLayers(this).build();
+         this.updateSkyBrightness();
++
++        net.neoforged.neoforge.attachment.LevelAttachmentsSavedData.init(this);
++        // Neo: Move the initialization of customSpawners to the end of costructor
++        // Providing a fully initialized ServerLevel instance for the ServerLevelEvent.CustomSpawners
++        this.customSpawners = net.neoforged.neoforge.event.EventHooks.getCustomSpawners(this, customSpawners);
+     }
+ 
+     @Override
+@@ -367,7 +_,11 @@
+         if (this.sleepStatus.areEnoughSleeping(percentage) && this.sleepStatus.areEnoughDeepSleeping(percentage, this.players)) {
+             Optional<Holder<WorldClock>> defaultClock = this.dimensionType().defaultClock();
+             if (this.getGameRules().get(GameRules.ADVANCE_TIME) && defaultClock.isPresent()) {
+-                this.server.clockManager().moveToTimeMarker(defaultClock.get(), ClockTimeMarkers.WAKE_UP_FROM_SLEEP);
++                // Neo: Allow mods to control how the clock is adjusted after sleep
++                var adjustment = net.neoforged.neoforge.event.EventHooks.onSleepFinished(this, new net.neoforged.neoforge.common.util.ClockAdjustment.Marker(ClockTimeMarkers.WAKE_UP_FROM_SLEEP));
++                if (adjustment != null) {
++                    adjustment.apply(this.server.clockManager(), defaultClock.get());
++                }
+             }
+ 
+             this.wakeUpAllPlayers();
+@@ -405,7 +_,7 @@
+ 
+         this.handlingTick = false;
+         profiler.pop();
+-        boolean isActive = this.chunkSource.hasActiveTickets();
++        boolean isActive = this.chunkSource.hasActiveTickets() || net.neoforged.neoforge.common.world.chunk.ForcedChunkManager.hasForcedChunks(this);
+         if (isActive) {
+             this.resetEmptyTime();
+         }
+@@ -442,7 +_,9 @@
+                                     }
+ 
+                                     profiler.push("tick");
+-                                    this.guardEntityTick(this::tickNonPassenger, entity);
++                                    if (!entity.isRemoved() && !(entity instanceof net.neoforged.neoforge.entity.PartEntity)) {
++                                        this.guardEntityTick(this::tickNonPassenger, entity);
++                                    }
+                                     profiler.pop();
+                                 }
+                             }
+@@ -581,6 +_,7 @@
+         BlockPos topPos = this.getHeightmapPos(Heightmap.Types.MOTION_BLOCKING, pos);
+         BlockPos belowPos = topPos.below();
+         Biome biome = this.getBiome(topPos).value();
++        if (this.isAreaLoaded(belowPos, 1)) // Forge: check area to avoid loading neighbors in unloaded chunks
+         if (biome.shouldFreeze(this, belowPos)) {
+             this.setBlockAndUpdate(belowPos, Blocks.ICE.defaultBlockState());
+         }
+@@ -783,15 +_,19 @@
+                 .broadcastAll(new ClientboundGameEventPacket(ClientboundGameEventPacket.THUNDER_LEVEL_CHANGE, this.thunderLevel), this.dimension());
+         }
+ 
++        /* The function in use here has been replaced in order to only send the weather info to players in the correct dimension,
++         * rather than to all players on the server. This is what causes the client-side rain, as the
++         * client believes that it has started raining locally, rather than in another dimension.
++         */
+         if (wasRaining != this.isRaining()) {
+             if (wasRaining) {
+-                this.server.getPlayerList().broadcastAll(new ClientboundGameEventPacket(ClientboundGameEventPacket.STOP_RAINING, 0.0F));
++                this.server.getPlayerList().broadcastAll(new ClientboundGameEventPacket(ClientboundGameEventPacket.STOP_RAINING, 0.0F), this.dimension());
+             } else {
+-                this.server.getPlayerList().broadcastAll(new ClientboundGameEventPacket(ClientboundGameEventPacket.START_RAINING, 0.0F));
++                this.server.getPlayerList().broadcastAll(new ClientboundGameEventPacket(ClientboundGameEventPacket.START_RAINING, 0.0F), this.dimension());
+             }
+ 
+-            this.server.getPlayerList().broadcastAll(new ClientboundGameEventPacket(ClientboundGameEventPacket.RAIN_LEVEL_CHANGE, this.rainLevel));
+-            this.server.getPlayerList().broadcastAll(new ClientboundGameEventPacket(ClientboundGameEventPacket.THUNDER_LEVEL_CHANGE, this.thunderLevel));
++            this.server.getPlayerList().broadcastAll(new ClientboundGameEventPacket(ClientboundGameEventPacket.RAIN_LEVEL_CHANGE, this.rainLevel), this.dimension());
++            this.server.getPlayerList().broadcastAll(new ClientboundGameEventPacket(ClientboundGameEventPacket.THUNDER_LEVEL_CHANGE, this.thunderLevel), this.dimension());
+         }
+     }
+ 
+@@ -829,7 +_,11 @@
+         entity.tickCount++;
+         profiler.push(entity.typeHolder()::getRegisteredName);
+         profiler.incrementCounter("tickNonPassenger");
+-        entity.tick();
++        // Neo: Permit cancellation of Entity#tick via EntityTickEvent.Pre
++        if (!net.neoforged.neoforge.event.EventHooks.fireEntityTickPre(entity).isCanceled()) {
++            entity.tick();
++            net.neoforged.neoforge.event.EventHooks.fireEntityTickPost(entity);
++        }
+         profiler.pop();
+ 
+         for (Entity passenger : entity.getPassengers()) {
+@@ -892,6 +_,7 @@
+             } else {
+                 this.entityManager.autoSave();
+             }
++            net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.level.LevelEvent.Save(this));
+         }
+     }
+ 
+@@ -981,6 +_,7 @@
+     }
+ 
+     private void addPlayer(ServerPlayer player) {
++        if (net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.entity.EntityJoinLevelEvent(player, this)).isCanceled()) return;
+         Entity existing = this.getEntity(player.getUUID());
+         if (existing != null) {
+             LOGGER.warn("Force-added player with duplicate UUID {}", player.getUUID());
+@@ -988,7 +_,8 @@
+             this.removePlayerImmediately((ServerPlayer)existing, Entity.RemovalReason.DISCARDED);
+         }
+ 
+-        this.entityManager.addNewEntity(player);
++        this.entityManager.addNewEntityWithoutEvent(player);
++        player.onAddedToLevel();
+     }
+ 
+     private boolean addEntity(Entity entity) {
+@@ -996,7 +_,12 @@
+             LOGGER.warn("Tried to add entity {} but it was marked as removed already", entity.typeHolder().getRegisteredName());
+             return false;
+         } else {
+-            return this.entityManager.addNewEntity(entity);
++            if (this.entityManager.addNewEntity(entity)) {
++                entity.onAddedToLevel();
++                return true;
++            } else {
++                return false;
++            }
+         }
+     }
+ 
+@@ -1037,6 +_,12 @@
+     public void playSeededSound(
+         @Nullable Entity except, double x, double y, double z, Holder<SoundEvent> sound, SoundSource source, float volume, float pitch, long seed
+     ) {
++        net.neoforged.neoforge.event.PlayLevelSoundEvent.AtPosition event = net.neoforged.neoforge.event.EventHooks.onPlaySoundAtPosition(this, x, y, z, sound, source, volume, pitch);
++        if (event.isCanceled() || event.getSound() == null) return;
++        sound = event.getSound();
++        source = event.getSource();
++        volume = event.getNewVolume();
++        pitch = event.getNewPitch();
+         this.server
+             .getPlayerList()
+             .broadcast(
+@@ -1054,6 +_,12 @@
+     public void playSeededSound(
+         @Nullable Entity except, Entity sourceEntity, Holder<SoundEvent> sound, SoundSource source, float volume, float pitch, long seed
+     ) {
++        net.neoforged.neoforge.event.PlayLevelSoundEvent.AtEntity event = net.neoforged.neoforge.event.EventHooks.onPlaySoundAtEntity(sourceEntity, sound, source, volume, pitch);
++        if (event.isCanceled() || event.getSound() == null) return;
++        sound = event.getSound();
++        source = event.getSource();
++        volume = event.getNewVolume();
++        pitch = event.getNewPitch();
+         this.server
+             .getPlayerList()
+             .broadcast(
+@@ -1112,6 +_,7 @@
+ 
+     @Override
+     public void gameEvent(Holder<GameEvent> gameEvent, Vec3 position, GameEvent.Context context) {
++        if (!net.neoforged.neoforge.common.CommonHooks.onVanillaGameEvent(this, gameEvent, position, context)) return;
+         this.gameEventDispatcher.post(gameEvent, position, context);
+     }
+ 
+@@ -1150,6 +_,7 @@
+ 
+     @Override
+     public void updateNeighborsAt(BlockPos pos, Block sourceBlock) {
++        net.neoforged.neoforge.event.EventHooks.onNeighborNotify(this, pos, this.getBlockState(pos), java.util.EnumSet.allOf(Direction.class), false).isCanceled();
+         this.updateNeighborsAt(pos, sourceBlock, ExperimentalRedstoneUtils.initialOrientation(this, null, null));
+     }
+ 
+@@ -1160,6 +_,10 @@
+ 
+     @Override
+     public void updateNeighborsAtExceptFromFacing(BlockPos pos, Block blockObject, Direction skipDirection, @Nullable Orientation orientation) {
++        java.util.EnumSet<Direction> directions = java.util.EnumSet.allOf(Direction.class);
++        directions.remove(skipDirection);
++        if (net.neoforged.neoforge.event.EventHooks.onNeighborNotify(this, pos, this.getBlockState(pos), directions, false).isCanceled())
++            return;
+         this.neighborUpdater.updateNeighborsAtExceptFromFacing(pos, blockObject, skipDirection, orientation);
+     }
+ 
+@@ -1206,7 +_,7 @@
+         Explosion.BlockInteraction blockInteraction = switch (interactionType) {
+             case NONE -> Explosion.BlockInteraction.KEEP;
+             case BLOCK -> this.getDestroyType(GameRules.BLOCK_EXPLOSION_DROP_DECAY);
+-            case MOB -> this.getGameRules().get(GameRules.MOB_GRIEFING)
++            case MOB -> net.neoforged.neoforge.event.EventHooks.canEntityGrief(this, source)
+                 ? this.getDestroyType(GameRules.MOB_EXPLOSION_DROP_DECAY)
+                 : Explosion.BlockInteraction.KEEP;
+             case TNT -> this.getDestroyType(GameRules.TNT_EXPLOSION_DROP_DECAY);
+@@ -1214,6 +_,7 @@
+         };
+         Vec3 center = new Vec3(x, y, z);
+         ServerExplosion explosion = new ServerExplosion(this, source, damageSource, damageCalculator, center, r, fire, blockInteraction);
++        if (net.neoforged.neoforge.event.EventHooks.onExplosionStart(this, explosion)) return;
+         int blockCount = explosion.explode();
+         ParticleOptions explosionParticle = explosion.isSmall() ? smallExplosionParticles : largeExplosionParticles;
+ 
+@@ -1391,7 +_,7 @@
+     }
+ 
+     @Override
+-    public Collection<EnderDragonPart> dragonParts() {
++    public Collection<net.neoforged.neoforge.entity.PartEntity<?>> dragonParts() {
+         return this.dragonParts.values();
+     }
+ 
+@@ -1648,7 +_,8 @@
+ 
+     @Override
+     public long getSeed() {
+-        return this.server.getWorldGenSettings().options().seed();
++        // NeoForge: use seed override if present, otherwise default to vanilla global seed
++        return this.getSeedOverride().orElseGet(() -> this.server.getWorldGenSettings().options().seed());
+     }
+ 
+     public @Nullable EnderDragonFight getDragonFight() {
+@@ -1907,8 +_,8 @@
+                 ServerLevel.this.navigatingMobs.add(mob);
+             }
+ 
+-            if (entity instanceof EnderDragon dragon) {
+-                for (EnderDragonPart subEntity : dragon.getSubEntities()) {
++            if (entity.isMultipartEntity()) {
++                for(net.neoforged.neoforge.entity.PartEntity<?> subEntity : entity.getParts()) {
+                     ServerLevel.this.dragonParts.put(subEntity.getId(), subEntity);
+                 }
+             }
+@@ -1928,25 +_,62 @@
+                 if (ServerLevel.this.isUpdatingNavigations) {
+                     String message = "onTrackingStart called during navigation iteration";
+                     Util.logAndPauseIfInIde(
+-                        "onTrackingStart called during navigation iteration", new IllegalStateException("onTrackingStart called during navigation iteration")
++                              "onTrackingStart called during navigation iteration", new IllegalStateException("onTrackingStart called during navigation iteration")
+                     );
+                 }
+ 
+                 ServerLevel.this.navigatingMobs.remove(mob);
+             }
+ 
+-            if (entity instanceof EnderDragon dragon) {
+-                for (EnderDragonPart subEntity : dragon.getSubEntities()) {
++            if (entity.isMultipartEntity()) {
++                for(net.neoforged.neoforge.entity.PartEntity<?> subEntity : entity.getParts()) {
+                     ServerLevel.this.dragonParts.remove(subEntity.getId());
+                 }
+             }
+ 
+             entity.updateDynamicGameEventListener(DynamicGameEventListener::remove);
+             ServerLevel.this.debugSynchronizers.dropEntity(entity);
++
++            entity.onRemovedFromLevel();
++            net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.entity.EntityLeaveLevelEvent(entity, ServerLevel.this));
+         }
+ 
+         public void onSectionChange(Entity entity) {
+             entity.updateDynamicGameEventListener(DynamicGameEventListener::move);
+         }
++    }
++
++    @Override
++    public final void syncData(net.neoforged.neoforge.attachment.AttachmentType<?> type) {
++        net.neoforged.neoforge.attachment.AttachmentSync.syncLevelUpdate(this, type);
++    }
++
++    private final net.neoforged.neoforge.capabilities.CapabilityListenerHolder capListenerHolder = new net.neoforged.neoforge.capabilities.CapabilityListenerHolder();
++
++    @Override
++    public void invalidateCapabilities(BlockPos pos) {
++        capListenerHolder.invalidatePos(pos);
++    }
++
++    @Override
++    public void invalidateCapabilities(ChunkPos pos) {
++        capListenerHolder.invalidateChunk(pos);
++    }
++
++    /**
++     * Register a listener for capability invalidation.
++     * @see net.neoforged.neoforge.capabilities.ICapabilityInvalidationListener
++     */
++    public void registerCapabilityListener(BlockPos pos, net.neoforged.neoforge.capabilities.ICapabilityInvalidationListener listener) {
++        capListenerHolder.addListener(pos, listener);
++    }
++
++    /**
++     * Internal method, used to clean capability listeners that are not referenced.
++     * Do not call.
++     */
++    @org.jetbrains.annotations.ApiStatus.Internal
++    public void cleanCapabilityListenerReferences() {
++        capListenerHolder.clean();
+     }
+ }

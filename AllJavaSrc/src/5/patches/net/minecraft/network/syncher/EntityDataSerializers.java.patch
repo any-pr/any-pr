@@ -1,0 +1,33 @@
+--- a/net/minecraft/network/syncher/EntityDataSerializers.java
++++ b/net/minecraft/network/syncher/EntityDataSerializers.java
+@@ -145,16 +_,27 @@
+     public static final EntityDataSerializer<ResolvableProfile> RESOLVABLE_PROFILE = EntityDataSerializer.forValueType(ResolvableProfile.STREAM_CODEC);
+     public static final EntityDataSerializer<HumanoidArm> HUMANOID_ARM = EntityDataSerializer.forValueType(HumanoidArm.STREAM_CODEC);
+ 
++    private static final org.slf4j.Logger LOGGER = com.mojang.logging.LogUtils.getLogger();
++    private static final StackWalker STACK_WALKER = StackWalker.getInstance(StackWalker.Option.RETAIN_CLASS_REFERENCE);
++    /**
++     * @deprecated NeoForge: Use {@link net.neoforged.neoforge.registries.NeoForgeRegistries#ENTITY_DATA_SERIALIZERS} instead
++     */
++    @Deprecated
+     public static void registerSerializer(EntityDataSerializer<?> serializer) {
+-        SERIALIZERS.add(serializer);
++        if (!STACK_WALKER.getCallerClass().equals(EntityDataSerializers.class)) {
++            LOGGER.error("Modded EntityDataSerializers must be registered to NeoForgeRegistries.ENTITY_DATA_SERIALIZERS instead to prevent ID mismatches between client and server!");
++            throw new UnsupportedOperationException("Modded EntityDataSerializers must be registered to NeoForgeRegistries.ENTITY_DATA_SERIALIZERS instead to prevent ID mismatches between client and server!");
++        }
++        if (SERIALIZERS.add(serializer) >= net.neoforged.neoforge.common.CommonHooks.VANILLA_SERIALIZER_LIMIT)
++            throw new RuntimeException("Vanilla EntityDataSerializer ID limit exceeded");
+     }
+ 
+     public static @Nullable EntityDataSerializer<?> getSerializer(int id) {
+-        return SERIALIZERS.byId(id);
++        return net.neoforged.neoforge.common.CommonHooks.getSerializer(id, SERIALIZERS);
+     }
+ 
+     public static int getSerializedId(EntityDataSerializer<?> serializer) {
+-        return SERIALIZERS.getId(serializer);
++        return net.neoforged.neoforge.common.CommonHooks.getSerializerId(serializer, SERIALIZERS);
+     }
+ 
+     private EntityDataSerializers() {
