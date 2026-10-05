@@ -86,6 +86,19 @@ fn cli_json_and_exit_codes() {
 }
 
 #[test]
+fn json_mode_exit_code_tracks_reachability() {
+    let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    // GUIDE.md: exit code is 0 for a completed mission, 2 for an
+    // unreachable one. --json selects an output format; it does not
+    // change the outcome of the mission.
+    let (out, code) = run(&args(&["--json", "--jump", "0.001"])).unwrap();
+    assert_eq!(code, 2, "unreachable mission must exit 2 in --json mode");
+    assert!(out.contains("\"route\": null"));
+    let (_, code) = run(&args(&["--json", "--jump", "150"])).unwrap();
+    assert_eq!(code, 0);
+}
+
+#[test]
 fn json_pretty_keeps_structure_chars_inside_strings() {
     let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     // A seed may contain any character, including JSON structure

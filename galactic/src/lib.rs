@@ -246,7 +246,9 @@ pub fn run(args: &[String]) -> Result<(String, i32), String> {
     }
     let data = mission(&seed, stars, &origin, destination.as_deref(), jump)?;
     if as_json {
-        return Ok((json::pretty(&data), 0));
+        // The report format does not change the mission outcome: an
+        // unreachable mission exits 2 whether or not --json was given.
+        return Ok((json::pretty(&data), if data.route.is_some() { 0 } else { 2 }));
     }
     let path: Vec<String> = data.route.as_ref().map(|r| r.path.clone()).unwrap_or_default();
     let mut out = String::from("ANY-PR // GALACTIC MISSION CONTROL\n");
