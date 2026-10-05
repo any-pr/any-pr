@@ -4,7 +4,7 @@ import requests
 
 url = "https://maas-api.unisound.com/v1/systemone"
 
-API_KEY = os.environ.get("UNISOUND_API_KEY", "sk-fsr2wp5yxqvh6aegacug0c8h3midigrqvof7sp1wenx9xx53")
+API_KEY = os.environ.get("UNISOUND_API_KEY", "你可以从unisound平台获取key")
 
 headers = {
     "Authorization": f"Bearer {API_KEY}",
