@@ -1,0 +1,5 @@
+[package]
+name = "galactic"
+version = "1.0.0"
+edition = "2021"
+description = "Zero-dependency deterministic Galactic Mission Control"
