@@ -86,6 +86,33 @@ fn cli_json_and_exit_codes() {
 }
 
 #[test]
+fn json_pretty_keeps_structure_chars_inside_strings() {
+    let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    // A seed may contain any character, including JSON structure
+    // characters. They are legal inside a string literal and must not
+    // be treated as structure by the pretty-printer.
+    let seed = "a,b:c{d}e[f]g";
+    let (out, _) = run(&args(&["--json", "--seed", seed, "--jump", "150"])).unwrap();
+    assert!(out.lines().any(|l| l == format!("  \"seed\": \"{}\",", seed)));
+    // Braces must stay balanced across the whole document.
+    let opens = out.chars().filter(|c| *c == '{').count();
+    let closes = out.chars().filter(|c| *c == '}').count();
+    assert_eq!(opens, closes);
+}
+
+#[test]
+fn json_pretty_survives_unbalanced_seed() {
+    let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    // A closing brace inside a string used to drive the indent depth
+    // below zero, panicking in debug builds and allocating wildly in
+    // release builds.
+    for seed in ["}", "]", "}{", "\"quote\"", "\\"] {
+        let (out, _) = run(&args(&["--json", "--seed", seed, "--jump", "150"])).unwrap();
+        assert!(out.contains("\"seed\":"));
+    }
+}
+
+#[test]
 fn cli_invalid_input() {
     let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     assert!(run(&args(&["--stars", "1"])).is_err());
