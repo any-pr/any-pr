@@ -51,3 +51,45 @@ pub fn sha256_hex(data: &[u8]) -> String {
     }
     h.iter().map(|x| format!("{:08x}", x)).collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::sha256_hex;
+
+    /// FIPS 180-4 published vectors. The crate had no test asserting
+    /// this implementation actually computes SHA-256 -- only that the
+    /// fingerprint is 64 hex characters long and stable between runs.
+    #[test]
+    fn known_vectors() {
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(
+            sha256_hex(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
+            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+        );
+    }
+
+    /// Padding is the easiest part to get wrong: the 64-bit length field
+    /// must begin exactly at offset 56 of the final block, so lengths
+    /// around 56 and 120 force a second block.
+    #[test]
+    fn padding_boundaries() {
+        let cases: [(usize, &str); 6] = [
+            (55, "9f4390f8d30c2dd92ec9f095b65e2b9ae9b0a925a5258e241c9f1e910f734318"),
+            (56, "b35439a4ac6f0948b6d6f9e3c6af0f5f590ce20f1bde7090ef7970686ec6738a"),
+            (57, "f13b2d724659eb3bf47f2dd6af1accc87b81f09f59f2b75e5c0bed6589dfe8c6"),
+            (64, "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb"),
+            (119, "31eba51c313a5c08226adf18d4a359cfdfd8d2e816b13f4af952f7ea6584dcfb"),
+            (120, "2f3d335432c70b580af0e8e1b3674a7c020d683aa5f73aaaedfdc55af904c21c"),
+        ];
+        for (len, want) in cases {
+            assert_eq!(sha256_hex(&vec![b'a'; len]), want, "length {}", len);
+        }
+    }
+}
