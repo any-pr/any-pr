@@ -23,7 +23,12 @@ pub fn sha256_hex(data: &[u8]) -> String {
         msg.push(0);
     }
     msg.extend_from_slice(&bitlen.to_be_bytes());
-    for chunk in msg.chunks_exact(64) {
+    // Padding above guarantees a whole number of 512-bit blocks, so
+    // view the buffer as full blocks rather than iterating a chunk
+    // adapter that has to consider a remainder.
+    let (blocks, remainder) = msg.as_chunks::<64>();
+    debug_assert!(remainder.is_empty(), "padding left a partial block");
+    for chunk in blocks {
         let mut w = [0u32; 64];
         for (i, word) in w.iter_mut().take(16).enumerate() {
             *word = u32::from_be_bytes([chunk[4 * i], chunk[4 * i + 1], chunk[4 * i + 2], chunk[4 * i + 3]]);
@@ -80,13 +85,14 @@ mod tests {
     /// around 56 and 120 force a second block.
     #[test]
     fn padding_boundaries() {
-        let cases: [(usize, &str); 6] = [
-            (55, "9f4390f8d30c2dd92ec9f095b65e2b9ae9b0a925a5258e241c9f1e910f734318"),
-            (56, "b35439a4ac6f0948b6d6f9e3c6af0f5f590ce20f1bde7090ef7970686ec6738a"),
-            (57, "f13b2d724659eb3bf47f2dd6af1accc87b81f09f59f2b75e5c0bed6589dfe8c6"),
-            (64, "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb"),
-            (119, "31eba51c313a5c08226adf18d4a359cfdfd8d2e816b13f4af952f7ea6584dcfb"),
-            (120, "2f3d335432c70b580af0e8e1b3674a7c020d683aa5f73aaaedfdc55af904c21c"),
+        let a55 = "9f4390f8d30c2dd92ec9f095b65e2b9ae9b0a925a5258e241c9f1e910f734318";
+        let a56 = "b35439a4ac6f0948b6d6f9e3c6af0f5f590ce20f1bde7090ef7970686ec6738a";
+        let a57 = "f13b2d724659eb3bf47f2dd6af1accc87b81f09f59f2b75e5c0bed6589dfe8c6";
+        let a64 = "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb";
+        let a119 = "31eba51c313a5c08226adf18d4a359cfdfd8d2e816b13f4af952f7ea6584dcfb";
+        let a120 = "2f3d335432c70b580af0e8e1b3674a7c020d683aa5f73aaaedfdc55af904c21c";
+        let cases = [
+            (55, a55), (56, a56), (57, a57), (64, a64), (119, a119), (120, a120),
         ];
         for (len, want) in cases {
             assert_eq!(sha256_hex(&vec![b'a'; len]), want, "length {}", len);
