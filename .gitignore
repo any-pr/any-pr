@@ -1,1 +1,61 @@
-/target
+# ===== 构建产物 / 发布包 / 二进制 =====
+*.jar
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.rar
+*.war
+*.ear
+*.class
+*.apk
+*.ap_
+*.dex
+*.aar
+*.so
+*.dll
+*.dylib
+*.exe
+
+# 保留 Gradle Wrapper
+!gradle/wrapper/gradle-wrapper.jar
+
+# ===== 构建输出目录 =====
+target/
+/target/
+build/
+/build/
+out/
+/out/
+dist/
+/dist/
+bin/
+/bin/
+obj/
+/obj/
+classes/
+
+# ===== 缓存 / 临时文件 =====
+.cache/
+.gradle/
+.idea/
+.vscode/
+*.iml
+*.log
+*.tmp
+*.temp
+*.swp
+*~
+
+# ===== 系统文件 =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== 本次 PR 中出现的具体文件 =====
+/FakePlayerPlus-*.jar
+/LSPosed-*-release.zip
+/VillagerTradeReset-*.zip
+/bili_live_monitor.zip
+/mainline-turnup-*.zip
