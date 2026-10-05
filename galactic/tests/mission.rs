@@ -99,6 +99,26 @@ fn json_mode_exit_code_tracks_reachability() {
 }
 
 #[test]
+fn json_escapes_match_python_dumps() {
+    let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    // json.rs documents that it matches json.dumps. Python emits the
+    // short escape for backspace, tab, newline, form feed and carriage
+    // return, and \u00xx for every other control character.
+    let seed = "a\tb\rc\u{8}d\u{c}e";
+    let (out, _) = run(&args(&["--json", "--seed", seed, "--jump", "150"])).unwrap();
+    assert!(
+        out.contains("a\\tb\\rc\\bd\\fe"),
+        "control characters must use the short escapes: {}",
+        out.lines().find(|l| l.contains("seed")).unwrap_or("")
+    );
+    assert!(!out.contains("\\u0009"));
+
+    // A control character with no short form keeps \u00xx.
+    let (out, _) = run(&args(&["--json", "--seed", "\u{1}", "--jump", "150"])).unwrap();
+    assert!(out.contains("\\u0001"));
+}
+
+#[test]
 fn json_pretty_keeps_structure_chars_inside_strings() {
     let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     // A seed may contain any character, including JSON structure

@@ -10,7 +10,13 @@ pub fn esc(s: &str) -> String {
         match ch {
             '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
+            // json.dumps emits the short form for these five and
+            // \u00xx for every other control character.
             '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{8}' => out.push_str("\\b"),
+            '\u{c}' => out.push_str("\\f"),
             c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
             c => out.push(c),
         }
