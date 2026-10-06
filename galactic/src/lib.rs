@@ -218,7 +218,30 @@ pub fn mission(
 /// Runs the CLI against `args` (excluding argv[0]) and returns the
 /// output text plus the intended exit code. `Err` means invalid input
 /// (exit code 2 after printing the message to stderr).
+const USAGE: &str = "\
+ANY-PR // GALACTIC MISSION CONTROL
+
+Usage: galactic [options]
+
+Options:
+  --seed <text>          galaxy seed (default: any-pr)
+  --stars <n>            star count, 2-200 (default: 24)
+  --origin <name>        route origin (default: S000)
+  --destination <name>   route destination (default: the last star)
+  --jump <distance>      maximum distance per hop (default: 30)
+  --json                 emit the full report as JSON
+  -h, --help             print this message
+
+Exit status is 0 for a completed mission, 2 for an unreachable one or
+for invalid arguments.";
+
 pub fn run(args: &[String]) -> Result<(String, i32), String> {
+    // --help answers before anything is validated, so a user who asks
+    // for help gets it even alongside arguments that would otherwise
+    // be rejected.
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        return Ok((USAGE.to_owned(), 0));
+    }
     let mut seed = "any-pr".to_owned();
     let mut stars = 24usize;
     let mut origin = "S000".to_owned();

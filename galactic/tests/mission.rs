@@ -146,6 +146,20 @@ fn json_pretty_survives_unbalanced_seed() {
 }
 
 #[test]
+fn help_flag_prints_usage_and_exits_zero() {
+    let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    for flag in ["--help", "-h"] {
+        let (out, code) = run(&args(&[flag])).unwrap();
+        assert_eq!(code, 0, "{} must exit 0", flag);
+        assert!(out.contains("--seed"), "usage must list options: {}", out);
+        assert!(out.contains("--json"), "usage must list options: {}", out);
+    }
+    // Asking for help is never an error, even next to a bad argument.
+    let (_, code) = run(&args(&["--bogus", "--help"])).unwrap();
+    assert_eq!(code, 0);
+}
+
+#[test]
 fn cli_invalid_input() {
     let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     assert!(run(&args(&["--stars", "1"])).is_err());
