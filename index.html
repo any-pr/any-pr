@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>自动合并 Pull Request 条例</title>
+<style>
+  :root {
+    --bg: #000;
+    --fg: #f5f5f7;
+    --muted: #86868b;
+    --line: #1d1d1f;
+    --accent: #2997ff;
+    --card: #1d1d1f;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display",
+                 "SF Pro Text", "Helvetica Neue", "PingFang SC", sans-serif;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+  /* 毛玻璃导航 */
+  nav {
+    position: sticky; top: 0; z-index: 100;
+    backdrop-filter: saturate(180%) blur(20px);
+    -webkit-backdrop-filter: saturate(180%) blur(20px);
+    background: rgba(0,0,0,.72);
+    border-bottom: 1px solid var(--line);
+  }
+  nav .inner {
+    max-width: 980px; margin: 0 auto; padding: 0 22px;
+    height: 48px; display: flex; align-items: center;
+    justify-content: space-between; font-size: 12px;
+  }
+  nav .brand { font-weight: 600; letter-spacing: -.01em; }
+  nav a { color: var(--muted); text-decoration: none; margin-left: 22px; transition: color .3s; }
+  nav a:hover { color: var(--fg); }
+  /* Hero */
+  .hero {
+    text-align: center; padding: 140px 22px 100px;
+    max-width: 980px; margin: 0 auto;
+  }
+  .hero .eyebrow {
+    font-size: 19px; font-weight: 600; color: var(--accent);
+    margin-bottom: 12px; letter-spacing: -.01em;
+  }
+  .hero h1 {
+    font-size: clamp(48px, 9vw, 96px);
+    line-height: 1.05; letter-spacing: -.025em; font-weight: 700;
+    background: linear-gradient(180deg, #fff 0%, #a1a1a6 100%);
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent;
+    margin-bottom: 24px;
+  }
+  .hero .sub {
+    font-size: clamp(19px, 2.6vw, 28px);
+    color: var(--muted); font-weight: 400; letter-spacing: -.01em;
+    max-width: 640px; margin: 0 auto 40px;
+  }
+  .hero .meta { font-size: 14px; color: var(--muted); }
+  .hero .meta code {
+    font-family: "SF Mono", ui-monospace, Menlo, monospace;
+    background: rgba(255,255,255,.08); padding: 3px 8px;
+    border-radius: 6px; color: var(--fg);
+  }
+  /* 段落通用 */
+  section { max-width: 980px; margin: 0 auto; padding: 0 22px 100px; }
+  .reveal { opacity: 0; transform: translateY(30px); transition: opacity .8s ease, transform .8s ease; }
+  .reveal.on { opacity: 1; transform: none; }
+  h2 {
+    font-size: clamp(32px, 5vw, 56px);
+    letter-spacing: -.02em; font-weight: 700;
+    margin-bottom: 20px; line-height: 1.1;
+  }
+  h3 {
+    font-size: 21px; font-weight: 600; letter-spacing: -.01em;
+    margin: 28px 0 10px;
+  }
+  p, li { font-size: 17px; color: var(--muted); line-height: 1.6; }
+  p { margin-bottom: 12px; }
+  ul { padding-left: 22px; margin-bottom: 12px; }
+  li { margin: 6px 0; }
+  b { color: var(--fg); font-weight: 600; }
+  code {
+    font-family: "SF Mono", ui-monospace, Menlo, monospace;
+    font-size: .88em; background: rgba(255,255,255,.08);
+    padding: 2px 6px; border-radius: 6px; color: var(--fg);
+  }
+  /* 前言卡片 */
+  .preamble {
+    background: var(--card); border-radius: 22px;
+    padding: 36px 32px; margin-bottom: 80px;
+  }
+  .preamble p:last-child { margin-bottom: 0; }
+  /* 定义列表 */
+  .defs { list-style: none; padding-left: 0; }
+  .defs li { margin: 14px 0; }
+  /* 网格卡片 */
+  .grid {
+    display: grid; gap: 18px;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  }
+  .card {
+    background: var(--card); border-radius: 22px;
+    padding: 32px 28px;
+    transition: transform .35s cubic-bezier(.2,.8,.2,1), background .35s;
+  }
+  .card:hover { transform: translateY(-6px) scale(1.01); background: #252527; }
+  .card h4 {
+    font-size: 19px; font-weight: 600; letter-spacing: -.01em;
+    margin-bottom: 10px; color: var(--fg);
+  }
+  .card p { font-size: 15px; margin: 0; }
+  /* 关闭事由 */
+  .clause {
+    border-left: 3px solid var(--accent);
+    padding: 4px 0 4px 20px; margin: 18px 0;
+  }
+  /* 免责 */
+  .disclaimer p { margin-bottom: 20px; }
+  /* Footer */
+  footer {
+    border-top: 1px solid var(--line);
+    padding: 40px 22px; text-align: center;
+    color: var(--muted); font-size: 13px;
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="inner">
+    <span class="brand">any-pr</span>
+    <span>
+      <a href="#article1">总则</a>
+      <a href="#article2">自动合并</a>
+      <a href="#article3">关闭事由</a>
+      <a href="#article4">尺寸限制</a>
+      <a href="#article6">免责</a>
+    </span>
+  </div>
+</nav>
+
+<header class="hero">
+  <p class="eyebrow">实验仓库</p>
+  <h1>自动合并<br>Pull Request 条例</h1>
+  <p class="sub">在无人工审查的情况下，接收、审查并合并每一个 Pull Request。</p>
+  <p class="meta">仓库 <code>any-pr</code> · 执行文件 <code>.github/workflows/auto-merge.yml</code></p>
+</header>
+
+<section class="reveal">
+  <div class="preamble">
+    <p>鉴于本仓库实行无限制贡献政策；且</p>
+    <p>鉴于有必要确立统一规则，使 Pull Request 得以在无人工审查的情况下被接收、审查并合并；</p>
+    <p>兹通过以下条例，对所有贡献者具有约束力。</p>
+  </div>
+</section>
+
+<section id="article1" class="reveal">
+  <h2>第一条 — 总则</h2>
+  <h3>第 1 节 目的</h3>
+  <p>本条例规定提交至本仓库的 Pull Request 在何种条件下被自动合并。任何阶段均不进行人工审查。</p>
+  <h3>第 2 节 定义</h3>
+  <ul class="defs">
+    <li><b>(a) “Pull Request” 或 “PR”</b>：指为合并至基础分支而提交的一组变更。</li>
+    <li><b>(b) “工作流”</b>：指维护于 <code>.github/workflows/auto-merge.yml</code> 的自动化执行文件。</li>
+    <li><b>(c) “许可文件”</b>：指任何构成许可协议的文件，包括 <code>LICENSE</code>、<code>LICENCE</code>、<code>UNLICENSE</code>、<code>COPYING</code>、<code>COPYRIGHT</code> 及其带后缀变体，以及 <code>LICENSES/</code> 目录的内容。</li>
+    <li><b>(d) “禁止文件”</b>：指临时文件、系统残留、缓存、构建输出、二进制文件，以及凭据或机密材料；明确标记的示例模板除外。</li>
+    <li><b>(e) “README”</b>：指本文档，即 <code>README.md</code> 及其所有变体与本地化版本。</li>
+  </ul>
+</section>
+
+<section id="article2" class="reveal">
+  <h2>第二条 — 自动合并</h2>
+  <h3>第 1 节 强制合并</h3>
+  <p>任何未被标记为草稿、且满足第三条要求的 Pull Request，应立即以 squash 提交方式合并，并在权限允许时删除其源分支。</p>
+  <h3>第 2 节 草稿 Pull Request</h3>
+  <p>带有草稿标记的 Pull Request 在撤销该标记之前不予合并。</p>
+  <h3>第 3 节 合并失败</h3>
+  <p>若因与基础分支冲突而无法合并，应在该 Pull Request 上发布通知，贡献者须变基并重新提交。</p>
+</section>
+
+<section id="article3" class="reveal">
+  <h2>第三条 — 强制关闭事由</h2>
+  <p>Pull Request 存在下列情形之一者，应关闭且不予合并：</p>
+  <div class="clause"><p>(a) 修改、新增、删除或重命名 <code>.github/</code> 下的任何文件或目录。</p></div>
+  <div class="clause"><p>(b) 修改任何许可文件或 README；删除或重命名均构成修改。</p></div>
+  <div class="clause"><p>(c) 引入一个或多个禁止文件。</p></div>
+  <div class="clause"><p>(d) 引入符号链接或子模块，此判定通过检查 git 文件模式作出。</p></div>
+  <div class="clause"><p>(e) 引入二进制内容，无论其命名如何，此判定通过检查底层 git 对象作出。</p></div>
+  <div class="clause"><p>(f) 超出第四条规定的尺寸限制。</p></div>
+</section>
+
+<section id="article4" class="reveal">
+  <h2>第四条 — 尺寸限制</h2>
+  <div class="grid">
+    <div class="card"><h4>文件数</h4><p>一个 Pull Request 不得修改超过 20 个文件。</p></div>
+    <div class="card"><h4>总行数</h4><p>计行变更总数不得超过 500 行。</p></div>
+    <div class="card"><h4>单文件</h4><p>任何单个文件不得超过 300 行变更。</p></div>
+    <div class="card"><h4>豁免</h4><p>lockfile、<code>vendor/</code>、压缩文件与快照豁免计行，但仍受文件数限制。</p></div>
+  </div>
+</section>
+
+<section id="article5" class="reveal">
+  <h2>第五条 — 禁止直接推送</h2>
+  <p><b>第 1 节</b> 任何人不得直接向 <code>main</code> 分支推送提交。所有变更须仅通过 Pull Request 提交。</p>
+  <p><b>第 2 节</b> 任何未经关联已合并 Pull Request 而到达 <code>main</code> 的提交，应使该分支恢复至该次推送前的状态，并记录该事件。</p>
+</section>
+
+<section id="article6" class="reveal disclaimer">
+  <h2>第六条 — 免责声明</h2>
+  <p><b>第 1 节 仓库性质</b> 本仓库是一项自动化治理实验。它并非、亦不应被解释为良好工程实践的典范。</p>
+  <p><b>第 2 节 无审查</b> 本仓库合并的所有内容均未经审查。贡献者与使用者须知，其内容可能包括但不限于垃圾信息、无意义内容、冲突编辑、无法运行的代码，以及品味可疑的材料。本条例仅过滤特定危害，不对质量、效用或意图作出任何判断。</p>
+  <p><b>第 3 节 无担保</b> 本仓库中的任何代码均不得被执行、部署或依赖。每个文件均应视为不可信。</p>
+  <p><b>第 4 节 尽力执行</b> 本条例的执行由响应仓库事件的自动化工作流完成。此类执行属尽力而为，不构成访问控制，亦不保证仓库在任何给定时刻的状态。</p>
+  <p><b>第 5 节 贡献者责任</b> 每位贡献者对其 Pull Request 的内容承担全部责任。贡献者不得提交非法、有害、侵权或损害其自身声誉的材料；提交内容可公开归属于其作者。</p>
+  <p><b>第 6 节 条款接受</b> 打开 Pull Request 的行为即构成接受：该 Pull Request 可能在任何时候被后续贡献者合并、关闭或以其他方式更改。此即本实验之目的。</p>
+</section>
+
+<footer>
+  any-pr · 自动化治理实验 · 内容未经审查，请自行判断。
+</footer>
+
+<script>
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('on'); });
+  }, { threshold: 0.12 });
+  document.querySelectorAll('.reveal').forEach(el => io.observe(el));
+</script>
+
+</body>
+</html>
