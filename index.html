@@ -130,6 +130,14 @@
     color: var(--muted); font-size: 13px;
   }
 </style>
+<noscript>
+  <!-- Every section starts at opacity:0 and the observer below adds .on to
+       reveal it. With no script there is no observer, so without this the
+       entire document renders blank. -->
+  <style>
+    .reveal { opacity: 1; transform: none; }
+  </style>
+</noscript>
 </head>
 <body>
 
@@ -141,6 +149,7 @@
       <a href="#article2">自动合并</a>
       <a href="#article3">关闭事由</a>
       <a href="#article4">尺寸限制</a>
+      <a href="#article5">禁止直接推送</a>
       <a href="#article6">免责</a>
     </span>
   </div>
