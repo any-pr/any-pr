@@ -2,4 +2,8 @@
 name = "galactic"
 version = "1.0.0"
 edition = "2021"
+# as_chunks, used to iterate SHA-256 blocks, was stabilised in 1.88.
+# Declaring it turns a confusing "no method named as_chunks" on an old
+# toolchain into a clear "requires rustc 1.88 or newer".
+rust-version = "1.88"
 description = "Zero-dependency deterministic Galactic Mission Control"
