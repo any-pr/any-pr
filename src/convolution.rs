@@ -6,13 +6,35 @@
 //! edge map as ASCII instead of writing a PNG.
 
 /// Convolve a single-channel image (H x W) with a kernel (Kh x Kw).
+///
+/// Returns `Err` rather than panicking when the arguments cannot produce
+/// a result: an empty image or kernel, a stride of zero, ragged rows, or
+/// a kernel larger than the padded image.
 pub fn convolve2d(
     image: &[Vec<f64>],
     kernel: &[Vec<f64>],
     padding: usize,
     stride: usize,
     flip_kernel: bool,
-) -> Vec<Vec<f64>> {
+) -> Result<Vec<Vec<f64>>, String> {
+    if image.is_empty() || image[0].is_empty() {
+        return Err("image must have at least one row and one column".into());
+    }
+    if kernel.is_empty() || kernel[0].is_empty() {
+        return Err("kernel must have at least one row and one column".into());
+    }
+    if stride == 0 {
+        return Err("stride must be at least 1".into());
+    }
+    let w = image[0].len();
+    if image.iter().any(|row| row.len() != w) {
+        return Err("image rows must all have the same width".into());
+    }
+    let kw0 = kernel[0].len();
+    if kernel.iter().any(|row| row.len() != kw0) {
+        return Err("kernel rows must all have the same width".into());
+    }
+
     let kernel: Vec<Vec<f64>> = if flip_kernel {
         kernel
             .iter()
@@ -24,15 +46,24 @@ pub fn convolve2d(
     };
     let (h, w) = (image.len(), image[0].len());
     let (kh, kw) = (kernel.len(), kernel[0].len());
+    let (padded_h, padded_w) = (h + 2 * padding, w + 2 * padding);
+    // Without this the subtraction below underflows, which is what made
+    // an oversized kernel allocate an absurd output instead of failing.
+    if kh > padded_h || kw > padded_w {
+        return Err(format!(
+            "kernel {}x{} does not fit in padded image {}x{}",
+            kh, kw, padded_h, padded_w
+        ));
+    }
 
     // zero padding
-    let mut padded = vec![vec![0.0; w + 2 * padding]; h + 2 * padding];
+    let mut padded = vec![vec![0.0; padded_w]; padded_h];
     for (i, row) in image.iter().enumerate() {
         padded[i + padding][padding..padding + w].copy_from_slice(row);
     }
 
-    let out_h = (h + 2 * padding - kh) / stride + 1;
-    let out_w = (w + 2 * padding - kw) / stride + 1;
+    let out_h = (padded_h - kh) / stride + 1;
+    let out_w = (padded_w - kw) / stride + 1;
     let mut out = vec![vec![0.0; out_w]; out_h];
     for (i, orow) in out.iter_mut().enumerate() {
         for (j, cell) in orow.iter_mut().enumerate() {
@@ -46,7 +77,7 @@ pub fn convolve2d(
             *cell = sum;
         }
     }
-    out
+    Ok(out)
 }
 
 /// Multi-channel variant: convolve each channel independently.
@@ -56,7 +87,10 @@ pub fn convolve2d_channels(
     padding: usize,
     stride: usize,
     flip_kernel: bool,
-) -> Vec<Vec<Vec<f64>>> {
+) -> Result<Vec<Vec<Vec<f64>>>, String> {
+    if image.is_empty() || image[0].is_empty() || image[0][0].is_empty() {
+        return Err("image must have at least one row, column and channel".into());
+    }
     let (h, w, c) = (image.len(), image[0].len(), image[0][0].len());
     (0..c)
         .map(|ch| {
@@ -83,7 +117,7 @@ fn main() {
         vec![-1.0, 4.0, -1.0],
         vec![0.0, -1.0, 0.0],
     ];
-    let edges = convolve2d(&img, &kernel, 1, 1, true);
+    let edges = convolve2d(&img, &kernel, 1, 1, true).expect("convolution failed");
     for row in &edges {
         println!(
             "{}",
