@@ -116,6 +116,25 @@ def safe_under(base, relative):
     return candidate
 
 
+def dedupe_by_destination(tasks):
+    """Drop download tasks that target a file already in the list.
+
+    An asset index maps many asset names to one hash, so a task list built
+    from it names the same destination over and over. Submitting every
+    entry makes several threads enter download_file() for one path at the
+    same time, and that function writes to a single .tmp path derived from
+    it: the writes interleave, the SHA1 check fails for both, and whichever
+    thread renames first leaves the other raising FileNotFoundError (or
+    PermissionError on Windows) against a file that is already gone.
+
+    The first task for a destination wins; later duplicates are dropped.
+    """
+    seen = {}
+    for task in tasks:
+        seen.setdefault(str(Path(task["path"]).resolve()), task)
+    return list(seen.values())
+
+
 def make_log_fn(log_callback):
     if log_callback is None:
         return print

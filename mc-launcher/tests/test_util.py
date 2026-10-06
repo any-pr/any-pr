@@ -20,6 +20,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from mc_launcher.util import (  # noqa: E402
+    dedupe_by_destination,
     maven_to_path,
     rules_allow,
     safe_under,
@@ -145,6 +146,38 @@ class SafeUnderTests(unittest.TestCase):
         # "sub/../api.jar" resolves back into base, so it is not an escape.
         self.assertEqual(safe_under(self.base, "sub/../api.jar"),
                          (self.base / "api.jar").resolve())
+
+
+class DedupeByDestinationTests(unittest.TestCase):
+    def test_empty(self):
+        self.assertEqual(dedupe_by_destination([]), [])
+
+    def test_duplicates_collapse_to_one(self):
+        # One hash shared by four asset names, as an asset index produces.
+        dest = Path("C:/mc/assets/objects/aa/aabbcc")
+        tasks = [{"url": "u{}".format(i), "path": dest} for i in range(4)]
+        self.assertEqual(len(dedupe_by_destination(tasks)), 1)
+
+    def test_distinct_destinations_survive(self):
+        tasks = [{"url": "u1", "path": Path("a/b")},
+                 {"url": "u2", "path": Path("a/c")},
+                 {"url": "u3", "path": Path("a/d")}]
+        self.assertEqual(len(dedupe_by_destination(tasks)), 3)
+
+    def test_first_task_for_a_destination_wins(self):
+        dest = Path("C:/mc/assets/objects/aa/aabbcc")
+        tasks = [{"url": "first", "path": dest}, {"url": "second", "path": dest}]
+        self.assertEqual([t["url"] for t in dedupe_by_destination(tasks)], ["first"])
+
+    def test_equivalent_spellings_collapse(self):
+        tasks = [{"url": "u1", "path": Path("a/b")},
+                 {"url": "u2", "path": Path("a//b")},
+                 {"url": "u3", "path": Path("a/./b")}]
+        self.assertEqual(len(dedupe_by_destination(tasks)), 1)
+
+    def test_original_task_objects_are_returned(self):
+        tasks = [{"url": "u1", "path": Path("a/b")}]
+        self.assertIs(dedupe_by_destination(tasks)[0], tasks[0])
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import as_completed
 from pathlib import Path
 from PyQt6.QtCore import QObject, pyqtSignal
-from .util import get_natives_key, make_log_fn, rules_allow
+from .util import dedupe_by_destination, get_natives_key, make_log_fn, rules_allow
 
 
 # ============================================================
@@ -114,6 +114,9 @@ class Downloader:
         return False
 
     def download_batch(self, tasks, max_workers=16, progress_cb=None):
+        # One destination, one download: an asset index lists the same
+        # object many times, and fetching it concurrently corrupts it.
+        tasks = dedupe_by_destination(tasks)
         total = len(tasks)
         done = 0
         failed = 0
