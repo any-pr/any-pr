@@ -1,5 +1,12 @@
 import platform
+import re
 from .config import LOG_NOISE_PATTERNS
+
+
+# A coordinate segment that cannot safely name a path component: ".", "..",
+# or anything carrying a separator. Used to keep maven_to_path from building
+# a relative path that escapes the directory it is joined onto.
+UNSAFE_SEGMENT = re.compile(r"^\.\.?$|[/\\]")
 
 
 # ============================================================
@@ -18,11 +25,12 @@ def rules_allow(rules):
         os_arch = os_rule.get("arch")
         if os_name and os_name != current_os:
             continue
-        if os_arch:
-            if os_arch == "x86" and current_arch != "x86":
-                continue
-            if os_arch == "x86_64" and current_arch != "x86_64":
-                continue
+        # Compare the architecture directly. Special-casing only "x86" and
+        # "x86_64" made every other value -- "arm64", "aarch64" -- fall
+        # through as if it matched, so a rule gated to another architecture
+        # was applied on this one.
+        if os_arch and os_arch != current_arch:
+            continue
         if "features" in rule:
             continue
         if action == "allow":
@@ -48,7 +56,16 @@ def get_natives_key(lib):
 
 
 def maven_to_path(name):
-    """Maven coordinates -> (relative path, relative directory)"""
+    """Maven coordinates -> (relative path, relative directory)
+
+    Returns ``(None, None)`` for coordinates that cannot name a file inside
+    the libraries directory: fewer than three segments, an empty group,
+    artifact or version, or a segment holding a separator or a ``.``/``..``
+    component. Without this, ``":artifact:1.0"`` produced
+    ``"/artifact/1.0/artifact-1.0.jar"``, and ``libraries / rel_path``
+    resolves a leading separator to the drive root -- writing outside the
+    instance directory entirely.
+    """
     if not name or ":" not in name:
         return None, None
     parts = name.split(":")
@@ -58,6 +75,10 @@ def maven_to_path(name):
     artifact = parts[1]
     version = parts[2]
     classifier = parts[3] if len(parts) > 3 else None
+
+    segments = [group, artifact, version] + ([classifier] if classifier else [])
+    if any(not s or UNSAFE_SEGMENT.search(s) for s in segments):
+        return None, None
 
     group_path = group.replace(".", "/")
     if classifier:
