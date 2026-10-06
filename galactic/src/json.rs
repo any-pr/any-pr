@@ -25,8 +25,25 @@ pub fn esc(s: &str) -> String {
 }
 
 fn num(v: f64) -> String {
-    // Debug formatting keeps the ".0" suffix like Python's repr/json.
-    format!("{:?}", v)
+    // Debug formatting keeps the ".0" suffix like Python's repr/json, but
+    // writes the exponent without a sign and without zero padding: "1e20"
+    // where Python writes "1e+20", and "1e-5" where Python writes "1e-05".
+    // Both are valid JSON, but the canonical form is what the fingerprint
+    // hashes, so a jump range or route distance that lands in exponent
+    // form made this port disagree with the Python one it documents itself
+    // as matching. Normalise the exponent: always signed, at least two
+    // digits.
+    let text = format!("{:?}", v);
+    match text.split_once('e') {
+        Some((mantissa, exponent)) => {
+            let (sign, digits) = match exponent.strip_prefix('-') {
+                Some(d) => ("-", d),
+                None => ("+", exponent.strip_prefix('+').unwrap_or(exponent)),
+            };
+            format!("{}e{}{:0>2}", mantissa, sign, digits)
+        }
+        None => text,
+    }
 }
 
 fn star(s: &Star) -> String {
@@ -99,4 +116,38 @@ pub fn pretty(r: &Report) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::num;
+
+    /// Values Python renders without an exponent must come out untouched.
+    #[test]
+    fn plain_values_match_python_repr() {
+        assert_eq!(num(30.0), "30.0");
+        assert_eq!(num(0.0), "0.0");
+        assert_eq!(num(-2.5), "-2.5");
+        assert_eq!(num(0.0001), "0.0001");
+        assert_eq!(num(1e15), "1000000000000000.0");
+    }
+
+    /// Python always signs the exponent and pads it to two digits:
+    /// repr(1e20) is "1e+20" and repr(1e-5) is "1e-05".
+    #[test]
+    fn exponent_matches_python_repr() {
+        assert_eq!(num(1e20), "1e+20");
+        assert_eq!(num(1e-5), "1e-05");
+        assert_eq!(num(1e300), "1e+300");
+        assert_eq!(num(1e-300), "1e-300");
+        assert_eq!(num(-1e-5), "-1e-05");
+        assert_eq!(num(1e16), "1e+16");
+    }
+
+    /// Route distances are rounded to three decimals before reaching num(),
+    /// so they stay out of exponent form.
+    #[test]
+    fn rounded_distances_stay_plain() {
+        assert_eq!(num((12.3456_f64 * 1000.0).round() / 1000.0), "12.346");
+    }
 }
