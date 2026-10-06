@@ -6,7 +6,8 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import as_completed
 from pathlib import Path
 from PyQt6.QtCore import QObject, pyqtSignal
-from .util import dedupe_by_destination, get_natives_key, make_log_fn, rules_allow
+from .util import (dedupe_by_destination, get_natives_key, make_log_fn,
+                   rules_allow, safe_under)
 
 
 # ============================================================
@@ -223,14 +224,21 @@ class Downloader:
     def _extract_natives(self, vj, mc_dir, version_dir):
         natives_dir = version_dir / f"{version_dir.name}-natives"
         natives_dir.mkdir(parents=True, exist_ok=True)
-        if any(natives_dir.glob("*.dll")):
+        # Natives are .dll on Windows but .so on Linux and .dylib on macOS,
+        # so a "*.dll" guard never matches outside Windows and every install
+        # extracted the jars again. Any regular file means it is done.
+        if any(p.is_file() for p in natives_dir.iterdir()):
             return
         for lib in vj["libraries"]:
             downloads = lib.get("downloads", {})
             classifiers = downloads.get("classifiers", {})
             nk = get_natives_key(lib)
             if nk and nk in classifiers:
-                jar_path = mc_dir / "libraries" / classifiers[nk]["path"]
+                jar_path = safe_under(mc_dir / "libraries", classifiers[nk]["path"])
+                if jar_path is None:
+                    self.log(f"⚠ Refusing native jar outside libraries/: "
+                             f"{classifiers[nk]['path']}")
+                    continue
                 if jar_path.exists():
                     try:
                         with zipfile.ZipFile(jar_path, "r") as z:
