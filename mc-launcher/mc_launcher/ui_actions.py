@@ -40,11 +40,36 @@ class MainWindowActionsMixin:
             mark = "  [installed]" if vid in installed else ""
             self.version_combo.setItemText(i, f"{vid}{mark}")
 
+    def _read_memory_mb(self):
+        """Parse the memory field; return None and log if it is unusable.
+
+        The field is a plain QLineEdit, so it can hold anything. int() used
+        to be called inline while building the launch config, so a value
+        like "8G" raised ValueError out of the slot -- in PyQt that reaches
+        the excepthook and aborts the process rather than showing a
+        message. A negative or zero value parsed cleanly and was handed to
+        the JVM as -Xmx, which refuses to start.
+        """
+        raw = self.memory_input.text().strip()
+        try:
+            memory = int(raw or "2048")
+        except ValueError:
+            self.log(f"❌ Memory must be a whole number of MB, not: {raw!r}")
+            return None
+        if memory <= 0:
+            self.log(f"❌ Memory must be greater than 0 MB, not: {memory}")
+            return None
+        return memory
+
     # ---------- Launch ----------
     def on_launch(self):
         vinfo = self._get_selected_version()
         if not vinfo:
             self.log("❌ Please select a version first")
+            return
+
+        memory = self._read_memory_mb()
+        if memory is None:
             return
 
         version = vinfo["id"]
@@ -53,7 +78,7 @@ class MainWindowActionsMixin:
             "java": self.java_input.text().strip(),
             "version": version,
             "username": self.username_input.text().strip(),
-            "memory": int(self.memory_input.text().strip() or "2048"),
+            "memory": memory,
         }
         config["version_dir"] = Path(config["mc_dir"]) / "versions" / version
 
