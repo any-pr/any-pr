@@ -57,13 +57,31 @@ class ForgeDownloader:
         save_path.parent.mkdir(parents=True, exist_ok=True)
 
         total = int(r.headers.get("content-length", 0))
+        # Write beside the target and rename only once the whole body has
+        # arrived: iter_content() simply stops yielding when the connection
+        # dies, so a short read used to look exactly like a finished
+        # download, and install_forge() then handed the truncated jar to
+        # `java -jar`.
+        tmp = save_path.with_suffix(save_path.suffix + ".tmp")
         done = 0
-        with open(save_path, "wb") as f:
-            for chunk in r.iter_content(8192):
-                f.write(chunk)
-                done += len(chunk)
-                if progress_cb and total:
-                    progress_cb(done, total)
+        try:
+            with open(tmp, "wb") as f:
+                for chunk in r.iter_content(8192):
+                    f.write(chunk)
+                    done += len(chunk)
+                    if progress_cb and total:
+                        progress_cb(done, total)
+            if total and done != total:
+                raise RuntimeError(
+                    f"Truncated download: got {done} of {total} bytes "
+                    f"for {save_path.name}"
+                )
+            if save_path.exists():
+                save_path.unlink()
+            tmp.rename(save_path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
         return save_path
 
     def install_forge(self, installer_jar, mc_dir, java_path):
