@@ -1,5 +1,6 @@
 import platform
 import re
+from pathlib import Path
 from .config import LOG_NOISE_PATTERNS
 
 
@@ -89,6 +90,30 @@ def maven_to_path(name):
     rel_dir = f"{group_path}/{artifact}/{version}"
     rel_path = f"{rel_dir}/{filename}"
     return rel_path, rel_dir
+
+
+def safe_under(base, relative):
+    """Join ``relative`` onto ``base``, refusing to leave ``base``.
+
+    Returns ``None`` when the result would not be inside ``base``. Library
+    paths come from the version JSON and mod file names from Modrinth, and
+    ``Path.__truediv__`` does not sanitise them: a leading separator resets
+    the path to the drive root and a ``..`` component climbs out.
+
+        safe_under("D:/mc/mods", "../../evil.jar")  -> None
+        safe_under("D:/mc/mods", "/abs/evil.jar")   -> None
+        safe_under("D:/mc/mods", "fabric-api.jar")  -> D:/mc/mods/fabric-api.jar
+
+    Symlinks are followed, so a link inside ``base`` that points outside it
+    is rejected too.
+    """
+    root = Path(base).resolve()
+    candidate = (root / relative).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return None
+    return candidate
 
 
 def make_log_fn(log_callback):

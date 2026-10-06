@@ -10,14 +10,20 @@ package, which cannot be imported headless without them.
 """
 
 import platform
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from mc_launcher.util import maven_to_path, rules_allow  # noqa: E402
+from mc_launcher.util import (  # noqa: E402
+    maven_to_path,
+    rules_allow,
+    safe_under,
+)
 
 
 def allow(rules, system="Windows", machine="AMD64"):
@@ -107,6 +113,38 @@ class MavenToPathTests(unittest.TestCase):
                     continue
                 self.assertFalse(value.startswith("/") or value.startswith("\\"),
                                  "{} produced rooted path {}".format(c, value))
+
+
+class SafeUnderTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.base = self.tmp / "mods"
+        self.base.mkdir()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_plain_file_name(self):
+        self.assertEqual(safe_under(self.base, "fabric-api.jar"),
+                         (self.base / "fabric-api.jar").resolve())
+
+    def test_subdirectory_is_allowed(self):
+        target = safe_under(self.base, "sub/fabric-api.jar")
+        self.assertIsNotNone(target)
+        self.assertEqual(target.parent, (self.base / "sub").resolve())
+
+    def test_parent_traversal_is_refused(self):
+        self.assertIsNone(safe_under(self.base, "../evil.jar"))
+        self.assertIsNone(safe_under(self.base, "../../evil.jar"))
+        self.assertIsNone(safe_under(self.base, "sub/../../evil.jar"))
+
+    def test_rooted_path_is_refused(self):
+        self.assertIsNone(safe_under(self.base, "/abs/evil.jar"))
+
+    def test_traversal_settling_back_inside_is_allowed(self):
+        # "sub/../api.jar" resolves back into base, so it is not an escape.
+        self.assertEqual(safe_under(self.base, "sub/../api.jar"),
+                         (self.base / "api.jar").resolve())
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 import json
 import requests
 from pathlib import Path
-from .util import make_log_fn, maven_to_path, rules_allow
+from .util import make_log_fn, maven_to_path, rules_allow, safe_under
 from .manifest import Downloader
 
 
@@ -91,20 +91,31 @@ class FabricInstaller:
             downloads = lib.get("downloads", {})
             artifact = downloads.get("artifact")
             if artifact:
+                # The path is taken from the profile JSON as given.
+                lib_path = safe_under(mc_dir / "libraries", artifact["path"])
+                if lib_path is None:
+                    self.log(f"    ⚠ Refusing library path outside libraries/: "
+                             f"{artifact['path']}")
+                    continue
                 tasks.append({
                     "url": artifact["url"],
-                    "path": mc_dir / "libraries" / artifact["path"],
+                    "path": lib_path,
                     "sha1": artifact.get("sha1"),
                 })
             elif name and ":" in name:
                 rel_path, _ = maven_to_path(name)
                 if rel_path:
+                    lib_path = safe_under(mc_dir / "libraries", rel_path)
+                    if lib_path is None:
+                        self.log(f"    ⚠ Refusing library path outside libraries/: "
+                                 f"{rel_path}")
+                        continue
                     repo_url = lib.get("url", "https://maven.fabricmc.net/")
                     if not repo_url.endswith("/"):
                         repo_url += "/"
                     tasks.append({
                         "url": repo_url + rel_path,
-                        "path": mc_dir / "libraries" / rel_path,
+                        "path": lib_path,
                         "sha1": None,
                     })
 
@@ -122,8 +133,14 @@ class FabricInstaller:
             else:
                 mods_dir = mc_dir / "mods"
             mods_dir.mkdir(parents=True, exist_ok=True)
-            mod_path = mods_dir / api_version_info["filename"]
-            if dl.download_file(
+            # The file name comes from the Modrinth response, so it is not
+            # necessarily a plain file name: "../../evil.jar" climbs out of
+            # the mods directory and "/abs/evil.jar" re-roots the path.
+            mod_path = safe_under(mods_dir, api_version_info["filename"])
+            if mod_path is None:
+                self.log(f"    ⚠ Refusing mod file name outside the mods "
+                         f"directory: {api_version_info['filename']}")
+            elif dl.download_file(
                 api_version_info["download_url"],
                 mod_path,
                 sha1=api_version_info.get("sha1"),
