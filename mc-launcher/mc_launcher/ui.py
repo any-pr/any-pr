@@ -201,13 +201,27 @@ class MainWindow(MainWindowActionsMixin, MainWindowInstallMixin, QMainWindow):
         self.manifest_versions = versions
         self.version_combo.clear()
 
-        if not versions:
-            self.version_combo.addItem("(fetch failed)")
-            return
-
         local_installed = self._get_installed_versions()
         official_ids = {v["id"] for v in versions}
         local_only = sorted(local_installed - official_ids)
+
+        if not versions:
+            # Only the manifest failed. Versions already on disk are still
+            # launchable, so list them instead of showing nothing -- and
+            # re-enable the combo, which load_manifest() disabled.
+            self.log("⚠ Could not fetch the version manifest")
+            if local_only:
+                self.log(f"   {len(local_only)} version(s) found locally")
+                for vid in local_only:
+                    self.version_combo.addItem(
+                        vid,
+                        userData={"id": vid, "_local": True},
+                    )
+            else:
+                self.version_combo.addItem("(fetch failed)")
+            self.version_combo.setEnabled(True)
+            self.version_combo.setCurrentIndex(0)
+            return
 
         release_versions = [v for v in versions if v.get("type") == "release"]
         snapshot_versions = [v for v in versions if v.get("type") == "snapshot"]
@@ -271,7 +285,15 @@ class MainWindow(MainWindowActionsMixin, MainWindowInstallMixin, QMainWindow):
                     self.log(f"✓ Restored the previously selected version: {remembered}")
                     break
         if not restored:
-            self.version_combo.setCurrentIndex(0)
+            # Index 0 is a separator or a "── group ──" title whenever
+            # local versions are listed, and neither carries itemData --
+            # landing on one leaves no version selected.
+            first = next(
+                (i for i in range(self.version_combo.count())
+                 if isinstance(self.version_combo.itemData(i), dict)),
+                None,
+            )
+            self.version_combo.setCurrentIndex(first if first is not None else 0)
 
         self.log(f"✓ Version list populated ({len(versions)} official + {len(local_only)} local)")
 
