@@ -298,3 +298,303 @@ public final class KernelFabricEcosystem {
 	 * Every discovered Fabric mod's declared access widener ({@code .classtweaker}) file contents, in mod order.
 	 *
 	 * <p>Read from each mod's own jar. A declared-but-missing file is a mod packaging error: warn and skip rather
+	 * than fail the launch, since the mixins that need it will fail loudly on their own.
+	 */
+	public static List<byte[]> accessWideners() {
+		List<byte[]> files = new ArrayList<>();
+		for (net.forbric.kernel.access.ClassTweakerTransformer.File file : accessWidenerFiles()) files.add(file.bytes());
+		return files;
+	}
+
+	/** {@link #accessWideners()} with each file's jar name beside it, for the access census. */
+	public static List<net.forbric.kernel.access.ClassTweakerTransformer.File> accessWidenerFiles() {
+		if (loader == null) return List.of();
+
+		List<net.forbric.kernel.access.ClassTweakerTransformer.File> files = new ArrayList<>();
+
+		for (ModContainer mod : loader.getAllMods()) {
+			if (!(mod instanceof KernelModContainer)) continue;
+
+			KernelModContainer container = (KernelModContainer) mod;
+			String path = container.getMetadata().getAccessWidener();
+			if (path == null || path.isEmpty()) continue;
+
+			try (java.util.jar.JarFile jar = new java.util.jar.JarFile(container.getJar().toFile())) {
+				java.util.zip.ZipEntry entry = jar.getEntry(path);
+
+				if (entry == null) {
+					ForbricLog.warn("[Forbric/Access] %s declares accessWidener '%s' which is not in its jar",
+							container.getMetadata().getId(), path);
+					continue;
+				}
+
+				try (java.io.InputStream in = jar.getInputStream(entry)) {
+					files.add(new net.forbric.kernel.access.ClassTweakerTransformer.File(
+							container.getJar().getFileName().toString(), in.readAllBytes()));
+				}
+			} catch (Exception e) {
+				ForbricLog.warn("[Forbric/Access] could not read accessWidener of %s: %s",
+						container.getMetadata().getId(), String.valueOf(e));
+			}
+		}
+
+		return files;
+	}
+
+	/**
+	 * Every discovered Fabric mod's mixin configs that apply to the running side, in mod order.
+	 *
+	 * <p>A config declared {@code {"config": "...", "environment": "client"}} is dropped on a dedicated server —
+	 * its mixins target client-only classes that do not exist here, and registering it would fail the whole config.
+	 */
+	public static List<MixinConfigOwners.Owned> mixinConfigs() {
+		if (loader == null) return List.of();
+
+		EnvType envType = loader.getEnvironmentType();
+		List<MixinConfigOwners.Owned> configs = new ArrayList<>();
+
+		for (ModContainer mod : loader.getAllMods()) {
+			if (!(mod instanceof KernelModContainer)) continue;
+
+			for (KernelModMetadata.MixinConfigDecl decl : ((KernelModContainer) mod).getMetadata().getMixinConfigs()) {
+				if (!decl.environment().matches(envType)) continue;
+
+				if (MixinConfigPolicy.isDisabled(decl.config())) {
+					ForbricLog.warn("[Forbric/Mixin] mixin config %s DISABLED by -Dforbric.disableMixinConfigs — "
+							+ "that module's mixins will not apply",
+							MixinConfigOwners.describe(decl.config()));
+					continue;
+				}
+
+				configs.add(new MixinConfigOwners.Owned(decl.config(), mod.getMetadata().getId(),
+						Ecosystem.FABRIC));
+			}
+		}
+
+		return configs;
+	}
+
+	/** Publishes the game object (the {@code MinecraftServer}) for {@code FabricLoader.getGameInstance()}. */
+	public static void setGameInstance(Object gameInstance) {
+		if (loader != null) loader.setGameInstance(gameInstance);
+	}
+
+	/**
+	 * {@code -Dforbric.preLaunchFailure=warn}: a {@code preLaunch} entrypoint that throws, or cannot be loaded, is only
+	 * logged again, and its mod still reads as loaded.
+	 */
+	public static final String PRELAUNCH_FAILURE_PROPERTY = "forbric.preLaunchFailure";
+
+	/**
+	 * Runs the {@code preLaunch} entrypoints, before any game class is loaded. Per Fabric's contract these must
+	 * not touch game classes; the kernel does not enforce that, but it does run them at the correct point.
+	 *
+	 * <p>A {@code preLaunch} that throws fails its mod, as {@code main}, {@code client} and {@code server} already did:
+	 * on Fabric it takes the whole game down. It used to be an ERROR line and nothing else, so Core Lib's preLaunch
+	 * dying on a missing Fabric Loader internal left every SuperMartijn642 mod without its content while the Mods
+	 * screen called Core Lib loaded. An entrypoint that cannot even be loaded arrives here too: the loader hands a
+	 * lifecycle key's load failure to its driver.
+	 */
+	public static void runPreLaunch() {
+		if (loader == null) return;
+
+		if (loader.hasEntrypoints("preLaunch")) {
+			for (EntrypointContainer<PreLaunchEntrypoint> c
+					: loader.getEntrypointContainers("preLaunch", PreLaunchEntrypoint.class)) {
+				String id = c.getProvider().getMetadata().getId();
+
+				try {
+					c.getEntrypoint().onPreLaunch();
+					ForbricLog.info("[Forbric/Fabric] preLaunch entrypoint of %s", id);
+				} catch (Throwable t) {
+					ForbricLog.error("[Forbric/Fabric] preLaunch entrypoint of " + id + " failed", t);
+					if (!"warn".equalsIgnoreCase(System.getProperty(PRELAUNCH_FAILURE_PROPERTY, "fail"))) {
+						ModCatalog.mark(id, ModCatalog.Status.FAILED, "its preLaunch entrypoint threw");
+					}
+				}
+			}
+		}
+		PHASES_RAN.add("preLaunch");
+		// preLaunch is where Fabric mods edit Fabric Loader's own entrypoint index (Core Lib appends the entrypoint
+		// that flushes every SuperMartijn642 mod's registrations), and a mixin plugin may already have: take it back
+		// now, before the first phase that could run what was added.
+		adoptFabricStorage();
+	}
+
+	/**
+	 * Reads back Fabric Loader's internal entrypoint storage, if a mod has reached for it. Idempotent — an unchanged
+	 * storage changes nothing — and so called again before each later phase, in case one was edited in between.
+	 */
+	private static void adoptFabricStorage() {
+		KernelFabricLoader current = loader;
+		if (current == null) return;
+		try {
+			current.adoptFabricStorage(PHASES_RAN);
+		} catch (Throwable t) {
+			ForbricLog.warn("[Forbric/Fabric] could not read back Fabric Loader's internal entrypoint storage — "
+					+ "entrypoints a mod added there will not run", t);
+		}
+	}
+
+	/**
+	 * Runs every Fabric {@code main} entrypoint, plus the {@code server} one on a dedicated server, exactly once per
+	 * process. Must be called with the registries unfrozen — this is where mods register content.
+	 *
+	 * <p>On a CLIENT this is called from {@code KernelLifecycle.onClientEntrypoints}, inside {@code Minecraft.<init>}
+	 * and immediately before {@link #runClientEntrypoints()} — Fabric's own {@code Hooks.startClient} order, at
+	 * Fabric's own point in the constructor. {@code Minecraft.getInstance()} is live there and {@code Options} is
+	 * not yet built, which is the window mods are written against from both ends: keymapping registration reads
+	 * {@code Minecraft.getInstance().options} and NPEs if the instance is null (run too early) or throws
+	 * "GameOptions has already been initialised" (run too late). That hook reopens the registries and rebuilds what
+	 * reopening invalidates, so "unfrozen" still holds — see {@code ClientEntrypointHookInjector}.
+	 *
+	 * <p>A dedicated server calls it from the pre-{@code Minecraft} registration window instead, because there is no
+	 * {@code Minecraft} to wait for and Fabric's {@code startServer} runs {@code main} just as early.
+	 *
+	 * @return true if this call ran them, false if they had already run
+	 */
+	public static boolean runMainEntrypoints() {
+		if (loader == null) return false;
+		adoptFabricStorage();
+		if (!MAINS_RAN.compareAndSet(false, true)) return false;
+
+		EnvType envType = loader.getEnvironmentType();
+		PHASES_RAN.add("main");
+		int main = invoke("main", ModInitializer.class, ModInitializer::onInitialize);
+
+		if (envType == EnvType.CLIENT) {
+			ForbricLog.info("[Forbric/Fabric] invoked %d Fabric main entrypoint(s) in the %s window", main,
+					mainsRunInConstructor() ? "Minecraft.<init>" : "pre-Minecraft registration");
+		} else {
+			// Fabric's startServer reads the storage afresh for each phase, so a 'server' entry a mod adds during its
+			// own onInitialize runs. Read it back here too, and only then call the phase run; marking 'server' as run
+			// before main dropped such an entry with a warning that it came too late.
+			adoptFabricStorage();
+			PHASES_RAN.add("server");
+			int server = invoke("server", DedicatedServerModInitializer.class,
+					DedicatedServerModInitializer::onInitializeServer);
+			ForbricLog.info("[Forbric/Fabric] invoked %d Fabric main entrypoint(s) + %d server entrypoint(s)",
+					main, server);
+		}
+		return true;
+	}
+
+	/**
+	 * The containers in dependency order: the order they are registered in, which decides which of two same-id
+	 * containers is kept, and the order the Forge-family seeders are given the Fabric mods in.
+	 *
+	 * <p>It is the order they INITIALISE in only under {@code -Dforbric.fabricOrder=off}; by default
+	 * {@link #putInFabricOrder} puts them in Fabric Loader's order before anything runs. It was introduced to
+	 * replace discovery order (jar file name, alphabetically), which made a mod whose file sorted before a library it
+	 * requires initialise first. Fabric Loader has no such rule, and Fabric mods are written against the one it
+	 * does have (see {@link FabricLoadOrder}), so the switch is where this order now lives.
+	 *
+	 * <p>Best effort: an order is an improvement, never a precondition, and losing it must not cost the pack its
+	 * mods.
+	 */
+	private static List<KernelModContainer> orderByDependency(List<KernelModContainer> containers) {
+		try {
+			List<DiscoveredMod> known = new ArrayList<>(containers.size());
+			for (KernelModContainer container : containers) {
+				String id = container.getMetadata().getId();
+				if (id == null || id.isBlank()) continue;
+				known.add(new DiscoveredMod(Ecosystem.FABRIC, id,
+						String.valueOf(container.getMetadata().getVersion()), container.getMetadata().getName(),
+						unifiedDependencies(container.getMetadata()), List.of(), null, id)
+						.withAliases(List.copyOf(container.getMetadata().getProvides())));
+			}
+			if (known.isEmpty()) return containers;
+
+			List<KernelModContainer> sorted = ModConstructionOrder.sort(containers,
+					c -> c.getMetadata().getId(), ModConstructionOrder.of(known));
+			// Said only when it is also the order they initialise in. By default it is not, and this line would
+			// claim the opposite of what happens.
+			if (!sorted.equals(containers) && !FabricLoadOrder.enabled()) {
+				ForbricLog.info("[Forbric/Order] %d Fabric mod(s) initialise in dependency order, not jar-file "
+						+ "order (-Dforbric.modOrder=name to go back)", sorted.size());
+			}
+			return sorted;
+		} catch (Throwable t) {
+			ForbricLog.warn("[Forbric/Order] could not order Fabric mods by dependency; using discovery order",
+					t);
+			return containers;
+		}
+	}
+
+	/**
+	 * Puts the Fabric mods in Fabric Loader's order — by mod id — before any of them runs.
+	 *
+	 * <p>Fabric Loader lists its mods, fills every entrypoint key and registers mixin configs in the order its
+	 * resolver returns, which is the resolved set sorted by id, nested mods and builtins included (see
+	 * {@link FabricLoadOrder}). Pets Mod is the case that showed it matters: its client JOIN listener throws in every
+	 * singleplayer world, fabric-api's JOIN invoker does not catch per listener, and so every listener registered
+	 * after it is skipped. Natively that spares bclib and OptiGUI, whose ids sort first; in dependency order both
+	 * came after Pets Mod and lost their join handlers.
+	 *
+	 * <p>The first {@code fabricOwn} entries of {@code registered} — the builtins and the Fabric mods — are sorted.
+	 * The presence-only identities after them have no Fabric Loader counterpart and keep their place at the end.
+	 *
+	 * <p>Best effort, like the dependency order it replaces: a failure keeps the registration order and says so.
+	 *
+	 * @param builtins how many of {@code registered} are the builtins, which are not counted as mods in the log line
+	 */
+	private static void putInFabricOrder(KernelFabricLoader fabric, List<ModContainer> registered, int builtins,
+			int fabricOwn) {
+		if (!FabricLoadOrder.enabled()) return;
+		try {
+			List<ModContainer> order = new ArrayList<>(FabricLoadOrder.byModId(registered.subList(0, fabricOwn),
+					container -> container.getMetadata().getId()));
+			order.addAll(registered.subList(fabricOwn, registered.size()));
+			fabric.reorder(order);
+			if (fabricOwn > builtins) {
+				ForbricLog.info("[Forbric/Order] %d Fabric mod(s) initialise in Fabric Loader's order, by mod id, as "
+						+ "native Fabric orders them (-D%s=off for Forbric's previous order)", fabricOwn - builtins,
+						FabricLoadOrder.SWITCH);
+			}
+		} catch (Throwable t) {
+			ForbricLog.warn("[Forbric/Order] could not put Fabric mods in Fabric Loader's order; they initialise in "
+					+ "the order they were registered in", t);
+		}
+	}
+
+	/**
+	 * A Fabric mod's declared dependencies in the unified model.
+	 *
+	 * <p>These used to be {@code List.of()} — not because Fabric mods declare none, but because nobody filled them
+	 * in. A {@link DiscoveredMod} reporting an empty dependency list is indistinguishable from one that genuinely
+	 * has none, so {@code DependencyAudit} silently judged only the Forge families and nothing said so.
+	 *
+	 * <p>Only POSITIVE kinds cross over. A {@code breaks}/{@code conflicts} entry is a requirement that a mod be
+	 * ABSENT, and carrying it here as a dependency would make the audit report "requires X — not installed" about
+	 * a mod that must not be installed. {@link UnifiedDependency} has no negative sense yet, and inventing one
+	 * that nothing evaluates is how this field came to lie in the first place.
+	 *
+	 * <p>Fabric declares no side or ordering axis, so both stay neutral rather than being guessed at from the
+	 * mod's {@code environment} — that says where the MOD runs, not where its requirement applies.
+	 */
+	static List<UnifiedDependency> unifiedDependencies(ModMetadata metadata) {
+		List<UnifiedDependency> out = new ArrayList<>();
+		for (ModDependency dep : metadata.getDependencies()) {
+			if (!dep.getKind().isPositive()) continue;
+			out.add(new UnifiedDependency(dep.getModId(), constraintOf(dep), !dep.getKind().isSoft()));
+		}
+		return out;
+	}
+
+	/** The predicate as declared; the array form is OR-joined, which is what {@code VersionPredicate} reads. */
+	static String constraintOf(ModDependency dep) {
+		if (dep instanceof KernelMetadataSupport.SimpleModDependency simple && !simple.getConstraints().isEmpty()) {
+			return String.join(" || ", simple.getConstraints());
+		}
+		return "*";
+	}
+
+	/**
+	 * The physical side this boot is running on, or {@code null} while the Fabric side has not been brought up.
+	 *
+	 * <p>There is no other authority for this in the kernel: the merged base carries the client classes even on a
+	 * dedicated server, so "can I load Minecraft.class" answers the wrong question. Callers that would have to
+	 * guess should treat {@code null} as "do not judge side-scoped things" rather than picking a side.
+	 */
+	public static Side physicalSide() {
+		KernelFabricLoader current = loader;
