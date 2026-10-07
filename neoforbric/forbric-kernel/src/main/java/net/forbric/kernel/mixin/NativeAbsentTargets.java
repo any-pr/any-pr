@@ -298,3 +298,303 @@ public final class NativeAbsentTargets {
 
 	/** The digests a mismatch was already reported for, so a boot says it once. */
 	private static final Set<String> REPORTED = ConcurrentHashMap.newKeySet();
+
+	/** The mods whose requirement was already reported as outside the table's game, so a boot says it once. */
+	private static final Set<String> OUTSIDE = ConcurrentHashMap.newKeySet();
+
+	private NativeAbsentTargets() {
+	}
+
+	static boolean asked() {
+		return !"off".equalsIgnoreCase(System.getProperty(PROPERTY, "on"));
+	}
+
+	/** How a platform's game is named in a log line. */
+	static String describe(Ecosystem platform) {
+		if (platform == null) return "the mod's own platform";
+		return switch (platform) {
+			case FABRIC -> "vanilla 26.2";
+			case NEOFORGE -> "NeoForge's patched 26.2";
+		};
+	}
+
+	/** {@link #describe(Ecosystem)} with the versions the table's {@code platform} line records for it. */
+	static String describe(Ecosystem platform, Table table) {
+		Rows rows = table.of(platform);
+		if (rows == null || rows.versions().isEmpty()) return describe(platform);
+		List<String> versions = new ArrayList<>();
+		new TreeMap<>(rows.versions()).forEach((id, version) -> versions.add(id + " " + version));
+		return describe(platform) + " (" + String.join(", ", versions) + ")";
+	}
+
+	/** The id a platform's rows are written under: the ecosystem's family id. */
+	static String idOf(Ecosystem platform) {
+		return platform.familyId();
+	}
+
+	private static Ecosystem platformNamed(String id) {
+		for (Ecosystem platform : Ecosystem.values()) if (idOf(platform).equals(id)) return platform;
+		return null;
+	}
+
+	/** The shipped table, read once; an unreadable table is empty, which makes every miss the merge's again. */
+	static Table shipped() {
+		Table loaded = shipped;
+		if (loaded != null) return loaded;
+		List<String> lines = new ArrayList<>();
+		try (InputStream in = NativeAbsentTargets.class.getResourceAsStream(TABLE)) {
+			if (in == null) {
+				ForbricLog.warn("[Forbric/Mixin] %s is missing; no injector target is judged absent from a mod's own platform", TABLE);
+				shipped = Table.EMPTY;
+				return Table.EMPTY;
+			}
+			lines.addAll(List.of(new String(in.readAllBytes(), StandardCharsets.UTF_8).split("\n")));
+		} catch (IOException unreadable) {
+			ForbricLog.warn("[Forbric/Mixin] could not read %s; no injector target is judged absent from a mod's own platform", TABLE);
+			shipped = Table.EMPTY;
+			return Table.EMPTY;
+		}
+		shipped = loaded = Table.parse(lines);
+		return loaded;
+	}
+
+	/**
+	 * Whether native Mixin would drop this injector without a word on the mod's own platform too: its selectors all
+	 * name methods that platform's {@code owner} does not declare, and nothing makes it count.
+	 *
+	 * <p>"Nothing makes it count" is the requirement read the way {@code InjectionInfo.parseRequirements} reads it:
+	 * its own {@code require} when that is 0 or more, else the config's {@code defaultRequire} — and never for an
+	 * injector in a {@code @Group}, whose group needs at least one injection whatever its members' counts say. Under
+	 * {@code mixin.debug.countInjections} native Mixin fails on the empty injector too, so nothing is dropped then.
+	 *
+	 * <p>And only for a mod native to the game the rows describe: its manifest known, of that platform, with no
+	 * mandatory {@code minecraft} or {@code neoforge} range that game's version fails
+	 * ({@link #unmetRequirement}).
+	 */
+	static boolean dropsNatively(MethodNode handler, AnnotationNode injector, List<String> selectors, String owner,
+			Context context) {
+		return dropsNatively(handler, injector, selectors, owner, context, shipped());
+	}
+
+	static boolean dropsNatively(MethodNode handler, AnnotationNode injector, List<String> selectors, String owner,
+			Context context, Table table) {
+		if (!asked() || context == null || context.raw() == null || context.platform() == null || selectors.isEmpty()) {
+			return false;
+		}
+		if (countsInjections() || nativeMinimum(handler, injector, context.defaultRequire()) != 0) return false;
+		for (String selector : selectors) {
+			String[] member = plainSelector(selector, owner);
+			if (member == null) return false;
+			if (!nativeLacks(context.platform(), owner, member[0], member[1], context.raw(), table)) return false;
+		}
+		// Whose game the rows describe is asked only once they would answer: the line it may log is about this miss. A
+		// mod the kernel has no manifest for, or one of another platform, is not shown to be native to it either.
+		Rows rows = table.of(context.platform());
+		DiscoveredMod mod = context.mod();
+		if (rows.versions().get(MINECRAFT) == null || mod == null || mod.getEcosystem() != context.platform()) return false;
+		String unmet = unmetRequirement(rows, mod);
+		if (unmet != null) {
+			if (OUTSIDE.add(mod.getId() + " " + unmet)) {
+				ForbricLog.info("[Forbric/Mixin] %s requires %s, which %s does not satisfy, so its own loader would not run "
+						+ "it on the game %s describes; an injector target that game lacks is not judged absent from the game "
+						+ "the mod was built for, and counts as the merge's miss", mod.getId(), unmet,
+						describe(context.platform(), table), TABLE);
+			}
+			return false;
+		}
+		// Last, because the first ask reads the whole serving jar once.
+		return speaksFor(table, context, owner);
+	}
+
+	/**
+	 * The mandatory requirement of {@code mod}'s that the game {@code rows} describe fails, as
+	 * {@code "<id> <constraint>"}, or null when there is none. A requirement is held against the versions on the table's
+	 * {@code platform} line ({@code minecraft}, and {@code neoforge} for that platform) and must be shown to
+	 * admit them ({@link VersionPredicate#matchesStrictly}): a range nobody could read is not one that admits the game.
+	 */
+	static String unmetRequirement(Rows rows, DiscoveredMod mod) {
+		for (UnifiedDependency requirement : mod.getDependencies()) {
+			if (requirement == null || !requirement.isMandatory() || requirement.getModId() == null) continue;
+			String version = rows.versions().get(requirement.getModId().toLowerCase(Locale.ROOT));
+			if (version == null) continue;
+			if (!VersionPredicate.matchesStrictly(requirement.getVersionConstraint(), version)) {
+				return requirement.getModId() + " " + requirement.getVersionConstraint();
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * How many injections native Mixin requires of this injector, as {@code InjectionInfo.parseRequirements} decides
+	 * it; negative when a {@code @Group} decides instead, or when the config's default could not be read.
+	 */
+	static int nativeMinimum(MethodNode handler, AnnotationNode injector, int defaultRequire) {
+		if (MixinFit.groupOf(handler) != null) return -1;
+		Object require = MixinFit.value(injector, "require");
+		if (require instanceof Integer declared && declared > -1) return declared;
+		return defaultRequire;
+	}
+
+	/** {@code MixinEnvironment.Option.DEBUG_INJECTORS}: its own property, or {@code mixin.debug} it inherits from. */
+	static boolean countsInjections() {
+		return Boolean.parseBoolean(System.getProperty("mixin.debug.countInjections"))
+				|| Boolean.parseBoolean(System.getProperty("mixin.debug"));
+	}
+
+	/** {@code MemberInfo.validate}'s name rule. */
+	private static final java.util.regex.Pattern NAME = java.util.regex.Pattern.compile("(?i)^<?[\\w\\p{Sc}]+>?$");
+
+	/** {@code MemberInfo.validate}'s descriptor rule; {@link #wellFormed} adds the JVM's grammar. */
+	private static final java.util.regex.Pattern DESCRIPTOR =
+			java.util.regex.Pattern.compile("^(\\([\\w\\p{Sc}\\[/;]*\\))?\\[*[\\w\\p{Sc}/;]+$");
+
+	/**
+	 * {@code [name, descriptor or null]} when {@code selector} is a plain name lookup on {@code owner} — what
+	 * {@code MemberInfo.parse} reads as a name, an optional descriptor and an owner that is the target itself, with the
+	 * default quantifier — else null. Rejected: a dynamic selector ({@code @Id:…}), a regex ({@code /…/}), a
+	 * quantifier ({@code *}, {@code +}, {@code {…}}), a dotted or slashed owner in the name, a {@code name:desc} or
+	 * {@code ->} tail, another owner, whitespace, and a name or descriptor {@code MemberInfo.validate} refuses or the
+	 * JVM could not declare (Mixin fails on those instead of finding nothing).
+	 */
+	static String[] plainSelector(String selector, String owner) {
+		if (selector == null || owner == null) return null;
+		String s = selector.strip();
+		if (s.isEmpty() || s.startsWith("@") || s.endsWith("/") || s.contains("->")) return null;
+		for (int i = 0; i < s.length(); i++) {
+			char c = s.charAt(i);
+			if (Character.isWhitespace(c) || c == '.' || c == ':' || c == '*' || c == '+' || c == '{' || c == '}'
+					|| c == '@' || c == '=') {
+				return null;
+			}
+		}
+		int paren = s.indexOf('(');
+		int semi = s.indexOf(';');
+		if (s.startsWith("L") && semi > 0 && (paren < 0 || semi < paren)) {
+			if (!s.substring(1, semi).equals(owner)) return null;
+			s = s.substring(semi + 1);
+			paren = s.indexOf('(');
+		}
+		String name = paren < 0 ? s : s.substring(0, paren);
+		String desc = paren < 0 ? null : s.substring(paren);
+		// MemberInfo.validate's own name and descriptor rules: anything else is an InvalidMemberDescriptorException.
+		if (!NAME.matcher(name).matches()) return null;
+		if (desc != null && !(DESCRIPTOR.matcher(desc).matches() && wellFormed(desc))) return null;
+		return new String[] {name, desc};
+	}
+
+	/** Whether {@code desc} is a method descriptor by the JVM's grammar: arguments in parentheses, then a return type. */
+	static boolean wellFormed(String desc) {
+		if (desc.isEmpty() || desc.charAt(0) != '(') return false;
+		int i = 1;
+		while (i < desc.length() && desc.charAt(i) != ')') {
+			i = fieldType(desc, i);
+			if (i < 0) return false;
+		}
+		if (i >= desc.length()) return false;
+		i++;
+		if (i < desc.length() && desc.charAt(i) == 'V') return i + 1 == desc.length();
+		return fieldType(desc, i) == desc.length();
+	}
+
+	/** The index after the field type starting at {@code i}, or -1 when none starts there. */
+	private static int fieldType(String desc, int i) {
+		while (i < desc.length() && desc.charAt(i) == '[') i++;
+		if (i >= desc.length()) return -1;
+		char c = desc.charAt(i);
+		if ("ZBCSIJFD".indexOf(c) >= 0) return i + 1;
+		if (c != 'L') return -1;
+		int semi = desc.indexOf(';', i);
+		if (semi <= i + 1) return -1;
+		for (int k = i + 1; k < semi; k++) if ("()[".indexOf(desc.charAt(k)) >= 0) return -1;
+		return semi + 1;
+	}
+
+	/**
+	 * Whether {@code platform}'s own {@code owner} provably declares no method {@code name} — of descriptor
+	 * {@code desc}, or of any when it is null. False whenever that cannot be shown: no platform, one the table does
+	 * not speak for, a class outside vanilla's packages or listed as the merged base's alone, a class {@code raw}
+	 * cannot serve, a method the raw class still declares, or a row.
+	 */
+	static boolean nativeLacks(Ecosystem platform, String owner, String name, String desc, Function<String, byte[]> raw,
+			Table table) {
+		if (platform == null || owner == null || name == null || raw == null) return false;
+		Rows rows = table.of(platform);
+		if (rows == null) return false;
+		if (!inVanillaPackages(owner) || rows.mergedOnly().contains(owner)) return false;
+		if (rows.lists(owner, name, desc)) return false;
+		ClassNode declared = new ClassNode();
+		try {
+			byte[] bytes = raw.apply(owner + ".class");
+			if (bytes == null) return false;
+			new ClassReader(bytes).accept(declared, ClassReader.SKIP_CODE | ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+		} catch (RuntimeException unreadable) {
+			return false;
+		}
+		if (declared.methods == null) return true;
+		for (MethodNode m : declared.methods) {
+			if (m.name.equals(name) && (desc == null || m.desc.equals(desc))) return false;
+		}
+		return true;
+	}
+
+	/**
+	 * Whether the table speaks for the jar serving {@code owner}: that jar's members digest is the one the rows were
+	 * derived against ({@link #BASE_PROPERTY} may name another), or one of the Minecraft library jars it lists. Anything
+	 * else — another base, a library of another version, a mod's copy, a class served by no jar the kernel can read — is
+	 * reported once and answers nothing.
+	 */
+	static boolean speaksFor(Table table, Context context, String owner) {
+		if (context.base() == null) return false;
+		String expected = System.getProperty(BASE_PROPERTY);
+		if (expected == null || expected.isBlank()) expected = table.base();
+		expected = expected == null ? null : expected.strip();
+		String running;
+		try {
+			running = context.base().apply(owner);
+		} catch (RuntimeException unreadable) {
+			running = null;
+		}
+		if (running != null && (running.equals(expected) || table.libraries().contains(running))) return true;
+		if (REPORTED.add(String.valueOf(running))) ForbricLog.warn(mismatch(owner, running, expected));
+		return false;
+	}
+
+	/**
+	 * The one warning for a class the table does not speak for. It names the serving jar by its members digest and calls
+	 * it neither base nor library, because it may be either: a merged base built from other inputs, or a library jar
+	 * of another version.
+	 */
+	static String mismatch(String owner, String running, String expected) {
+		return String.format("[Forbric/Mixin] %s is served by %s, which is neither the merged base %s was derived from "
+				+ "(members %s) nor one of the Minecraft library jars it lists; no injector target there is judged absent "
+				+ "from a mod's own platform, and every such miss counts as the merge's", owner,
+				running == null ? "no jar the kernel can read" : "a jar with members " + running, TABLE,
+				expected == null ? "not recorded" : expected);
+	}
+
+	// --- the members digest -------------------------------------------------------------------------------------------
+
+	/**
+	 * A jar's members digest: SHA-256 over every class in vanilla's packages, in name order, each with the digest of
+	 * its methods' {@code name + descriptor}, sorted. Bodies, fields and attributes are left out, so a rebuild that
+	 * moves only code keeps it; a method gained or lost anywhere changes it.
+	 */
+	static final class MembersDigest {
+		private final TreeMap<String, byte[]> classes = new TreeMap<>();
+
+		/** Adds one jar entry; anything but a class in vanilla's packages is ignored. */
+		MembersDigest add(String resource, byte[] bytes) {
+			if (!resource.endsWith(".class")) return this;
+			String name = resource.substring(0, resource.length() - ".class".length());
+			if (!inVanillaPackages(name)) return this;
+			List<String> members = new ArrayList<>();
+			new ClassReader(bytes).accept(new ClassVisitor(Opcodes.ASM9) {
+				@Override
+				public MethodVisitor visitMethod(int access, String method, String desc, String signature, String[] exceptions) {
+					members.add(method + desc);
+					return null;
+				}
+			}, ClassReader.SKIP_CODE | ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+			Collections.sort(members);
+			MessageDigest digest = sha256();
+			for (String member : members) digest.update((member + "\n").getBytes(StandardCharsets.UTF_8));
