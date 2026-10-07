@@ -298,3 +298,150 @@ public final class EnvironmentStripTransformer implements ClassTransformer {
 
 				@Override
 				public AnnotationVisitor visitAnnotation(String descriptor, boolean visible) {
+					if (ENVIRONMENT.equals(descriptor)) return environment(side, value -> plan.wholeClass = value);
+					if (ENVIRONMENT_INTERFACE.equals(descriptor)) return environmentInterface(side, plan, implemented);
+					if (ENVIRONMENT_INTERFACES.equals(descriptor)) {
+						return new AnnotationVisitor(Opcodes.ASM9) {
+							@Override
+							public AnnotationVisitor visitArray(String name) {
+								if (!"value".equals(name)) return null;
+								return new AnnotationVisitor(Opcodes.ASM9) {
+									@Override
+									public AnnotationVisitor visitAnnotation(String unnamed, String nested) {
+										return environmentInterface(side, plan, implemented);
+									}
+								};
+							}
+						};
+					}
+					return null;
+				}
+
+				@Override
+				public FieldVisitor visitField(int access, String name, String descriptor, String signature, Object value) {
+					return new FieldVisitor(Opcodes.ASM9) {
+						@Override
+						public AnnotationVisitor visitAnnotation(String annotation, boolean visible) {
+							return ENVIRONMENT.equals(annotation) ? environment(side, value -> {
+								plan.fields.add(name + descriptor);
+								plan.described.add("field " + name + ":" + descriptor);
+							}) : null;
+						}
+					};
+				}
+
+				@Override
+				public MethodVisitor visitMethod(int access, String name, String descriptor, String signature,
+						String[] exceptions) {
+					return new MethodVisitor(Opcodes.ASM9) {
+						@Override
+						public AnnotationVisitor visitAnnotation(String annotation, boolean visible) {
+							return ENVIRONMENT.equals(annotation) ? environment(side, value -> {
+								plan.methods.add(name + descriptor);
+								plan.described.add("method " + name + descriptor);
+							}) : null;
+						}
+					};
+				}
+			}, ClassReader.SKIP_CODE | ClassReader.SKIP_FRAMES);
+			return plan;
+		}
+
+		/**
+		 * {@code @Environment(value)}: any value that is not this side is a mismatch, exactly Fabric's test. The
+		 * mismatching value is handed on so a report can name it.
+		 */
+		private static AnnotationVisitor environment(String side, Consumer<String> onMismatch) {
+			return new AnnotationVisitor(Opcodes.ASM9) {
+				@Override
+				public void visitEnum(String name, String descriptor, String value) {
+					if ("value".equals(name) && !side.equals(value)) onMismatch.accept(value);
+				}
+			};
+		}
+
+		/**
+		 * {@code @EnvironmentInterface(value, itf)}: on a mismatch, {@code itf} leaves the interface list -- when it is
+		 * in the list. Fabric rewrites the class either way and the result is the same list; counting an absent one
+		 * would rewrite the class for nothing and report "removed interface X" for an X that was never there, the
+		 * second time the chain sees its own output included.
+		 */
+		private static AnnotationVisitor environmentInterface(String side, Plan plan, Set<String> implemented) {
+			return new AnnotationVisitor(Opcodes.ASM9) {
+				private boolean mismatch;
+				private Type itf;
+
+				@Override
+				public void visitEnum(String name, String descriptor, String value) {
+					if ("value".equals(name) && !side.equals(value)) mismatch = true;
+				}
+
+				@Override
+				public void visit(String name, Object value) {
+					if ("itf".equals(name) && value instanceof Type type) itf = type;
+				}
+
+				@Override
+				public void visitEnd() {
+					if (!mismatch || itf == null || !implemented.contains(itf.getInternalName())) return;
+					plan.interfaces.add(itf.getInternalName());
+					plan.described.add("interface " + itf.getInternalName());
+				}
+			};
+		}
+
+		/** The writing pass: Fabric's {@code ClassStripper}, over a writer that copies everything it is not told to drop. */
+		byte[] applyTo(byte[] classBytes) {
+			ClassReader reader = new ClassReader(classBytes);
+			ClassWriter writer = new ClassWriter(reader, 0);
+			reader.accept(new ClassVisitor(Opcodes.ASM9, writer) {
+				private String owner;
+
+				@Override
+				public void visit(int version, int access, String name, String signature, String superName,
+						String[] itfs) {
+					owner = name;
+					if (itfs != null && !interfaces.isEmpty()) {
+						List<String> kept = new ArrayList<>(itfs.length);
+						for (String itf : itfs) if (!interfaces.contains(itf)) kept.add(itf);
+						itfs = kept.toArray(new String[0]);
+					}
+					super.visit(version, access, name, signature, superName, itfs);
+				}
+
+				@Override
+				public FieldVisitor visitField(int access, String name, String descriptor, String signature, Object value) {
+					return fields.contains(name + descriptor) ? null
+							: super.visitField(access, name, descriptor, signature, value);
+				}
+
+				@Override
+				public MethodVisitor visitMethod(int access, String name, String descriptor, String signature,
+						String[] exceptions) {
+					if (methods.contains(name + descriptor)) return null;
+					MethodVisitor next = super.visitMethod(access, name, descriptor, signature, exceptions);
+					if (fields.isEmpty()) return next;
+
+					// The initializer of a removed field would otherwise store into a field that no longer exists.
+					int store;
+					if ("<clinit>".equals(name)) store = Opcodes.PUTSTATIC;
+					else if ("<init>".equals(name)) store = Opcodes.PUTFIELD;
+					else return next;
+
+					return new MethodVisitor(Opcodes.ASM9, next) {
+						@Override
+						public void visitFieldInsn(int opcode, String fieldOwner, String fieldName, String fieldDesc) {
+							if (opcode != store || !owner.equals(fieldOwner) || !fields.contains(fieldName + fieldDesc)) {
+								super.visitFieldInsn(opcode, fieldOwner, fieldName, fieldDesc);
+								return;
+							}
+							super.visitInsn(Type.getType(fieldDesc).getSize() == 2 ? Opcodes.POP2 : Opcodes.POP);
+							if (opcode == Opcodes.PUTFIELD) super.visitInsn(Opcodes.POP); // the receiver
+						}
+					};
+				}
+			}, 0);
+			return writer.toByteArray();
+		}
+	}
+}
