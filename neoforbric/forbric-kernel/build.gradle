@@ -1,0 +1,300 @@
+plugins {
+	id 'java'
+	id 'java-library'
+}
+
+base {
+	archivesName = 'forbric-kernel'
+}
+
+version = '0.1.0-SNAPSHOT'
+
+java {
+	// The sovereign kernel raises the floor to Java 21 (records, pattern switch, sealed types). The game itself
+	// needs Java 25, but the boot-side kernel bytecode only needs 21; we pin release 21 so the build runs on any
+	// JDK >= 21 without a separate toolchain (this machine ships JDK 25).
+	sourceCompatibility = JavaVersion.VERSION_21
+	targetCompatibility = JavaVersion.VERSION_21
+}
+
+// Staged local artifacts the GAME-side (runtime) source set links against, compileOnly. Produced by the shared
+// forbric-loader pipeline (kept as-is): exactly TWO game jars — NeoForge's own patched Minecraft jar
+// (neoforge-base/) and the NeoForge runtime carrier (neoforge-runtime/). MinecraftForge is not staged and not
+// supported; Fabric and NeoForge mods are. These are LGPL / Mojang-derived and are NEVER bundled — compileOnly
+// linkage only, runtime-supplied by the user or installer, exactly as the old system does. The kernel stays
+// base-jar-parametric at launch (--gameJar).
+//
+// The root is overridable with -Pforbric.stagedRoot=<dir> for ONE reason: the claim that a machine WITHOUT
+// staged artifacts still builds an unchanged boot jar has to be testable on a machine that has them. Pointing
+// it at a directory that does not exist reproduces that machine exactly, in one command, without moving a
+// 35MB file another session may be running from.
+// -Pforbric.stagedRoot wins; then FORBRIC_OLD, which is the one variable the run/ scripts also read, so a
+// second working tree needs exactly one export rather than a different knob per tool.
+def devStage = file('.dev/staged/run')
+def stagedRoot       = file(project.findProperty('forbric.stagedRoot')
+		?: (System.getenv('FORBRIC_OLD') ? System.getenv('FORBRIC_OLD') + '/run'
+				: (new File(devStage, 'neoforge-base/patched-mc-neoforge-26.2.jar').isFile() ? devStage : '../forbric-loader/run')))
+def stagedBase       = new File(stagedRoot, 'neoforge-base/patched-mc-neoforge-26.2.jar')
+def stagedNeoRuntime = new File(stagedRoot, 'neoforge-runtime/neoforge-runtime.jar')
+def stagedGameJars = [stagedBase, stagedNeoRuntime].findAll { it.isFile() }
+
+// Compile the transfer bridge against the exact API staged for the compatibility pack. These modules remain
+// supplied by the installed Fabric API mod; none is bundled in either kernel jar.
+//
+// The transfer package is NOT optional in a built game side. It was: a missing dev-pack jar here quietly
+// excluded net/forbric/kernel/runtime/transfer/** from a runtime jar that was still built and nested, the build
+// stayed green, and every player with fabric-api then met KernelTransferInterop's required loss "this kernel build
+// is missing its transfer component" -- a dedicated server exited 78 on a pack that launched before the bridge
+// existed. A machine that builds the game side must supply the API (-Pforbric.fabricApi=<fabric-api jar>) or the
+// build fails naming the file; a machine with no staged game jars builds neither half, exactly as before.
+def devFabricApi = file('.dev/api/fabric-api-0.155.2+26.2.jar')
+def stagedFabricApi = file(project.findProperty('forbric.fabricApi') ?: (devFabricApi.isFile() ? devFabricApi
+		: new File(stagedRoot.parentFile.parentFile, 'forbric-kernel/run/client-merged-pack/mods/fabric-api-0.155.2+26.2.jar')))
+def transferApiModules = ['fabric-transfer-api-v1-', 'fabric-api-lookup-api-v1-', 'fabric-api-base-']
+def transferModulesDir = layout.buildDirectory.dir('transfer-api-compile')
+def extractTransferApis = tasks.register('extractTransferApis', Sync) {
+	onlyIf { !stagedGameJars.isEmpty() }
+	// Lazy, so a missing jar reaches compileRuntimeJava's message instead of failing while inputs are snapshotted.
+	from { stagedFabricApi.isFile() ? zipTree(stagedFabricApi) : files() }
+	include transferApiModules.collect { "META-INF/jars/${it}*.jar" }
+	eachFile { path = name }
+	includeEmptyDirs = false
+	into transferModulesDir
+	// A fabric-api jar nesting two versions of one module would put both on the compile path; one of each.
+	doLast {
+		def extracted = transferModulesDir.get().asFile.listFiles()*.name
+		transferApiModules.each { prefix ->
+			def found = extracted.findAll { it.startsWith(prefix) && it.endsWith('.jar') }
+			if (found.size() != 1) throw new GradleException("${stagedFabricApi} must nest exactly one ${prefix}*.jar; found ${found}")
+		}
+	}
+}
+def transferModuleFiles = files(fileTree(transferModulesDir) { include '*.jar' }).builtBy(extractTransferApis)
+// Team Reborn Energy 5.0.0 (mod id team_reborn_energy, MIT), the energy API Fabric mods use: Fabric API has none.
+// The energy half of the transfer component compiles against it and, like the transfer modules, it is never bundled:
+// a pack that wants Fabric energy installs it as an ordinary mod. Same rule as above: a machine that builds the game
+// side must supply it (-Pforbric.rebornEnergy=<energy jar>) or the build fails naming the file, so no game side can
+// quietly ship without the energy bridge.
+//
+// Nothing fetches it and *.jar is never committed, so the file is pinned by SHA-256: the bridge was written and tested
+// against exactly this build, and a different file at the same path must not be accepted silently. Without the
+// property it is taken from beside the staged tree, else from this checkout's own run/energy-api/, so a fresh clone
+// or a second working tree needs only the file dropped there. verifyRebornEnergy checks it on EVERY game-side build:
+// compileRuntimeJava's own up-to-date check sees only the jar's API, so a same-API file never re-ran it.
+def rebornEnergySha256 = '889afc438d3e4add5cfdac76517da7987a2c495e4731690a56f2c5dee775db59'
+def rebornEnergyDefaults = [file('.dev/api/energy-5.0.0.jar'),
+		new File(stagedRoot.parentFile.parentFile, 'forbric-kernel/run/energy-api/energy-5.0.0.jar'),
+		file('run/energy-api/energy-5.0.0.jar')]
+def stagedRebornEnergy = file(project.findProperty('forbric.rebornEnergy')
+		?: (rebornEnergyDefaults.find { it.isFile() } ?: rebornEnergyDefaults[0]))
+// Integration runs pass -Pforbric.requireTransfer=true: there a skipped transfer suite is a failure, not a pass.
+def strictIntegration = gradle.startParameter.taskNames.any { it.tokenize(':').last() == 'integrationTest' }
+def requireTransfer = project.findProperty('forbric.requireTransfer') == 'true' || strictIntegration
+// CI passes -Pforbric.skipBaseline=<profile>: then the tests skipped in this invocation must equal the committed
+// src/test/skip-baseline/<profile>.tsv (see skipRatchet). A skip passes Gradle, so without this a test that started
+// skipping looks exactly like one that passed.
+def skipBaseline = project.findProperty('forbric.skipBaseline')
+if (skipBaseline != null && !(skipBaseline ==~ /[a-z0-9-]+/)) {
+	throw new GradleException("forbric.skipBaseline must be [a-z0-9-]+, got '${skipBaseline}'")
+}
+
+// Minecraft's OWN libraries, for the game-side set only. A game-side class cannot build a piece of text without
+// brigadier: net.minecraft.network.chat.Component extends com.mojang.brigadier.Message, so javac needs it to read
+// the Component class file at all. It is not on Maven Central (Mojang's own maven serves it), the game supplies it
+// at runtime, and the kernel never ships it — so it is taken from the same local Minecraft install the staged
+// artifacts were derived from, and its absence is not fatal: it costs the game-side set, which already skips when
+// the staged jars are absent.
+def osName = System.getProperty('os.name').toLowerCase(Locale.ROOT)
+def defaultMinecraft = osName.contains('windows')
+		? new File(System.getenv('APPDATA') ?: System.getProperty('user.home') + '/AppData/Roaming', '.minecraft')
+		: new File(System.getProperty('user.home'), osName.contains('mac') ? 'Library/Application Support/minecraft' : '.minecraft')
+def devMinecraft = file('.dev/minecraft')
+// .dev/minecraft is preferred only while it has its version JSON, because the transfer suite's library list below is
+// read from that JSON. A tree without it is a tree with no libraries as far as that list goes. One here had all 73
+// jars it needs and no 26.2.json (removed after prepare had finished; what removed it is unknown), and preferring
+// it because the directory existed sent the transfer suite into ClassNotFoundException for netty and Commons Lang
+// with nothing saying why. The JSON is NOT proof that prepare finished -- it is the first file prepare writes -- so
+// the transferTest guard below also names any library the JSON lists that is not on disk.
+def devMinecraftPrepared = new File(devMinecraft, 'versions/26.2/26.2.json').isFile()
+if (devMinecraft.isDirectory() && !devMinecraftPrepared && !project.hasProperty('forbric.mcLibraries') && !System.getenv('MC_DIR'))
+	logger.lifecycle("[forbric] ${devMinecraft} has no versions/26.2/26.2.json, so Minecraft's libraries come from " +
+			"${defaultMinecraft}; run `python tools/dev.py prepare` to restore it")
+def mcLibraries = file(project.findProperty('forbric.mcLibraries')
+		?: (System.getenv('MC_DIR') ? System.getenv('MC_DIR') + '/libraries'
+				: new File(devMinecraftPrepared ? devMinecraft : defaultMinecraft, 'libraries')))
+// One jar PER PATTERN, never one across all of them: a single fileTree over several includes and a global
+// takeRight(1) keeps whichever name sorts last and silently drops the rest — with brigadier and datafixerupper
+// in the same tree, 'd' > 'b' and brigadier disappears. Last-by-NAME within a pattern is not version-aware
+// either ("10.0.21" sorts before "9.0.19"); that is tolerable only because any version of these two satisfies
+// javac's need to READ the class files, which is all they are here for.
+def lastByNameUnder = { String pattern ->
+	mcLibraries.isDirectory()
+			? fileTree(mcLibraries) { include pattern }.files.sort { it.name }.takeRight(1)
+			: []
+}
+// datafixerupper for the same reason as brigadier, one type further in: net.minecraft.core.Registry implements
+// com.mojang.serialization.Keyable, so javac cannot read Registry — and so cannot read BuiltInRegistries —
+// without it. KernelParticleProviders needs the particle registry to translate its keys.
+def stagedMcLibraries = lastByNameUnder('com/mojang/brigadier/**/*.jar') +
+		lastByNameUnder('com/mojang/datafixerupper/**/*.jar') +
+		// gson, for the same reason and one layer out: fabric-api's resource-condition evaluator takes a
+		// JsonObject, so KernelFabricConditions cannot name its own argument without it. Taken from the same
+		// local Minecraft install as the other two, never bundled — the game supplies it at runtime.
+		lastByNameUnder('com/google/code/gson/**/*.jar') +
+		// netty's buffer types, for the same reason: KernelRecipeSync trial-encodes a recipe into a
+		// RegistryFriendlyByteBuf, which IS a netty ByteBuf, so javac cannot read it without them. Never bundled.
+		lastByNameUnder('io/netty/netty-buffer/**/*.jar') +
+		lastByNameUnder('io/netty/netty-common/**/*.jar')
+
+// LazyOptional's real carrier implementation uses Commons Lang's Mutable types, and every Team Reborn Energy store
+// initialises Reborn's EnergyStorage interface, whose static fields build an Identifier and a DataComponentType
+// (netty, joml, ...). Resolve Minecraft 26.2's OWN library set from its version JSON (the one launch-kernel-server.sh
+// puts on the game's classpath), rather than a stub or whichever cached jar happens to sort last. This is test
+// runtime linkage only and is never bundled.
+def stagedTransferTestLibraries = []
+// Libraries the JSON lists for every platform (no OS rules) that are not on disk. Those with rules are natives for one
+// OS, so the other platforms' copies being absent is normal.
+def missingTransferTestLibraries = []
+def stagedMcVersionJson = new File(mcLibraries.parentFile, 'versions/26.2/26.2.json')
+if (stagedMcVersionJson.isFile()) {
+	def versionMetadata = new groovy.json.JsonSlurper().parse(stagedMcVersionJson)
+	versionMetadata.libraries.each { library ->
+		def relativePath = library.downloads?.artifact?.path
+		if (relativePath) {
+			def artifact = new File(mcLibraries, relativePath)
+			if (artifact.isFile()) stagedTransferTestLibraries.add(artifact)
+			else if (!library.rules) missingTransferTestLibraries.add(relativePath)
+		}
+	}
+}
+
+sourceSets {
+	// `main` keeps the Gradle defaults (src/main/java, src/main/resources). Re-declaring them with srcDir would
+	// ADD the same directory a second time, and every resource would then be a duplicate entry — which fails
+	// processResources outright (it did, the moment the Mixin META-INF/services files landed).
+	//
+	// GAME side: everything that references net.minecraft.* / net.neoforged.* / net.fabricmc.fabric.* —
+	// defined by ForbricClassLoader at runtime, packaged as forbric-kernel-runtime.jar and
+	// appended to the game classpath (NOT a fabric mod). Typed against the staged jars instead of reflected.
+	// If the staged jars are absent, this set has nothing to link against; the guard task below fails loudly with
+	// the build script to run, and `compileRuntimeJava` / `test` skip it so M0 (boot-side only) still builds.
+	runtime {
+		java { srcDir 'src/runtime/java' }
+		compileClasspath += sourceSets.main.output + files(stagedGameJars) + files(stagedMcLibraries) + transferModuleFiles + files(stagedRebornEnergy)
+		runtimeClasspath += sourceSets.main.output + files(stagedGameJars) + files(stagedMcLibraries) + transferModuleFiles + files(stagedRebornEnergy)
+	}
+	transferTest {
+		java { srcDir 'src/transferTest/java' }
+		compileClasspath += sourceSets.runtime.output + sourceSets.runtime.compileClasspath
+		runtimeClasspath += sourceSets.runtime.output + sourceSets.runtime.compileClasspath + files(stagedTransferTestLibraries)
+	}
+	// A stand-in for Mod Menu's API (com.terraformersmc.modmenu.api): the interface every Fabric mod with a config
+	// screen implements, and the only place a Fabric mod ever says it has one. Compiled against the game side, and
+	// shipped INSIDE the game-side jar as resources, never as classes -- see runtimeJar. A class file there would be
+	// one of ForbricClassLoader's own, found before any mod's, and would shadow a real Mod Menu. As resources they
+	// are offered by ModMenuApiStandIn only when no installed jar has the real API, and the loader consults offered
+	// bytes only after every owned jar has missed, so a real Mod Menu always wins.
+	modMenuApi {
+		java { srcDir 'src/modmenuApi/java' }
+		compileClasspath += sourceSets.runtime.output + sourceSets.main.output + files(stagedGameJars) + files(stagedMcLibraries)
+	}
+}
+
+repositories {
+	maven {
+		name = 'Fabric'
+		url = 'https://maven.fabricmc.net/'
+	}
+	mavenCentral()
+}
+
+configurations {
+	// runtime source set inherits the boot-side library deps (asm etc.) for compilation.
+	runtimeImplementation.extendsFrom implementation
+	runtimeCompileOnly.extendsFrom compileOnly
+	// MixinExtras — JiJ-nested into the runtime jar (game-side), never parent-loaded (LocalRef generated-class law).
+	nestedMods
+	transferTestImplementation.extendsFrom testImplementation
+	transferTestRuntimeOnly.extendsFrom testRuntimeOnly
+}
+
+dependencies {
+	compileOnly 'org.jetbrains:annotations:23.0.0'
+	// log4j-api is provided by Minecraft at runtime; boot-side diagnostics link against it compileOnly and fall
+	// back to System.err when absent (unit tests, --scan tooling).
+	compileOnly 'org.apache.logging.log4j:log4j-api:2.24.3'
+
+	// --- Pure-bytecode / mapping / data machinery (same coordinates as the substrate) ---
+	api "org.ow2.asm:asm:${project.asm_version}"
+	api "org.ow2.asm:asm-analysis:${project.asm_version}"
+	api "org.ow2.asm:asm-commons:${project.asm_version}"
+	api "org.ow2.asm:asm-tree:${project.asm_version}"
+	api "org.ow2.asm:asm-util:${project.asm_version}"
+	api "net.fabricmc:sponge-mixin:${project.mixin_version}"
+	api "org.ow2.sat4j:org.ow2.sat4j.core:${project.sat4j_version}"
+	api "org.ow2.sat4j:org.ow2.sat4j.pb:${project.sat4j_version}"
+	api "net.fabricmc:tiny-remapper:${project.tiny_remapper_version}"
+	api "net.fabricmc:class-tweaker:${project.class_tweaker_version}"
+	api "net.fabricmc:mapping-io:${project.mapping_io_version}"
+
+	nestedMods "io.github.llamalad7:mixinextras-fabric:${project.mixin_extras_version}"
+	// The game side names MixinExtras' Operation (KernelWrapOperations); the game supplies the nested copy above.
+	runtimeCompileOnly "io.github.llamalad7:mixinextras-fabric:${project.mixin_extras_version}"
+
+	// TOML (mods.toml) + JSON (fabric.mod.json) readers — same libs the ecosystems use.
+	api "com.electronwill.night-config:core:${project.night_config_version}"
+	api "com.electronwill.night-config:toml:${project.night_config_version}"
+	api "com.electronwill.night-config:json:${project.night_config_version}"
+
+	// fastutil, for the GAME side only. ParticleResources' vanilla-typed `providers` field is an Int2ObjectMap,
+	// and KernelParticleProviders has to hand it one. None of the three staged artifacts carries fastutil (zero
+	// it/unimi entries in any of them) — Minecraft supplies it at runtime, exactly like brigadier. Pinned from
+	// Maven rather than picked out of the local launcher's library tree, which holds several versions and would
+	// make the runtime set's classpath a function of what that launcher happened to cache. compileOnly, never
+	// bundled, and never resolved on a machine with no staged jars: compileRuntimeJava is already skipped there.
+	runtimeCompileOnly 'it.unimi.dsi:fastutil:8.5.18'
+
+	// Guava, GAME side only, for the same reason and on the same terms as fastutil: several vanilla signatures
+	// return com.google.common.collect.ImmutableList (StateDefinition.getPossibleStates among them), so javac
+	// cannot read those methods without it. Minecraft supplies it at runtime; the kernel never ships it. Pinned
+	// from Maven rather than the local launcher's tree, which holds three versions here — any of them satisfies
+	// javac's need to READ the class files, which is all this is for, so the pin is about reproducibility.
+	runtimeCompileOnly 'com.google.guava:guava:33.6.0-jre'
+
+	// JOML, GAME side only, on the same terms: vanilla renderer and NeoForge event signatures carry joml types
+	// (fog colour as a Vector4f among them), so javac cannot read them without it. Pinned to the version
+	// Minecraft 26.2 lists.
+	runtimeCompileOnly('org.joml:joml:1.10.8') { transitive = false }
+
+	testImplementation "org.junit.jupiter:junit-jupiter:${project.junit_version}"
+	// Compiled against too: FixturePolicyExtensionTest launches a nested run to prove the suite loads its extension.
+	testImplementation 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.withType(JavaCompile).configureEach {
+	options.encoding = 'UTF-8'
+	options.release = 21
+}
+
+// The GAME-side set only compiles when the staged jars exist. Point developers at the pipeline otherwise.
+tasks.named('compileRuntimeJava') {
+	onlyIf {
+		if (stagedGameJars.isEmpty()) {
+			logger.lifecycle('compileRuntimeJava: SKIPPED — staged game jars absent. Run prepareDev first ' +
+						'(or python3 ../tools/dev.py prepare), then build in a second invocation.')
+			return false
+		}
+		return true
+	}
+	// Here rather than in extractTransferApis: with no jar that task has no source, and Gradle skips it unrun.
+	doFirst {
+		if (stagedGameJars.size() != 2) throw new GradleException("Incomplete staged game inputs: "
+				+ stagedGameJars.size() + "/2 under ${stagedRoot}. Run prepareDev before building the game side.")
+		if (!stagedFabricApi.isFile()) throw new GradleException("The kernel game side includes its transfer " +
+				"component and compiles it against Fabric API's transfer modules, but ${stagedFabricApi} does not " +
+				"exist. Pass -Pforbric.fabricApi=<a fabric-api jar for 26.2> (the compatibility pack's is the default).")
+	}
+}
+// No outputs, so never up to date: it runs whenever the game side is built.
+def verifyRebornEnergy = tasks.register('verifyRebornEnergy') {
+	description = 'Checks the Team Reborn Energy jar the game side compiles against: present, and exactly the pinned 5.0.0 file.'
