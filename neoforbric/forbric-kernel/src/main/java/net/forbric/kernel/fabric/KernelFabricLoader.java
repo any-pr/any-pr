@@ -898,3 +898,13 @@ public final class KernelFabricLoader implements FabricLoader {
 		}
 
 		@Override
+		public ModContainer getProvider() {
+			return entry.provider();
+		}
+
+		@Override
+		public String getDefinition() {
+			return entry.definition();
+		}
+	}
+}
