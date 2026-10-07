@@ -598,3 +598,303 @@ public final class PassiveSeeder {
 	 * that genuinely owns the underscored id keeps it, whatever order discovery happened to produce.
 	 */
 	private static void indexUnderscoredIds(Map<String, Object> fileById) {
+		Map<String, Object> aliases = new LinkedHashMap<>();
+		for (Map.Entry<String, Object> entry : fileById.entrySet()) {
+			String id = entry.getKey();
+			if (id == null || id.indexOf('-') < 0) continue;
+			aliases.put(id.replace('-', '_'), entry.getValue());
+		}
+		int added = 0;
+		for (Map.Entry<String, Object> alias : aliases.entrySet()) {
+			if (fileById.putIfAbsent(alias.getKey(), alias.getValue()) == null) added++;
+		}
+		if (added > 0) {
+			ForbricLog.info("[Forbric/Seed] LoadingModList.getModFileById also answers for %d underscored mod id(s) "
+					+ "— NeoForge ids cannot contain '-', so a NeoForge-side mod probing for a Fabric module asks "
+					+ "with underscores (Sodium asks for fabric_renderer_api_v1 before it will register its FRAPI "
+					+ "renderer); the dashed spelling alone told it no", added);
+		}
+	}
+
+	/**
+	 * The answers an {@code IConfigurable} gives when the mod declares no config section — for EITHER family.
+	 *
+	 * <p>There were two of these, one per family, and only one of them was right. The Forge copy answered
+	 * everything except {@code getConfigList} with {@code Optional.empty()}, and a dynamic {@link Proxy} routes
+	 * {@code toString}/{@code hashCode}/{@code equals} to the handler as well — so asking a seeded Forge mod's
+	 * config for its hash code returned an {@code Optional} where an {@code int} was declared, and the proxy
+	 * threw {@link ClassCastException} on the way out. Those three are reached by ordinary things: a record whose
+	 * component this is hashes it, a log line prints it, a collection compares it.
+	 *
+	 * <p>The two families differ in exactly one thing here — WHICH interface — so that is the parameter, and the
+	 * answers are one implementation. They are not otherwise symmetrical and this does not pretend they are:
+	 * traditional Forge's {@code IConfigurable} declares two extra DEFAULT methods
+	 * ({@code getConfigElement(String)}, {@code getConfigList(String)}) that NeoForge's does not. A Proxy routes
+	 * default methods to the handler too — their default bodies never run — which is precisely why this
+	 * dispatches on the method NAME and not on the exact signature.
+	 */
+	private static final InvocationHandler EMPTY_CONFIGURABLE = (proxy, method, args) ->
+			switch (method.getName()) {
+				case "getConfigList" -> List.of();
+				case "toString" -> "KernelSeededConfig";
+				case "hashCode" -> System.identityHashCode(proxy);
+				case "equals" -> proxy == (args == null ? null : args[0]);
+				default -> unmodelled("configurable", method);
+			};
+
+	/**
+	 * Accessors a caller asked about that this kernel does not model, and the empty answer they got.
+	 *
+	 * <h2>Why the question is worth recording</h2>
+	 *
+	 * <p>A synthetic mod info can only answer in the interface's own types, so "I do not know" and "there is
+	 * none" come out as the same empty value, and the caller cannot tell them apart. That is not hypothetical:
+	 * Indigo asked a Sodium built for the other ecosystem whether it declared a renderer, got an empty answer
+	 * because the property was never modelled, and took the branch for "no renderer here" — on an instance where
+	 * Sodium had replaced the pipeline.
+	 *
+	 * <p>Nothing can be returned instead: the answer's type is the interface's. What can change is that the
+	 * kernel stops being the only party that does not know it was asked. Every distinct accessor lands here once,
+	 * and the summary names them, so the next such branch is found by reading a log rather than by a player.
+	 */
+	private static final java.util.Set<String> UNMODELLED =
+			java.util.Collections.synchronizedSet(new java.util.LinkedHashSet<>());
+
+	/** Records the question and gives the interface's empty answer. */
+	private static Object unmodelled(String what, java.lang.reflect.Method method) {
+		UNMODELLED.add(what + "." + method.getName() + " -> " + method.getReturnType().getSimpleName());
+		return method.getReturnType() == List.class ? List.of() : Optional.empty();
+	}
+
+	/** Every unmodelled accessor asked for so far, sorted. */
+	public static List<String> unmodelledAsked() {
+		synchronized (UNMODELLED) {
+			return UNMODELLED.stream().sorted().toList();
+		}
+	}
+
+	/** The one line a gate greps; empty when nothing asked, which is the normal case and worth saying. */
+	public static String unmodelledSummary() {
+		List<String> asked = unmodelledAsked();
+		return "[Forbric/Seed] " + asked.size() + " unmodelled mod-info accessor(s) were asked and answered empty"
+				+ (asked.isEmpty() ? " — nothing asked this boot" : ": " + String.join(", ", asked));
+	}
+
+	/** Forgets them. For tests. */
+	static void resetUnmodelled() {
+		UNMODELLED.clear();
+	}
+
+	/** The handler itself, so a test can drive it without the game types. See EmptyConfigurableTest. */
+	static InvocationHandler emptyConfigurableHandler() {
+		return EMPTY_CONFIGURABLE;
+	}
+
+	/** An {@code IConfigurable} of {@code family} reporting "this mod declares nothing". */
+	private static Object emptyConfigurable(ClassLoader gameLoader, Ecosystem family) throws Exception {
+		Class<?> iConfigurable = Class.forName(ForeignType.CONFIGURABLE.binary(family), false, gameLoader);
+		return Proxy.newProxyInstance(gameLoader, new Class<?>[] {iConfigurable}, EMPTY_CONFIGURABLE);
+	}
+
+	/** {@code -Dforbric.configElements=off} restores the empty answer this used to give. */
+	private static final String CONFIG_ELEMENTS = "forbric.configElements";
+
+	static boolean configElementsEnabled() {
+		return !"off".equalsIgnoreCase(System.getProperty(CONFIG_ELEMENTS, "on"));
+	}
+
+	/**
+	 * An {@code IConfigurable} of {@code family} that answers from {@code elements} — a mod's own {@code [[mods]]}
+	 * entry, or the top level of the file it came from — the way that family's own {@code NightConfigWrapper} would.
+	 *
+	 * <p>{@code getConfigElement} is how a mod tells ANOTHER mod something through the loader. Sodium's
+	 * {@code ForgeMixinOverrides} walks {@code LoadingModList} asking each {@code IModInfo} for
+	 * {@code sodium:options}, so a mod that has taken over a renderer can switch off the sodium mixin that
+	 * would otherwise do the same work twice — iris declares
+	 * {@code [mods."sodium:options"] "mixin.features.render.world.sky" = false} for the sky it draws itself.
+	 * Every seeded mod answered {@link #EMPTY_CONFIGURABLE}, so the table reached nobody:
+	 * {@code Loaded configuration file for Sodium: 37 options available, 0 override(s) found}. Lithium reads the
+	 * same kind of table one level up, from the owning FILE (see {@link #fileConfigurable}).
+	 *
+	 *
+	 * <p>Whether to answer at all is the caller's decision, because each seam has its own switch.
+	 *
+	 * <p>A PARALLEL path, not a re-route: {@link #EMPTY_CONFIGURABLE} stays the one shared instance for mods
+	 * with nothing to declare, which is what {@code EmptyConfigurableTest} asserts by identity.
+	 *
+	 * <p>Dispatches on the method NAME for the reason given on {@link #EMPTY_CONFIGURABLE}: a {@link Proxy}
+	 * routes DEFAULT methods to the handler too, and traditional Forge's interface declares two single-String
+	 * overloads NeoForge's does not. Each path element is a LITERAL key — never split on dots, because iris'
+	 * key is the single literal {@code mixin.features.render.world.sky}.
+	 */
+	private static Object configurableOver(ClassLoader gameLoader, Ecosystem family, Map<String, Object> elements)
+			throws Exception {
+		if (elements == null || elements.isEmpty()) {
+			return emptyConfigurable(gameLoader, family);
+		}
+		Class<?> iConfigurable = Class.forName(ForeignType.CONFIGURABLE.binary(family), false, gameLoader);
+		InvocationHandler handler = (proxy, method, args) -> switch (method.getName()) {
+			// Unconditionally empty: building a nested IConfigurable here would mean Class.forName and a second
+			// Proxy inside the handler, on whatever thread happens to ask.
+			case "getConfigList" -> List.of();
+			case "toString" -> "KernelSeededConfig";
+			case "hashCode" -> System.identityHashCode(proxy);
+			case "equals" -> proxy == (args == null ? null : args[0]);
+			case "getConfigElement" -> lookup(elements, args);
+			default -> unmodelled("configurable", method);
+		};
+		return Proxy.newProxyInstance(gameLoader, new Class<?>[] {iConfigurable}, handler);
+	}
+
+	/**
+	 * The top level of the file {@code first} came from, as an {@code IConfigurable} of {@code family}: what the seeded
+	 * {@code ModFileInfo}'s {@code config} field holds, and so what its {@code getConfigElement} answers.
+	 *
+	 * <p>Natively that field is a {@code NightConfigWrapper} over the whole parsed {@code mods.toml}. Here it was
+	 * {@link #EMPTY_CONFIGURABLE}, so every file-level key read as undeclared. Lithium's {@code NeoForgeMixinOverrides}
+	 * walks {@code LoadingModList.getMods()} and asks each {@code getOwningFile().getConfigElement("lithium:options")};
+	 * Unlit Campfire declares that table at the top level of its file to switch off Lithium's campfire sleeping
+	 * mixin, and the player's log said {@code 0 override(s) found}.
+	 *
+	 * <p>A Fabric mod listed here for presence has no such file and keeps the empty answer. {@code first} is any mod of
+	 * the jar: every mod of one file carries the same table. {@code -Dforbric.fileConfigElements=off} answers empty.
+	 */
+	private static Object fileConfigurable(ClassLoader gameLoader, Ecosystem family, DiscoveredMod first)
+			throws Exception {
+		if (!FmlConfigElements.enabled() || first == null || !first.getEcosystem().isForgeFamily()) {
+			return emptyConfigurable(gameLoader, family);
+		}
+		return configurableOver(gameLoader, family, first.getFileConfigElements());
+	}
+
+	/** A proxied {@code getConfigElement}'s arguments as a path: {@code String[]}, a bare {@code String}, or none. */
+	private static String[] path(Object[] args) {
+		if (args == null || args.length == 0 || args[0] == null) return new String[0];
+		return args[0] instanceof String[] keys ? keys : new String[] {String.valueOf(args[0])};
+	}
+
+	/**
+	 * Walks {@code elements} by literal key. {@code args} is {@code String[]}, a bare {@code String}, or null.
+	 *
+	 * <p>Answers the way NeoForge's {@code NightConfigWrapper.getConfigElement} does. A table below the entry's top
+	 * level is night-config's own {@code Config} (the parser keeps FML's shallow shape, so LibJF can cast a
+	 * {@code [modproperties]} value to {@code Config}), and the wrapper never hands a {@code Config} out: it answers
+	 * a table with its {@code valueMap()}, whose own nested tables stay {@code Config}. So this descends through
+	 * either shape, and a table it lands on is answered as that table's {@code valueMap()} — the {@code Map} Sodium
+	 * reads {@code sodium:options} out of. Not modelled: the wrapper THROWS {@code InvalidModFileException} for a
+	 * path that lands on an array of tables; this answers the list. The walk itself is {@link FmlConfigElements},
+	 * which the kernel's own mod infos answer through as well.
+	 */
+	static Optional<Object> lookup(Map<String, Object> elements, Object[] args) {
+		return FmlConfigElements.neoForge(elements, path(args));
+	}
+
+	private static String displayName(DiscoveredMod mod) {
+		String name = mod.getDisplayName();
+		return name == null || name.isBlank() ? mod.getId() : name;
+	}
+
+	/** Sets a field that a future carrier version may not have — a rename must not cost the whole seeding. */
+	private static void setOptionalInstanceField(Class<?> owner, String name, Object target, Object value) {
+		try {
+			setInstanceField(owner, name, target, value);
+		} catch (Exception absent) {
+			ForbricLog.debug("[Forbric/Seed] %s has no field %s — leaving it at its default", owner.getSimpleName(), name);
+		}
+	}
+
+	/**
+	 * Fills a constructor-free {@code ModFileInfo}. Every field a reader can reach is set to a real value; the two
+	 * booleans and {@code issueURL} keep their allocation defaults (false / null), which is exactly "this file
+	 * declares no resource pack, no data pack and no issue tracker".
+	 *
+	 * <p>{@code config} must not be null: {@code ModFileInfo.getConfigElement}/{@code getConfigList} delegate to it
+	 * straight through, and NeoForge's own {@code ModInfo} construction path reads it. It is a {@link Proxy}, which
+	 * is safe here precisely because that field is typed as the INTERFACE {@code IConfigurable} and is only ever
+	 * called through it. It answers from the file's own top level ({@link #fileConfigurable}), which is where
+	 * Lithium looks for Unlit Campfire's {@code ["lithium:options"]}.
+	 */
+	private static void fillModFileInfo(ClassLoader gameLoader, Class<?> fileInfoCls, Object fileInfo, Path jar,
+			DiscoveredMod first, List<Object> ownMods, boolean indexed) throws Exception {
+		setInstanceField(fileInfoCls, "config", fileInfo, fileConfigurable(gameLoader, Ecosystem.NEOFORGE, first));
+		setInstanceField(fileInfoCls, "mods", fileInfo, ownMods);
+		setInstanceField(fileInfoCls, "languageSpecs", fileInfo, List.of());
+		setInstanceField(fileInfoCls, "properties", fileInfo, Map.of());
+		setInstanceField(fileInfoCls, "usesServices", fileInfo, List.of());
+		// The kernel's mods.toml reader does not carry the license line; "" keeps the Mods screen's info pane a real
+		// String (it is written into it unguarded) instead of a null.
+		setInstanceField(fileInfoCls, "license", fileInfo, "");
+		setInstanceField(fileInfoCls, "modFile", fileInfo,
+				buildModFile(gameLoader, fileInfo, jar, first.getId(), version(first), indexed));
+	}
+
+	/**
+	 * Whether a seeded file is given its jar's REAL annotation index: only when the jar is here as a NeoForge mod.
+	 *
+	 * <p>The other two kinds of entry get an empty index, and that is the truthful answer rather than a shortcut.
+	 * Natively neither is in a NeoForge {@code LoadingModList} at all — the Fabric ones are listed for presence
+	 * only, and a MinecraftForge jar belongs to the other FML. What an index would add is a mod walking every
+	 * file's annotations and loading whatever it finds out of a jar the arbiter handed to another ecosystem: the
+	 * NeoForge half of a universal jar that Fabric is already running, or a MinecraftForge {@code @JeiPlugin}
+	 * handed to the NeoForge build of JEI. It is also exactly what {@code KernelModFile} answers for a mod with no
+	 * jar behind it.
+	 */
+	static boolean indexedForNeoForge(List<DiscoveredMod> modsOfJar) {
+		for (DiscoveredMod mod : modsOfJar) {
+			if (mod.getEcosystem() == Ecosystem.NEOFORGE) return true;
+		}
+		return false;
+	}
+
+	/**
+	 * A constructor-free {@code ModFile} whose contents are the mod's jar, opened the first time anyone reads them
+	 * ({@link #lazyContents}); until then it performs no I/O and opens no handle.
+	 *
+	 * <p>It used to be {@code JarContents.empty(jar)} for good, and a mod that reads its own files through
+	 * {@code FMLLoader.getLoadingModList()} got nothing: LambDynamicLights (through yumi) looks for the default
+	 * {@code lambdynlights.toml} inside its jar on the first launch, found none and stopped the game with "This
+	 * distribution of LambDynamicLights is broken". Every later launch passed, because the config it had failed to
+	 * copy was by then written by hand or by an earlier build, which is why a long-lived test pack never saw it.
+	 *
+	 * <p>It exists so the file-shaped seams answer instead of NPE-ing: {@code ModFileInfo.toString()} is literally
+	 * {@code modFile.getId()}, {@code getFilePath()} is {@code contents.getPrimaryPath()}, and NeoForge's mod-error
+	 * reporting walks {@code getOwningFile().getFile().getFilePath()} whenever any mod-bus listener throws. With a
+	 * null {@code modFile} each of those turns a real error into an NPE that MASKS it.
+	 *
+	 * <p>Best-effort: on any failure the caller's {@code modFile} stays null, which is still strictly better than
+	 * the empty list this whole method replaces — but it is said at WARN, because a null file is not quiet for
+	 * long: a mod walking the list calls {@code getFile().getScanResult()} on every entry, and RollingGate's
+	 * constructor would NPE on this one.
+	 *
+	 * @param indexed whether this file answers {@code getScanResult()} with its jar's real index (see
+	 *                {@link #indexedForNeoForge}) rather than an empty one
+	 */
+	private static Object buildModFile(ClassLoader gameLoader, Object fileInfo, Path jar, String id, String version,
+			boolean indexed) {
+		try {
+			Class<?> modFileCls = Class.forName(ForeignType.MOD_FILE.binary(Ecosystem.NEOFORGE), false, gameLoader);
+			Class<?> contentsCls = Class.forName("net.neoforged.fml.jarcontents.JarContents", false, gameLoader);
+			Class<?> typeCls = Class.forName(ForeignType.MOD_FILE_TYPE.binary(Ecosystem.NEOFORGE), false, gameLoader);
+
+			Object modFile = allocate(modFileCls);
+			setInstanceField(modFileCls, "contents", modFile, lazyContents(gameLoader, contentsCls, jar));
+			setInstanceField(modFileCls, "id", modFile, id);
+			setInstanceField(modFileCls, "jarVersion", modFile, version);
+			setInstanceField(modFileCls, "modFileType", modFile, Enum.valueOf(typeCls.asSubclass(Enum.class), "MOD"));
+			setInstanceField(modFileCls, "modFileInfo", modFile, fileInfo);
+			setInstanceField(modFileCls, "mixinConfigs", modFile, List.of());
+			setInstanceField(modFileCls, "accessTransformers", modFile, List.of());
+			setInstanceField(modFileCls, "fileProperties", modFile, Map.of());
+			setInstanceField(modFileCls, "loaders", modFile, List.of());
+			try {
+				Class<?> attrs = Class.forName("net.neoforged.neoforgespi.locating.ModFileDiscoveryAttributes",
+						false, gameLoader);
+				setInstanceField(modFileCls, "discoveryAttributes", modFile, attrs.getField("DEFAULT").get(null));
+			} catch (Throwable optional) {
+				ForbricLog.debug("[Forbric/Seed] no ModFileDiscoveryAttributes.DEFAULT (%s) — leaving it null",
+						String.valueOf(optional));
+			}
+			seedScanResult(modFileCls, modFile, gameLoader, jar, indexed);
+			return modFile;
+		} catch (Throwable t) {
+			ForbricLog.warn("[Forbric/Seed] could not build a synthetic ModFile for '%s' (%s) — the ModFileInfo's "
