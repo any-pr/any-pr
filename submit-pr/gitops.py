@@ -43,8 +43,27 @@ def gh(*args: str) -> str:
     return run(["gh", *args]).strip()
 
 
+def run_retry(cmd: list[str], cwd: str | None = None, attempts: int = 3,
+              backoff: float = 5.0) -> str:
+    """对网络类命令（fetch 等）做瞬时错误重试。"""
+    last: Exception | None = None
+    for i in range(1, attempts + 1):
+        try:
+            return run(cmd, cwd=cwd)
+        except RuntimeError as e:
+            last = e
+            transient = any(k in str(e).lower() for k in
+                            ("ssl", "tls", "handshake", "connection",
+                             "timeout", "could not resolve", "eof"))
+            if not transient or i == attempts:
+                raise
+            time.sleep(backoff * i)
+    raise last  # pragma: no cover
+
+
 def latest_main_sha(target: str, repo_root: str) -> str:
-    run(["git", "fetch", f"https://github.com/{target}.git", "main"], cwd=repo_root)
+    run_retry(["git", "fetch", f"https://github.com/{target}.git", "main"],
+              cwd=repo_root)
     return run(["git", "rev-parse", "FETCH_HEAD"], cwd=repo_root).strip()
 
 
@@ -197,21 +216,31 @@ def last_comment(target: str, pr: int) -> str:
 # ---------------------------------------------------------------------------
 # 单批提交（并发安全: 每批独立 worktree / 分支 / PR，可在多线程中同时运行）
 # ---------------------------------------------------------------------------
+NUDGE_AFTER = 120  # PR 打开后超过这么多秒仍无进展，就强推促发重新检查
+
+
 def submit_batch(repo_root: str, target: str, fork: str, base_sha: str, branch: str,
                  batch: list[dict], dest: str, title: str, body: str,
                  poll_timeout: int, poll_interval: int, max_retries: int) -> dict:
-    """提交一批文件并等待合并。冲突被关时换新基底重建分支强推重试。
+    """提交一批文件并等待合并。各批文件路径不相交，可并发提交/合并。
 
-    各批文件路径不相交，因此多批并发提交/合并互不干扰，合并顺序无关。
+    机器人有两种情况需要重新触发检查（重试上限内各换一次新基底强推，
+    synchronize 事件会让它重新跑检查后合并）:
+      - PR 因 base 变动合并冲突被关 / 被评论要求 rebase；
+      - 合并请求与别的 PR 的合并发生竞态时，机器人会静默退出且不再重试，
+        PR 就永远停在 OPEN —— 只能靠强推促发。
     """
     pr: int | None = None
     base = base_sha
-    for attempt in range(1, max_retries + 1):
+    attempt = 0
+    while attempt < max_retries:
+        attempt += 1
         wt = build_worktree_commit(repo_root, base, dest, batch, title)
         try:
             push_branch(fork, branch, wt, force=pr is not None)
         finally:
             drop_worktree(repo_root, wt)
+        last_push = time.time()
 
         if pr is None:
             pr = get_open_pr(target, fork, branch)
@@ -222,8 +251,7 @@ def submit_batch(repo_root: str, target: str, fork: str, base_sha: str, branch: 
                 log(branch, f"PR #{pr}: {url}")
 
         deadline = time.time() + poll_timeout
-        status = "timeout"
-        while time.time() < deadline:
+        while True:
             st = pr_state(target, pr)
             if st == "MERGED":
                 return {"pr": pr, "result": "merged",
@@ -233,12 +261,16 @@ def submit_batch(repo_root: str, target: str, fork: str, base_sha: str, branch: 
                 if "conflict" in comment.lower() and attempt < max_retries:
                     log(branch, f"与 main 冲突，换新基底重试 ({attempt}/{max_retries})…")
                     base = latest_main_sha(target, repo_root)
-                    status = "conflict"
                     break
                 raise RuntimeError(f"PR #{pr} 被机器人关闭:\n{comment or '(无评论)'}")
+            if (attempt < max_retries
+                    and time.time() - last_push > NUDGE_AFTER):
+                log(branch, f"{NUDGE_AFTER}s 仍无进展（可能与其他 PR 的合并竞态），"
+                            f"换新基底强推触发重新检查 ({attempt}/{max_retries})…")
+                base = latest_main_sha(target, repo_root)
+                break
+            if time.time() >= deadline:
+                return {"pr": pr, "result": "timeout",
+                        "url": f"https://github.com/{target}/pull/{pr}"}
             time.sleep(poll_interval)
-        if status == "conflict":
-            continue
-        return {"pr": pr, "result": "timeout",
-                "url": f"https://github.com/{target}/pull/{pr}"}
     raise RuntimeError(f"PR #{pr} 重试 {max_retries} 次仍未合并")
