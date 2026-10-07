@@ -298,3 +298,175 @@ class RegistrationEventStepsTest {
 		get.visitLdcInsn("minecraft:item");
 		get.visitVarInsn(Opcodes.ALOAD, 0);
 		get.visitMethodInsn(Opcodes.INVOKESTATIC, "java/util/Map", "of",
+				"(Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map;", true);
+		get.visitInsn(Opcodes.ARETURN);
+		get.visitMaxs(0, 0);
+		get.visitEnd();
+		cw.visitEnd();
+		return cw.toByteArray();
+	}
+
+	/** The INFO lines {@code ForbricLog} wrote while {@code run} ran: stdout, log4j being absent from the test classpath. */
+	private static String logOf(Runnable run) {
+		java.io.ByteArrayOutputStream log = new java.io.ByteArrayOutputStream();
+		java.io.PrintStream out = System.out;
+		try {
+			System.setOut(new java.io.PrintStream(log, true, java.nio.charset.StandardCharsets.UTF_8));
+			run.run();
+		} finally {
+			System.setOut(out);
+		}
+		return log.toString(java.nio.charset.StandardCharsets.UTF_8);
+	}
+
+	/** The pattern a gate's "registration events ran" check greps for. */
+	private static String registrationPattern(String gate) throws Exception {
+		for (String line : Files.readAllLines(Path.of(gate))) {
+			java.util.regex.Matcher m = java.util.regex.Pattern
+					.compile("^(?:check|ck)\\s+\"registration events ran\"\\s+\"([^\"]+)\"").matcher(line);
+			if (m.find()) return m.group(1);
+		}
+		throw new AssertionError(gate + " has no \"registration events ran\" check");
+	}
+
+	/** Whether {@code grep -acE pattern} counts a line of {@code text}, as the gates ask. */
+	private static boolean grep(Path dir, String pattern, String text) throws Exception {
+		Path log = Files.writeString(dir.resolve("boot.log"), text);
+		Process grep = new ProcessBuilder("grep", "-acE", pattern, log.toString()).redirectErrorStream(true).start();
+		assertTrue(grep.waitFor(15, java.util.concurrent.TimeUnit.SECONDS), "grep timed out");
+		return !"0".equals(new String(grep.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).strip());
+	}
+
+	private static CompatibilityFinding finding(String id) {
+		return CompatibilityFindings.all().stream().filter(f -> f.id().equals(id)).findFirst().orElse(null);
+	}
+
+	/**
+	 * A carrier with RegistrationEvents.init = cauldron, capabilities, data maps (always throws), POI. The file
+	 * it serves is always the plain one; {@code transformed} defines a class that also carries a merged handler.
+	 */
+	private static Carrier carrier(boolean capabilitiesThrow, boolean transformed) {
+		Map<String, byte[]> classes = stepClasses(capabilitiesThrow);
+		String[] steps = {CAULDRON, CAPABILITIES, REGISTRY_MANAGER + "#initDataMaps", POI};
+		byte[] file = events(false, steps);
+		classes.put(EVENTS, transformed ? withMergedHandler(file) : file);
+		Map<String, byte[]> resources = new HashMap<>(classes);
+		resources.put(EVENTS, file);
+		return new Carrier(classes, resources);
+	}
+
+	private static Map<String, byte[]> stepClasses(boolean capabilitiesThrow) {
+		Map<String, byte[]> classes = new HashMap<>();
+		classes.put(CAULDRON, step(CAULDRON, "init", "cauldron", false, false));
+		classes.put(CAPABILITIES, step(CAPABILITIES, "init", "capabilities", capabilitiesThrow, false));
+		classes.put(REGISTRY_MANAGER, step(REGISTRY_MANAGER, "initDataMaps", "data maps", true, true));
+		classes.put(POI, step(POI, "init", "poi", false, false));
+		return classes;
+	}
+
+	/** {@code init()V} calling each owner's {@code init} (or {@code owner#name}), optionally behind a branch. */
+	private static byte[] events(boolean branch, String... owners) {
+		ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+		cw.visit(Opcodes.V21, Opcodes.ACC_PUBLIC, EVENTS, null, "java/lang/Object", null);
+		MethodVisitor mv = cw.visitMethod(Opcodes.ACC_STATIC, "init", "()V", null, null);
+		mv.visitCode();
+		Label skip = new Label();
+		if (branch) {
+			mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/Boolean", "TRUE", "Ljava/lang/Boolean;");
+			mv.visitJumpInsn(Opcodes.IFNULL, skip);
+		}
+		for (String owner : owners) {
+			String[] parts = owner.split("#");
+			mv.visitMethodInsn(Opcodes.INVOKESTATIC, parts[0], parts.length > 1 ? parts[1] : "init", "()V", false);
+		}
+		if (branch) mv.visitLabel(skip);
+		mv.visitInsn(Opcodes.RETURN);
+		mv.visitMaxs(0, 0);
+		mv.visitEnd();
+		cw.visitEnd();
+		return cw.toByteArray();
+	}
+
+	/** The same class with one more method, named the way Mixin names a merged injector. */
+	private static byte[] withMergedHandler(byte[] file) {
+		ClassReader reader = new ClassReader(file);
+		ClassWriter cw = new ClassWriter(reader, 0);
+		reader.accept(new org.objectweb.asm.ClassVisitor(Opcodes.ASM9, cw) {
+			@Override
+			public void visitEnd() {
+				MethodVisitor mv = super.visitMethod(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC,
+						"handler$zza000$somemod$afterInit", "()V", null, null);
+				mv.visitCode();
+				mv.visitInsn(Opcodes.RETURN);
+				mv.visitMaxs(0, 0);
+				mv.visitEnd();
+				super.visitEnd();
+			}
+		}, 0);
+		return cw.toByteArray();
+	}
+
+	/** A step class: records itself, then optionally throws; the data-map owner also answers getDataMaps. */
+	private static byte[] step(String owner, String name, String label, boolean throwsAfter, boolean dataMaps) {
+		ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+		cw.visit(Opcodes.V21, Opcodes.ACC_PUBLIC, owner, null, "java/lang/Object", null);
+		// Public, as NeoForge's are: the whole-call path reaches them from another package's bytecode.
+		MethodVisitor mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, name, "()V", null, null);
+		mv.visitCode();
+		if (throwsAfter) {
+			mv.visitTypeInsn(Opcodes.NEW, "java/lang/IllegalStateException");
+			mv.visitInsn(Opcodes.DUP);
+			mv.visitLdcInsn("a listener died in " + label);
+			mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/IllegalStateException", "<init>",
+					"(Ljava/lang/String;)V", false);
+			mv.visitInsn(Opcodes.ATHROW);
+		} else {
+			mv.visitLdcInsn(label);
+			mv.visitMethodInsn(Opcodes.INVOKESTATIC, Recorder.class.getName().replace('.', '/'), "hit",
+					"(Ljava/lang/String;)V", false);
+			mv.visitInsn(Opcodes.RETURN);
+		}
+		mv.visitMaxs(0, 0);
+		mv.visitEnd();
+		if (dataMaps) {
+			MethodVisitor get = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "getDataMaps",
+					"()Ljava/util/Map;", null, null);
+			get.visitCode();
+			get.visitMethodInsn(Opcodes.INVOKESTATIC, "java/util/Map", "of", "()Ljava/util/Map;", true);
+			get.visitInsn(Opcodes.ARETURN);
+			get.visitMaxs(0, 0);
+			get.visitEnd();
+		}
+		cw.visitEnd();
+		return cw.toByteArray();
+	}
+
+	/** Defines the synthetic carrier classes and serves {@code resources} as their files. */
+	private static final class Carrier extends ClassLoader {
+		private final Map<String, byte[]> classes;
+		private final Map<String, byte[]> resources;
+
+		Carrier(Map<String, byte[]> classes, Map<String, byte[]> resources) {
+			super(RegistrationEventStepsTest.class.getClassLoader());
+			this.classes = classes;
+			this.resources = resources;
+		}
+
+		/** Child-first for the synthetic names, so a real carrier on the test classpath can never stand in. */
+		@Override
+		protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+			byte[] bytes = classes.get(name.replace('.', '/'));
+			if (bytes == null) return super.loadClass(name, resolve);
+			synchronized (getClassLoadingLock(name)) {
+				Class<?> c = findLoadedClass(name);
+				return c != null ? c : defineClass(name, bytes, 0, bytes.length);
+			}
+		}
+
+		@Override
+		public InputStream getResourceAsStream(String name) {
+			byte[] bytes = name.endsWith(".class") ? resources.get(name.substring(0, name.length() - 6)) : null;
+			return bytes != null ? new ByteArrayInputStream(bytes) : super.getResourceAsStream(name);
+		}
+	}
+}
