@@ -205,7 +205,7 @@ def main() -> None:
                 f"the file now holds its first {done} lines.\n\n"
                 "Pre-validated locally by `submit-pr/submit_pr.py`.\n")
             steps.append((f"{args.branch_prefix}-{ts}-{j}x{k}", title, body, [c]))
-        units.append((f"分块链 {path}（{n} 块）", steps, ch))
+        units.append((f"分块链 {path}（{n} 块）", steps, [ch[-1]]))
 
     workers = max(1, min(args.workers or len(units), len(units), 10))
     print(f"\n并发提交 {len(units)} 个任务（{workers} 路并行）…")
