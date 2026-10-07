@@ -1198,3 +1198,303 @@ public final class KernelLifecycle {
 	 * reported as an error: the mixin simply applies partially, Fabric's substitution never happens, NeoForge's
 	 * list is used as-is, and every registry a FABRIC mod declared is missing at world load.
 	 *
+	 * <p>What that cost, measured: lithostitched declares {@code lithostitched:fast_noise_config} through Fabric's
+	 * API, and its own worldgen regions then failed to parse with
+	 * {@code Registry does not exist: ResourceKey[minecraft:root / lithostitched:fast_noise_config]} — nested four
+	 * levels deep inside a density-function {@code Codec.either}, which is where the real message was hiding —
+	 * and the server refused to load its datapacks at all.
+	 *
+	 * <p>Mirroring both ways makes the instance correct under either outcome: whichever list {@code WorldLoader}
+	 * ends up passing, it holds every registry either ecosystem declared. Declared through a second
+	 * {@code NewRegistry} event rather than by touching NeoForge's private list, so NeoForge's own bookkeeping
+	 * ({@code DataPackRegistriesHooks.addRegistryCodec}) runs exactly as it does for its own mods.
+	 *
+	 * <p>Unsynced on purpose, for the same reason the other direction is: sync is a separate path that the
+	 * declaring side already owns, and claiming it twice puts the registry in both synced sets, which the client's
+	 * configuration-phase collector reads twice and dies on.
+	 */
+	private static void mirrorFabricDynamicRegistriesIntoNeoForge(ClassLoader cl, Class<?> eventCls,
+			Class<?> hooksCls) {
+		try {
+			Class<?> dynamicCls = Class.forName(
+					"net.fabricmc.fabric.api.event.registry.DynamicRegistries", false, cl);
+			Class<?> keyCls = Class.forName("net.minecraft.resources.ResourceKey", false, cl);
+			Class<?> codecCls = Class.forName("com.mojang.serialization.Codec", false, cl);
+			Class<?> dataCls = Class.forName("net.minecraft.resources.RegistryDataLoader$RegistryData", false, cl);
+			Method key = dataCls.getMethod("key");
+			Method elementCodec = dataCls.getMethod("elementCodec");
+
+			java.util.Set<Object> alreadyNeo = new java.util.HashSet<>();
+			for (Object data : (java.util.List<?>) hooksCls.getMethod("getDataPackRegistries").invoke(null)) {
+				alreadyNeo.add(key.invoke(data));
+			}
+
+			Object event = eventCls.getConstructor().newInstance();
+			Method declare = eventCls.getMethod("dataPackRegistry", keyCls, codecCls);
+			java.util.List<String> mirrored = new java.util.ArrayList<>();
+			for (Object data : (java.util.List<?>) dynamicCls.getMethod("getDynamicRegistries").invoke(null)) {
+				Object registryKey = key.invoke(data);
+				if (!alreadyNeo.add(registryKey)) continue;
+				declare.invoke(event, registryKey, elementCodec.invoke(data));
+				mirrored.add(String.valueOf(registryKey));
+			}
+			if (mirrored.isEmpty()) return;
+
+			Method process = eventCls.getDeclaredMethod("process");
+			process.setAccessible(true);
+			process.invoke(event);
+			ForbricLog.info("[Forbric/Lifecycle] mirrored %d Fabric-declared datapack registr(ies) into NeoForge's "
+					+ "list too — from NeoForge 26.2.0.88 the loader's argument is NeoForge's own (fabric-api's "
+					+ "WorldLoaderMixin no longer anchors on the widened RegistryDataLoader.load), so a "
+					+ "Fabric-declared registry is invisible at world load without this: %s",
+					mirrored.size(), mirrored);
+		} catch (ClassNotFoundException absent) {
+			ForbricLog.debug("[Forbric/Lifecycle] fabric-api dynamic registries absent — nothing to mirror back");
+		} catch (Throwable t) {
+			ForbricLog.warn("[Forbric/Lifecycle] could not mirror Fabric's datapack registries into NeoForge's "
+					+ "list — a Fabric mod's worldgen registry may be missing at world load", unwrap(t));
+		}
+	}
+
+
+	/**
+	 * Mirrors the NeoForge-declared datapack registries into Fabric API's {@code DynamicRegistries}, so both
+	 * ecosystems' worldgen registries exist whichever list the world loader ends up reading.
+	 *
+	 * <p><b>Why this is needed at all.</b> The merged base is NeoForge-patched, so {@code WorldLoader} passes
+	 * {@code DataPackRegistriesHooks.getDataPackRegistries()} to {@code RegistryDataLoader}. But fabric-api's
+	 * {@code fabric-registry-sync-v0} ships {@code WorldLoaderMixin.modifyLoadedEntries}, which REPLACES that
+	 * argument with {@code DynamicRegistries.getBootstrappingRegistries()} — its own list, built only from what was
+	 * registered through Fabric's API. On a Fabric-only or NeoForge-only instance exactly one of the two lists is
+	 * live and everything works; put both packs in one instance and Fabric's wins, silently dropping every
+	 * NeoForge-declared registry. lithostitched then died at world load with
+	 * {@code Missing registry: lithostitched:worldgen_modifier} even though the declaration was demonstrably present
+	 * in {@code DataPackRegistriesHooks} — which is what made this so hard to see.
+	 *
+	 * <p>So the kernel registers each one on the Fabric side too. Synced-ness is carried across rather than
+	 * guessed: NeoForge records it in {@code getSyncedCustomRegistries()}, and Fabric splits the two into
+	 * {@code register} and {@code registerSynced}.
+	 *
+	 * <p>No-ops when fabric-api is absent — then nothing rewrites the list and NeoForge's own is used as-is.
+	 * Best-effort: a failure here costs a mod's worldgen registry, and is reported, but must not fail the boot.
+	 */
+	private static void mirrorIntoFabricDynamicRegistries(ClassLoader cl, java.util.List<?> added) {
+		if (added.isEmpty()) return;
+		try {
+			Class<?> dynamicCls = Class.forName(
+					"net.fabricmc.fabric.api.event.registry.DynamicRegistries", false, cl);
+			Class<?> keyCls = Class.forName("net.minecraft.resources.ResourceKey", false, cl);
+			Class<?> codecCls = Class.forName("com.mojang.serialization.Codec", false, cl);
+			Class<?> dataCls = Class.forName("net.minecraft.resources.RegistryDataLoader$RegistryData", false, cl);
+			Method key = dataCls.getMethod("key");
+			Method elementCodec = dataCls.getMethod("elementCodec");
+			Method register = dynamicCls.getMethod("register", keyCls, codecCls);
+
+			// Fabric throws on a duplicate key, and a Fabric mod may legitimately have registered the same registry.
+			java.util.Set<Object> alreadyFabric = new java.util.HashSet<>();
+			for (Object data : (java.util.List<?>) dynamicCls.getMethod("getDynamicRegistries").invoke(null)) {
+				alreadyFabric.add(key.invoke(data));
+			}
+			java.util.List<String> mirrored = new java.util.ArrayList<>();
+			for (Object data : added) {
+				Object registryKey = key.invoke(data);
+				if (!alreadyFabric.add(registryKey)) continue;
+				// PLAIN register, never registerSynced — even for a registry NeoForge does sync. The mirror exists
+				// for ONE reason: fabric-api's WorldLoaderMixin substitutes its own list at world load, so a
+				// NeoForge-declared registry has to appear in that list to survive. Sync is a different path and
+				// NeoForge already owns it for its own registries; claiming it on Fabric's side too puts the
+				// registry in BOTH synced sets, and the client's configuration-phase collector then reads it twice
+				// and dies on "Duplicate key ResourceKey[minecraft:root / bagus_lib:dialog]" inside
+				// ImmutableRegistryAccess — a join failure reported only as "Network Protocol Error".
+				register.invoke(null, registryKey, elementCodec.invoke(data));
+				mirrored.add(String.valueOf(registryKey));
+			}
+			if (!mirrored.isEmpty()) {
+				ForbricLog.info("[Forbric/Lifecycle] mirrored %d datapack registr(ies) into Fabric's list too — "
+						+ "fabric-api's WorldLoaderMixin replaces the loader's argument with its own, so a "
+						+ "NeoForge-declared registry is invisible at world load without this: %s",
+						mirrored.size(), mirrored);
+			}
+		} catch (ClassNotFoundException absent) {
+			ForbricLog.debug("[Forbric/Lifecycle] fabric-api dynamic registries absent — NeoForge's list stands");
+		} catch (Throwable t) {
+			ForbricLog.warn("[Forbric/Lifecycle] could not mirror datapack registries into Fabric's list — a "
+					+ "NeoForge mod's worldgen registry may be missing at world load", unwrap(t));
+		}
+	}
+
+	/**
+	 * Posts {@code FMLCommonSetupEvent} → (client) {@code FMLClientSetupEvent} → {@code FMLLoadCompleteEvent} at
+	 * every NeoForge mod the kernel loaded, each on that mod's own bus, running the deferred work between phases.
+	 *
+	 * <p>Scoped to GUEST mods on purpose: NeoForge's own baseline setup is already driven by the kernel's explicit
+	 * steps above (registries, network, config, internal subscribers), and posting these at the baseline too would
+	 * re-run work the kernel has taken over. Extend only with a measured reason.
+	 *
+	 * <p>Best-effort per phase and per mod — a mod that throws in its own setup must not abort the boot, exactly as
+	 * genuine FML collects such failures rather than dying at the first one.
+	 */
+	private static void fireModSetupLifecycle(ClassLoader cl, Side side) {
+		java.util.Map<String, KernelModLoader.NeoIdentity> mods = KernelModLoader.publishedNeoMods();
+
+		// On the CLIENT every phase, common setup included, is deferred to fireClientSetupLifecycle. This method
+		// runs BEFORE `new Minecraft(...)`, so Minecraft.getInstance() is still null here — and common setup is
+		// exactly where a mod does its dist-guarded client initialisation: caching the singleton into a static
+		// field, or handing work to Minecraft.execute. Genuine NeoForge posts common setup from
+		// ClientModLoader.finish(), inside Minecraft's own constructor, where the singleton exists. Posting it
+		// here handed those mods a null and the failure surfaced later, in rendering, with nothing pointing back.
+		if (side.isClient()) return;
+
+		fireSetupPhase(cl, mods, ForeignType.FML_COMMON_SETUP_EVENT, "common setup");
+		// The sided phase. The kernel used to jump straight from common setup to load complete, so on a dedicated
+		// server this event was never posted to anyone at all.
+		fireSetupPhase(cl, mods, ForeignType.FML_DEDICATED_SERVER_SETUP_EVENT, "dedicated server setup");
+		fireRegistrationEvents(cl);
+		fireSetupPhase(cl, mods, ForeignType.INTER_MOD_ENQUEUE_EVENT, "IMC enqueue");
+		fireSetupPhase(cl, mods, ForeignType.INTER_MOD_PROCESS_EVENT, "IMC process");
+		fireSetupPhase(cl, mods, ForeignType.FML_LOAD_COMPLETE_EVENT, "load complete");
+
+		// Loading is over on this side, so whatever went wrong during it is now the whole story rather than a
+		// partial one. A clean run writes no file and says one line.
+		net.forbric.kernel.access.AccessCensus.report();
+		KernelLoadReport.write();
+		net.forbric.kernel.ui.CompatibilityDecision.requireContinuation(false);
+	}
+
+	/**
+	 * Runs NeoForge's own {@code RegistrationEvents.init()} — the "Registration events" task of
+	 * {@code CommonModLoader.load}, between the sided setup and load complete.
+	 *
+	 * <p>One call, and a surprising amount behind it. It posts {@code RegisterCapabilitiesEvent} and
+	 * {@code RegisterDataMapTypesEvent}, and initialises five NeoForge built-ins besides — cauldron fluid content
+	 * and interactions, forced chunks, data component modifiers, POI extension. The kernel drives the lifecycle
+	 * itself and never replaced this step, so NOT ONE capability was registered in a Forbric instance, NeoForge's
+	 * own vanilla providers included, and no mod's data maps existed.
+	 *
+	 * <p>Called through NeoForge's method rather than reimplemented: the contents are its internals, they change
+	 * between versions, and a hand-rolled copy would rot silently. Its steps are run one at a time where its
+	 * bytecode allows — {@link RegistrationEventSteps} — so one failing step no longer takes the rest with it.
+	 * Once only — the client and server paths each reach this point, and both must not run it.
+	 */
+	private static void fireRegistrationEvents(ClassLoader cl) {
+		if (!REGISTRATION_EVENTS_FIRED.compareAndSet(false, true)) return;
+		RegistrationEventSteps.Outcome outcome;
+		try {
+			outcome = RegistrationEventSteps.fire(cl);
+		} catch (Throwable t) {
+			ForbricLog.warn("[Forbric/Lifecycle] could not run NeoForge's registration events — capabilities and "
+					+ "data maps will be missing", unwrap(t));
+			return;
+		}
+		if (outcome == null) return;
+		// Outside the call, and waiting only on the step it needs. It used to follow init in the same try, so on the
+		// sweep pack's client a data-map listener's failure also cost the cross-ecosystem transfer bridge, which has
+		// nothing to do with data maps; it is installed "after native capability registration", and that is the one
+		// step it is gated on now.
+		if (outcome.capabilitiesRegistered()) {
+			KernelTransferInterop.install(cl);
+		} else if (KernelTransferInterop.active()) {
+			ForbricLog.warn("[Forbric/Transfer] not initialized: NeoForge's capability registration failed, and the "
+					+ "bridge answers after the native providers it registers");
+			CompatibilityFindings.record(new CompatibilityFinding("transfer-initialization", "forbric",
+					"Cross-ecosystem item and fluid transfer", "KernelTransferInterop",
+					CompatibilityFinding.Confidence.CONFIRMED, true,
+					"NeoForge's capability registration failed, so the transfer APIs were not connected; foreign "
+							+ "storage is unavailable.", List.of("capability registration failed")));
+		}
+	}
+
+	private static final java.util.concurrent.atomic.AtomicBoolean REGISTRATION_EVENTS_FIRED =
+			new java.util.concurrent.atomic.AtomicBoolean();
+
+	/**
+	 * Posts a no-arg mod-bus event at every published container, one container at a time.
+	 *
+	 * <p>It used to hand the event to {@code ModLoader.postEvent}, NeoForge's own fan-out. That walks the ModList
+	 * in order and calls {@code ModContainer.acceptEvent}, which rethrows the first listener failure as a
+	 * {@code ModLoadingException} — so one mod throwing ended the fan-out and every mod AFTER it in the list never
+	 * saw the event, with a single kernel WARN naming the event and not the mod. For
+	 * {@code BlockEntityTypeAddBlocksEvent} that means a mod's blocks are simply never attached to the vanilla
+	 * block entity they extend, silently, because of a different mod's bug.
+	 *
+	 * <p>Genuine NeoForge is entitled to that behaviour: it turns the exception into a loading-error SCREEN and
+	 * stops. The kernel does not have that screen and carries on booting, so aborting the fan-out costs mods their
+	 * registration and tells nobody. Dispatching per container is the same delivery with the failure contained,
+	 * and each failure names the mod it belongs to.
+	 *
+	 * <p>The baseline container goes first, as it does in {@code ModList}, so NeoForge's own handlers still run
+	 * before the mods'. And it is delivered phase by phase, as {@code ModLoader.postEvent} does: every mod's
+	 * {@code HIGHEST} listeners, then every mod's {@code HIGH}, and so on. One container at a time with all its phases
+	 * would let an earlier mod's {@code LOWEST} listener run before a later mod's {@code HIGHEST}; for an event whose
+	 * registration order is draw order ({@code RegisterTooltipAppendersEvent}) that is visible on screen.
+	 */
+	private static void postModBusEvent(ClassLoader cl, String eventClassName) {
+		Object event;
+		Method acceptEvent;
+		try {
+			Class<?> eventCls = Class.forName(eventClassName, false, cl);
+			Class<?> baseEvent = Class.forName("net.neoforged.bus.api.Event", false, cl);
+			event = eventCls.getConstructor().newInstance();
+			acceptEvent = modContainerClass(cl).getMethod("acceptEvent", baseEvent);
+		} catch (ClassNotFoundException | NoSuchMethodException absent) {
+			ForbricLog.debug("[Forbric/Lifecycle] %s absent — skipping", eventClassName);
+			return;
+		} catch (Throwable t) {
+			ForbricLog.warn("[Forbric/Lifecycle] could not build " + eventClassName, unwrap(t));
+			return;
+		}
+		deliverModBusEvent(cl, acceptEvent, event, eventClassName);
+	}
+
+	/**
+	 * The same per-container delivery for a mod-bus event game code built itself and would have handed to
+	 * {@code ModLoader.postEvent} — {@code ItemTooltipHandler.init}'s {@code RegisterTooltipAppendersEvent}. Returns
+	 * how many containers took it.
+	 */
+	public static int postModBusEvent(Object event) {
+		ClassLoader cl = event.getClass().getClassLoader();
+		Method acceptEvent;
+		try {
+			acceptEvent = modContainerClass(cl).getMethod("acceptEvent", Class.forName("net.neoforged.bus.api.Event", false, cl));
+		} catch (ReflectiveOperationException absent) {
+			ForbricLog.warn("[Forbric/Lifecycle] no NeoForge mod container to post " + event.getClass().getName() + " through",
+					absent);
+			return 0;
+		}
+		return deliverModBusEvent(cl, acceptEvent, event, event.getClass().getName());
+	}
+
+	private static int deliverModBusEvent(ClassLoader cl, Method acceptEvent, Object event, String eventClassName) {
+		java.util.Map<String, Object> byId = new java.util.LinkedHashMap<>();
+		if (baselineContainer != null) byId.put("neoforge", baselineContainer);
+		KernelModLoader.publishedNeoMods().forEach((id, identity) -> byId.put(id, identity.container()));
+		if (byId.isEmpty()) return 0;
+
+		// Phase by phase where the carrier offers it (ModContainer.acceptEvent(EventPriority, Event)); otherwise each
+		// container with all its phases.
+		Method phased = null;
+		Object[] phases = null;
+		try {
+			Class<?> priority = Class.forName("net.neoforged.bus.api.EventPriority", false, cl);
+			phased = modContainerClass(cl).getMethod("acceptEvent", priority, Class.forName("net.neoforged.bus.api.Event", false, cl));
+			phases = priority.getEnumConstants();
+		} catch (ReflectiveOperationException | LinkageError single) {
+			ForbricLog.debug("[Forbric/Lifecycle] no phased acceptEvent — %s goes to each container whole", eventClassName);
+		}
+		java.util.Set<String> failed = new java.util.HashSet<>();
+		for (Object phase : phases == null ? new Object[] {null} : phases) {
+			for (java.util.Map.Entry<String, Object> e : byId.entrySet()) {
+				if (failed.contains(e.getKey())) continue;
+				try {
+					if (phase == null) acceptEvent.invoke(e.getValue(), event);
+					else phased.invoke(e.getValue(), phase, event);
+				} catch (Throwable perMod) {
+					failed.add(e.getKey());
+					ForbricLog.warn("[Forbric/Lifecycle] " + e.getKey() + " threw during " + eventClassName
+							+ " — its own registration from that event is lost, every other mod still gets it",
+							unwrap(perMod));
+				}
+			}
+		}
+		int delivered = byId.size() - failed.size();
+		ForbricLog.debug("[Forbric/Lifecycle] posted %s to %d container(s)", eventClassName, delivered);
