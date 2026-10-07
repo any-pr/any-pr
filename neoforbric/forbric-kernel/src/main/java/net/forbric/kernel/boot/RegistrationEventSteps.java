@@ -298,3 +298,48 @@ final class RegistrationEventSteps {
 			if (failed.getKey().equals(DATA_MAPS)) continue; // its own finding below
 			CompatibilityFindings.record(new CompatibilityFinding("neoforge-registration:" + failed.getKey().display(),
 					"forbric", "NeoForge built-in registration", "RegistrationEvents.init",
+					CompatibilityFinding.Confidence.CONFIRMED, true,
+					"NeoForge's " + failed.getKey().display() + " failed; native NeoForge stops loading here, "
+							+ "Forbric ran the remaining registration steps without it",
+					List.of(String.valueOf(failed.getValue()))));
+		}
+
+		// Data maps get a finding whether they failed loudly or came back empty, and not on the WARN alone: the
+		// sweep pack's client lost every one of them with nothing but a log line to show for it.
+		Throwable dataMaps = outcome.dataMapsFailure();
+		if (dataMaps != null || outcome.dataMapsEmpty()) {
+			String cause = dataMaps != null ? String.valueOf(dataMaps)
+					: outcome.wholeFailure() != null ? String.valueOf(outcome.wholeFailure())
+					: "no data map type was registered";
+			CompatibilityFindings.record(new CompatibilityFinding("neoforge-data-maps", "forbric", "NeoForge data maps",
+					"RegistryManager.initDataMaps", CompatibilityFinding.Confidence.CONFIRMED, true,
+					"NeoForge data maps unavailable: " + cause + " — compostables, furnace fuels, waxables, "
+							+ "strippables and every mod's data map read as empty",
+					List.of(cause, "data map types=" + outcome.dataMapTypes())));
+		}
+
+		String types = outcome.dataMapTypes() < 0 ? "" : ", " + outcome.dataMapTypes() + " data map type(s)";
+		if (outcome.clean() && outcome.dataMapsEmpty()) {
+			// Every step returned and yet no data map type exists: the event reached nobody, NeoForge's own eleven
+			// included. Not the clean line -- gates m7/m9 and compat/assert.sh read that as "data maps registered".
+			ForbricLog.info("[Forbric/Lifecycle] NeoForge's registration events all returned, but no data map type "
+					+ "was registered%s", types);
+		} else if (outcome.clean()) {
+			ForbricLog.info("[Forbric/Lifecycle] ran NeoForge's registration events%s — capabilities and data maps "
+					+ "are registered, and its cauldron/forced-chunk/data-component/POI built-ins initialised%s",
+					outcome.isolated() ? " (" + outcome.steps().size() + " step(s), each on its own)" : "", types);
+		} else if (outcome.isolated()) {
+			// Worded so it cannot be read as the clean line above: gates m7/m9 and compat/assert.sh take "ran
+			// NeoForge's registration events" as proof that they all ran.
+			List<String> failed = new ArrayList<>();
+			for (Step s : outcome.failures().keySet()) failed.add(s.display());
+			ForbricLog.info("[Forbric/Lifecycle] NeoForge's registration events were run one step at a time — %d "
+					+ "of %d clean, %s failed%s", outcome.steps().size() - failed.size(), outcome.steps().size(),
+					failed, types);
+		}
+	}
+
+	private static Throwable unwrap(Throwable t) {
+		return t instanceof InvocationTargetException && t.getCause() != null ? t.getCause() : t;
+	}
+}
