@@ -1198,3 +1198,78 @@ them turned up a loss every player had.
   fluid adapter happened to cover it whenever Carpet was installed.
 - Each family patched its own callers of vanilla's rules. MinecraftForge's `onPlace` and `neighborChanged` both ask its
   registry; NeoForge 26.2.0.88's `neighborChanged` asks its registry, but its `onPlace` still runs vanilla's
+  `shouldSpreadLiquid`, so on NeoForge a mod's rule fires when a block next to the liquid changes and never when the
+  liquid is placed. Both registries walk the neighbours in vanilla's order and try every rule at one neighbour before
+  the next, so on MinecraftForge a mod's rule above beats vanilla's water to the east.
+- `FluidInteractionsInjector` (`-Dforbric.fluidInteractions=off` puts the neuter back) makes each merged entry point
+  run what its own family runs there. `onPlace` stays as merged and asks MinecraftForge's registry whole (no longer
+  neutered): vanilla's rules and MinecraftForge mods', in MinecraftForge's order, which is also NeoForge's placement (a
+  fluid that is no MinecraftForge mod's gets its MinecraftForge type from its fluid tags, as vanilla decides).
+  `neighborChanged` asks NeoForge's registry; where its rules run out at one neighbour, it asks
+  `KernelFluidInteractions` for a MinecraftForge mod's rule at that same neighbour before moving on, skipping
+  MinecraftForge's copies of vanilla's rules (NeoForge's identical ones were just asked). MinecraftForge's initializer
+  hands the kernel its map once vanilla's two rules are in, and `addInteraction` reports each later add, so with no
+  MinecraftForge mod's rule a neighbour change asks nothing. One liquid never reacts twice: each walk returns at its
+  first match. Carpet's fluid adapter follows (blackstone falls back to NeoForge's registry only with the repair off;
+  deepslate goes into both registries).
+- The first version of this repair (same day) pointed `onPlace` at NeoForge's registry and asked MinecraftForge's only
+  after NeoForge's walk had finished. A review measured both against native servers: a NeoForge mod's rule fired on
+  placement (native: never), and vanilla's water east beat a MinecraftForge mod's rule above (native: the mod's rule).
+  Both are fixed above; the review's in-use gate and `KernelBoot` neuter findings are covered by tests
+  (`FluidInteractionsInjectorTest`, `KernelBootNeutersTest`).
+- Evidence: `FluidInteractionsInjectorTest` (15: shapes on the staged jars, reshaped registries left alone, and a real JVM
+  over the merged LiquidBlock, both registries and FluidState, each registry's initializer adding its copy of vanilla's
+  rule; eight source mutations each fail a case). `KernelBootNeutersTest` reads the neuter `KernelBoot.neuters` builds:
+  with the repair on, no side names MinecraftForge's registry. `fluid-parity-gate.py` with zero mods: vanilla and the
+  kernel (b8e09a2b) identical on every score and saved block, two generators 20 blocks each; `--unfixed` RED (14 scores,
+  6 blocks). `fluid-parity-gate.py --mods` against native NeoForge 26.2.0.88 and MinecraftForge 26.2-65.0.1 with a canary
+  mod each (`canary/fluid-interactions`): 13/13 cells and canary firings equal the deciding loader's; the pre-review
+  kernel (e0aa078c) RED on exactly placement of a NeoForge rule, the two neighbour-order cases and the both-rules
+  placement; `--unfixed` RED. The Carpet gate still passes (baseline 11/27, exactly the 16 Carpet checks failing; fixed
+  27/27), and the Carpet A/B against native Fabric 0.19.5 is 14/14.
+- Placement reactions now post MinecraftForge's `FluidPlaceBlockEvent` (its default interaction does) and neighbour
+  reactions NeoForge's, each as its own loader does at that entry point. Not measured, read from the code: a NeoForge
+  mod's fluid with its own type in `minecraft:water` should behave as on NeoForge (lava placed next to it reacts, since
+  its MinecraftForge type comes from its tags; a neighbour change does not). A MinecraftForge mod's fluid with its own
+  type in `minecraft:water` should react with lava on a neighbour change here (its NeoForge type comes from its tags) but
+  not on MinecraftForge. A MinecraftForge mod's rule that throws a `LinkageError` is left out of neighbour changes after
+  one report; on placement it propagates, as it would on MinecraftForge.
+
+## Scarpet's callbacks in Fabric's order, and the census that judged them unrepaired (2026-10-02)
+
+- The same Fabric probe jar and Scarpet app on native Fabric 0.19.5 + Carpet and here differed in three places with the
+  Carpet adapter on. A hand-swap script that empties the main hand without cancelling ends with main=dirt off=empty on
+  Fabric, but off=stone here: the stale stack was written back, so an item could be duplicated or lost. A creative
+  break of a bed's foot that Scarpet cancels leaves both halves gone on Fabric and both standing here. Unstable TNT
+  whose survival break Scarpet cancels is primed on Fabric and was not primed here. In each case the adapter had bound
+  the callback at a different point than Fabric. The swap callback ran after NeoForge's `LivingSwapItemsEvent.Hands`
+  had kept both stacks (the hands are written from those). The break callback ran before `playerWillDestroy`, while
+  Fabric's runs after it and before `removeBlock`.
+- `CarpetMixinAdapter`: the swap callback now runs right before `CommonHooks.onLivingSwapHandItems`, after the spectator
+  gate, which is before anything reads a hand, as on Fabric. The break callback runs at the `preventsBlockDrops` read:
+  after `adjustedState` is stored, and before `mineBlock` and both of NeoForge's `removeBlock` branches. The authored
+  handler receives vanilla's captured locals by `@Local` index (blockEntity 4, block 5, adjustedState 6; vanilla's 2,
+  3 and 4), with no wrapper. NeoForge's swap veto now comes after Scarpet's callback. It still stops the swap, but the
+  script sees the attempt; the event reads the hands, so nothing can run before it and before every hand read at
+  once. NeoForge's break veto still runs first.
+- Every retarget checks the order it relies on, and if a merged body is out of that order, the whole mixin is left
+  untouched. Swap: the spectator gate directly before the event, and the veto, both getters and the writes after it.
+  Break: the break event before, the three locals stored once, then `mineBlock` and `removeBlock` after. Fill: the
+  update sits under `flags & 1`, and 16 is the flags bit that gates the shape updates. Blackstone: the registry's
+  `true` skips `scheduleTick`.
+- The preflight census judged Carpet's mixins as compiled, but the adapters rewrite them later, when Mixin loads the
+  class. So a fully repaired run still printed two "applies only partially" lines and kept a SUSPECTED row for
+  `ServerPlayerGameMode_scarpetEventsMixin`. The final class could not clear that row, because the handler takes
+  `@Local` sugar. (That was `FinalMixinApplications` as this branch found it. Since the merge of #25 it can discharge
+  a mixin whose sugared handler the final class calls, but only once that class is defined; the census's two lines
+  and its row come first either way.) `CarpetMixinAdapter.asLoaded` gives the census what Mixin will receive.
+- Evidence: `CarpetMixinAdapterTest` (11): eight reshaped hosts each refuse the whole retarget, and removing any order
+  check makes that test fail. The census through `unfitMixins` over the real `carpet.mixins.json` reports nothing
+  with the adapters on and both stale rows with them off. A/B, kernel e0aa078c (a79061ff): 14/14 probe results equal
+  native Fabric's. The control kernel 67aede69 (699c8214) gets 10/14, differing exactly on clear_main, the cancelled
+  bed (also 3 s later) and the cancelled TNT. With `-Dforbric.carpetMixins=off` it is 5/14. The Carpet gate grew from
+  22 to 27 checks: a direct `Level.setBlock` under `impendingFillSkipUpdates` for the redirect, which nothing
+  differentiated before; a script emptying a hand; the cancelled bed; the cancelled unstable TNT; and the native swap
+  veto now expects one Scarpet event. Its baseline fails exactly 16 Carpet checks and 0 base-fluid ones, and
+  the fixed run passes 27/27 with no stale census row or line. The same gate on 67aede69 fails exactly the four
+  native-order checks.
