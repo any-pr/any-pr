@@ -898,3 +898,303 @@
     "sha1": "dfdcdfdca3fa124f30210d3c06122d6aa98007fe",
     "needed_by": "",
     "sha1_ok": true
+  },
+  {
+    "kind": "random",
+    "slug": "fox-friend-remastered",
+    "project_id": "wkKs49fn",
+    "loader": "fabric",
+    "version": "5.1.9.2",
+    "version_id": "ewGm6ciW",
+    "version_type": "release",
+    "loaders": [
+      "fabric"
+    ],
+    "filename": "fox-friend-remastered-5.1.9.2-26.2+.jar",
+    "source_filename": "fox-friend-remastered-5.1.9.2-26.2+.jar",
+    "url": "https://cdn.modrinth.com/data/wkKs49fn/versions/ewGm6ciW/fox-friend-remastered-5.1.9.2-26.2%2B.jar",
+    "size": 106536,
+    "sha1": "c286b372e51075215f288f56260d238c90b27eff",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "random",
+    "slug": "better-command-history",
+    "project_id": "UBCXHOOH",
+    "loader": "fabric",
+    "version": "1.0.0",
+    "version_id": "1n3pzOUl",
+    "version_type": "release",
+    "loaders": [
+      "fabric"
+    ],
+    "filename": "Better-Command-History-Fabric-1.0.0-Release.jar",
+    "source_filename": "Better-Command-History-Fabric-1.0.0-Release.jar",
+    "url": "https://cdn.modrinth.com/data/UBCXHOOH/versions/1n3pzOUl/Better-Command-History-Fabric-1.0.0-Release.jar",
+    "size": 44330,
+    "sha1": "d36116ea1dd9f8608cdb1137b678e5b7a9f942f5",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "random",
+    "slug": "norocketusage",
+    "project_id": "1OocJaJp",
+    "loader": "neoforge",
+    "version": "26.9.0+mod",
+    "version_id": "fmNz3hOq",
+    "version_type": "release",
+    "loaders": [
+      "fabric",
+      "forge",
+      "neoforge",
+      "quilt"
+    ],
+    "filename": "norocketusage-26.9.0.jar",
+    "source_filename": "norocketusage-26.9.0.jar",
+    "url": "https://cdn.modrinth.com/data/1OocJaJp/versions/fmNz3hOq/norocketusage-26.9.0.jar",
+    "size": 13409,
+    "sha1": "38cc714eee0ee82a224c33e2754bac5684ce8567",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "random",
+    "slug": "potion-expire-sound",
+    "project_id": "eXYbbGxx",
+    "loader": "fabric",
+    "version": "26.2-1.1.1",
+    "version_id": "H9vXqjCb",
+    "version_type": "release",
+    "loaders": [
+      "fabric"
+    ],
+    "filename": "potion-expire-sounds-26.2-1.1.1.jar",
+    "source_filename": "potion-expire-sounds-26.2-1.1.1.jar",
+    "url": "https://cdn.modrinth.com/data/eXYbbGxx/versions/H9vXqjCb/potion-expire-sounds-26.2-1.1.1.jar",
+    "size": 135791,
+    "sha1": "50085866c21554af7bb47793a77cef092d2cd675",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "random",
+    "slug": "simple-eco",
+    "project_id": "yIN5aSya",
+    "loader": "neoforge",
+    "version": "2.8+26.2",
+    "version_id": "U6LDoeLS",
+    "version_type": "release",
+    "loaders": [
+      "neoforge"
+    ],
+    "filename": "SimpleEco-NeoForge-2.8+26.2.jar",
+    "source_filename": "SimpleEco-NeoForge-2.8+26.2.jar",
+    "url": "https://cdn.modrinth.com/data/yIN5aSya/versions/U6LDoeLS/SimpleEco-NeoForge-2.8%2B26.2.jar",
+    "size": 469221,
+    "sha1": "524e3ef8324745fe4dfe6db14dce8dee9c006603",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "random",
+    "slug": "bingo-uhc",
+    "project_id": "fMBPMTOs",
+    "loader": "forge",
+    "version": "26.8.1+mod",
+    "version_id": "tu7e08ig",
+    "version_type": "release",
+    "loaders": [
+      "fabric",
+      "forge",
+      "neoforge",
+      "quilt"
+    ],
+    "filename": "bingo-uhc-26.8.1.jar",
+    "source_filename": "bingo-uhc-26.8.1.jar",
+    "url": "https://cdn.modrinth.com/data/fMBPMTOs/versions/tu7e08ig/bingo-uhc-26.8.1.jar",
+    "size": 36401126,
+    "sha1": "c70542c0861559f34fc7b62af7338d5952646fd9",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "random",
+    "slug": "sulker",
+    "project_id": "imHwio0Z",
+    "loader": "fabric",
+    "version": "0.1.3",
+    "version_id": "jsXCiSBu",
+    "version_type": "release",
+    "loaders": [
+      "fabric"
+    ],
+    "filename": "sulker-fabric-26.2-0.1.3.jar",
+    "source_filename": "sulker-fabric-26.2-0.1.3.jar",
+    "url": "https://cdn.modrinth.com/data/imHwio0Z/versions/jsXCiSBu/sulker-fabric-26.2-0.1.3.jar",
+    "size": 70960,
+    "sha1": "0cbb7e44ee60f9d24f0926c5476c9dd983e47ab8",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "random",
+    "slug": "fine-sound-control",
+    "project_id": "MzUN7fch",
+    "loader": "fabric",
+    "version": "0.1.2-fabric+26.2",
+    "version_id": "lLyp2iZm",
+    "version_type": "release",
+    "loaders": [
+      "fabric"
+    ],
+    "filename": "finesoundcontrol-0.1.2-fabric+26.2.jar",
+    "source_filename": "finesoundcontrol-0.1.2-fabric+26.2.jar",
+    "url": "https://cdn.modrinth.com/data/MzUN7fch/versions/lLyp2iZm/finesoundcontrol-0.1.2-fabric%2B26.2.jar",
+    "size": 28156,
+    "sha1": "a25284b4416a331ba645e03d65af3b398e6ccbcb",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "random",
+    "slug": "leashable-collars-(unofficial-port)",
+    "project_id": "v1r5aCae",
+    "loader": "neoforge",
+    "version": "neoforge-26.2-1.2.1",
+    "version_id": "s7enM0FA",
+    "version_type": "release",
+    "loaders": [
+      "neoforge"
+    ],
+    "filename": "playercollars-neoforge-26.2-1.2.1.jar",
+    "source_filename": "playercollars-neoforge-26.2-1.2.1.jar",
+    "url": "https://cdn.modrinth.com/data/v1r5aCae/versions/s7enM0FA/playercollars-neoforge-26.2-1.2.1.jar",
+    "size": 628889,
+    "sha1": "4ff07ca8647d4d2fc40280d18a36062466c04980",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "random",
+    "slug": "the-nofog-mod",
+    "project_id": "wAEWD77L",
+    "loader": "fabric",
+    "version": "1.0",
+    "version_id": "xbOUO6Hm",
+    "version_type": "release",
+    "loaders": [
+      "fabric"
+    ],
+    "filename": "nofogmod-1.0_fabric+mc26.1x.jar",
+    "source_filename": "nofogmod-1.0_fabric+mc26.1x.jar",
+    "url": "https://cdn.modrinth.com/data/wAEWD77L/versions/xbOUO6Hm/nofogmod-1.0_fabric%2Bmc26.1x.jar",
+    "size": 10948,
+    "sha1": "e3df3b5bd5390cdf126ad454b80655dd2a245f35",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "random",
+    "slug": "melius-essentials",
+    "project_id": "o69N0FT2",
+    "loader": "fabric",
+    "version": "1.4.11+26.2",
+    "version_id": "qZebXUZm",
+    "version_type": "release",
+    "loaders": [
+      "fabric",
+      "quilt"
+    ],
+    "filename": "fabric-essentials-1.4.11+26.2.jar",
+    "source_filename": "fabric-essentials-1.4.11+26.2.jar",
+    "url": "https://cdn.modrinth.com/data/o69N0FT2/versions/qZebXUZm/fabric-essentials-1.4.11%2B26.2.jar",
+    "size": 740505,
+    "sha1": "98b2cc60ca8c51d99208693ab7389cb92fe19fb6",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "random",
+    "slug": "didigetrobbed",
+    "project_id": "Mw9LMq30",
+    "loader": "fabric",
+    "version": "1.4.3",
+    "version_id": "otJvrjyM",
+    "version_type": "release",
+    "loaders": [
+      "fabric"
+    ],
+    "filename": "didigetrobbed-1.4.3-MC26.2.jar",
+    "source_filename": "didigetrobbed-1.4.3-MC26.2.jar",
+    "url": "https://cdn.modrinth.com/data/Mw9LMq30/versions/otJvrjyM/didigetrobbed-1.4.3-MC26.2.jar",
+    "size": 265101,
+    "sha1": "f03908492e50db766d5ed454ea17de66c524893c",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "random",
+    "slug": "moogs-glow-up",
+    "project_id": "iLlwyhcZ",
+    "loader": "fabric",
+    "version": "2.2.1",
+    "version_id": "8ksqtVfy",
+    "version_type": "release",
+    "loaders": [
+      "fabric"
+    ],
+    "filename": "MoogsGlowUp-fabric-26.2-2.2.1.jar",
+    "source_filename": "MoogsGlowUp-fabric-26.2-2.2.1.jar",
+    "url": "https://cdn.modrinth.com/data/iLlwyhcZ/versions/8ksqtVfy/MoogsGlowUp-fabric-26.2-2.2.1.jar",
+    "size": 281667,
+    "sha1": "4b8557860824d5e64ce0d25f83c2127a47ee1d18",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "random",
+    "slug": "just-cigarette",
+    "project_id": "9apyhSOg",
+    "loader": "neoforge",
+    "version": "1.0+mod",
+    "version_id": "5SP1INwP",
+    "version_type": "release",
+    "loaders": [
+      "fabric",
+      "forge",
+      "neoforge",
+      "quilt"
+    ],
+    "filename": "just-cigarette-1.0.jar",
+    "source_filename": "just-cigarette-1.0.jar",
+    "url": "https://cdn.modrinth.com/data/9apyhSOg/versions/5SP1INwP/just-cigarette-1.0.jar",
+    "size": 300603,
+    "sha1": "d162abbfedc15e4b47bbd4f7b467629e66755b49",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "random",
+    "slug": "myconnectionmychoice",
+    "project_id": "usz0zY5p",
+    "loader": "fabric",
+    "version": "1.6.2",
+    "version_id": "R5DtrAgt",
+    "version_type": "release",
+    "loaders": [
+      "fabric"
+    ],
+    "filename": "MyConnectionMyChoice-1.6.2.jar",
+    "source_filename": "MyConnectionMyChoice-1.6.2.jar",
+    "url": "https://cdn.modrinth.com/data/usz0zY5p/versions/R5DtrAgt/MyConnectionMyChoice-1.6.2.jar",
+    "size": 295939,
+    "sha1": "c06d7e0db34401efe2fe66e469698582b4ca1237",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "random",
+    "slug": "glowstone-recipe",
+    "project_id": "xwghl2s6",
