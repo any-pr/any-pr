@@ -17,7 +17,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from gitops import probe_changes
+from gitops import git_fetch, probe_changes, run
 from rules import EXCLUDED_RE, chunk_bounds
 
 
@@ -132,6 +132,34 @@ def build_delete_chain(item: dict, old_bytes: bytes, cap: int,
         k = k2
     steps.append({**item, "delete": True, "adds": 0, "dels": k})
     return steps
+
+
+def verify_on_main(target: str, repo_root: str,
+                   submitted: list[dict], report=lambda ev, **kw: None) -> list[str]:
+    """按 blob SHA 逐文件验证上游 main 上的最终内容，返回问题描述列表。
+
+    验证最终状态: 普通批验全部条目；创建/改写链只看末步（src=原文件）；
+    删除步骤要求文件确实不存在（比"内容一致"更严——存在即错）。
+    """
+    git_fetch(f"https://github.com/{target}.git", "main", repo_root)
+    tree = run(["git", "ls-tree", "-r", "FETCH_HEAD"], cwd=repo_root)
+    sha_by_path = {ln.split("\t", 1)[1]: ln.split("\t", 1)[0].split()[2]
+                   for ln in tree.splitlines() if "\t" in ln}
+    problems = []
+    for it in submitted:
+        if it.get("delete"):
+            if it["path"] in sha_by_path:
+                problems.append(f"{it['path']}（应已删除却仍存在）")
+        elif it["path"] in sha_by_path:
+            local = run(["git", "hash-object", it["src"]], cwd=repo_root).strip()
+            if local != sha_by_path[it["path"]]:
+                problems.append(f"{it['path']}（内容与提交内容不一致）")
+        else:
+            problems.append(f"{it['path']}（未出现在上游 main 上）")
+    if not problems:
+        report("log", text=f"  已验证: 已提交的 {len(submitted)} 个文件"
+                           f"的内容都与上游 main 一致。")
+    return problems
 
 
 def plan_file_ops(accepted: list[dict], base: str, dest: str, repo_root: str,
