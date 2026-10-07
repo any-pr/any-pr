@@ -298,3 +298,61 @@ tasks.register('generateInstallerManifest') {
 	outputs.upToDateWhen { false }
 	def runtimeCp = configurations.runtimeClasspath
 	def coreJarProvider = tasks.named('jar').flatMap { it.archiveFile }
+	def runtimeJarProvider = tasks.named('runtimeJar').flatMap { it.archiveFile }
+	def ver = forbricInstallerVersion
+	doLast {
+		def sha1 = { File f ->
+			def md = java.security.MessageDigest.getInstance('SHA-1')
+			f.withInputStream { ins ->
+				byte[] buf = new byte[64 * 1024]; int n
+				while ((n = ins.read(buf)) != -1) md.update(buf, 0, n)
+			}
+			md.digest().collect { String.format('%02x', it) }.join('')
+		}
+		// Maven-layout path for a coordinate — mirrors the installer's Util.coordinateToPath so the bundled
+		// resource path and the on-disk libraries/ path are derived identically and can never drift.
+		def coordToPath = { String coord ->
+			def p = coord.split(':')
+			def group = p[0].replace('.', '/')
+			def artifact = p[1]; def version = p[2]
+			def classifier = p.length > 3 ? "-${p[3]}" : ''
+			"${group}/${artifact}/${version}/${artifact}-${version}${classifier}.jar".toString()
+		}
+		def entry = { String coord, String category, File f ->
+			// file    : absolute source path — consumed by the installer build's bundler and the dev
+			//           `--manifest` path; STRIPPED from the copy that gets packed into the installer jar.
+			// resource: classpath-relative path the self-contained installer streams the jar from at runtime.
+			[coordinate: coord, category: category,
+			 file: f.absolutePath,
+			 resource: "/forbric/libs/${coordToPath(coord)}".toString(),
+			 sha1: sha1(f), size: f.length()]
+		}
+		def entries = []
+		// classpath: reused substrate deps (asm, mixin, sat4j, tiny-remapper, class-tweaker, mapping-io, night-config)
+		runtimeCp.resolvedConfiguration.resolvedArtifacts.each { art ->
+			def id = art.moduleVersion.id
+			entries << entry("${id.group}:${id.name}:${id.version}".toString(), 'classpath', art.file)
+		}
+		// classpath: forbric-loader core jar (the parent-loaded loader itself)
+		entries << entry("net.forbric:forbric-loader:${ver}".toString(), 'classpath', coreJarProvider.get().asFile)
+		// knot-addmods: forbricruntime (must be Knot-loaded via addMods, never on -cp)
+		entries << entry("net.forbric:forbricruntime:${ver}".toString(), 'knot-addmods', runtimeJarProvider.get().asFile)
+
+			// forge-bridge: the prebuilt clean-room Forge @Mod (Forbric's own bytecode — no Mojang classes, so it is
+			// licensing-safe to bundle) that opens the Fabric-content registration window inside Forge's genuine
+			// span. Bundled like forbricruntime; the installer stages it into the full-forge profile's mods/. It is
+			// produced by run/assemble-minecraftforge-runtime.sh, so it exists only after that has run — the
+			// full-forge install path errors clearly if it is absent from the manifest.
+			def bridgeJar = file('run/forge-runtime/forbric-bridge.jar')
+			if (bridgeJar.isFile()) {
+				entries << entry('net.forbric:forbric-bridge:26.2-65.0.1', 'forge-bridge', bridgeJar)
+			} else {
+				println "generateInstallerManifest: NOTE ${bridgeJar} absent — full-forge installs will fail until " +
+						"run/assemble-minecraftforge-runtime.sh has produced the bridge jar"
+			}
+
+		def manifest = [forbricVersion: ver, libraries: entries]
+		outFile.get().asFile.text = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(manifest))
+		println "generateInstallerManifest → ${outFile.get().asFile} (${entries.size()} entries)"
+	}
+}
