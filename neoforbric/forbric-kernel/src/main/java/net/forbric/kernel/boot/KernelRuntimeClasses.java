@@ -298,3 +298,123 @@ public final class KernelRuntimeClasses {
 		return CLASSES.entrySet().stream()
 				.filter(e -> e.getValue().origin() == Origin.COMPILED)
 				.filter(e -> !KernelTransferInterop.ownsOptionalRuntime(e.getKey())
+						|| KernelTransferInterop.optionalRuntimeActive(e.getKey()))
+				.map(Map.Entry::getKey)
+				.toList();
+	}
+
+	/** The calls the boot side makes on {@code binaryName}; empty if it is not registered. */
+	public static List<Call> callsOn(String binaryName) {
+		Entry entry = CLASSES.get(binaryName);
+		return entry == null ? List.of() : entry.calls();
+	}
+
+	/**
+	 * Loads every {@link Origin#COMPILED} class through {@code loader} and resolves every method the boot side
+	 * calls on it.
+	 *
+	 * <p>A real load, not a resource probe, because the two failures worth separating are only distinguishable
+	 * that way: a class that is in no owned jar means the boot jar was built without staged artifacts, and a class
+	 * that IS there but does not define means the pipeline carrying it broke. Those have different fixes, so they
+	 * get different messages. A third, outside the kernel: a class that defines but whose method signatures name a
+	 * game type this launch does not have. That is the game jars' fault, not the build's, and it is reported, not
+	 * thrown -- {@link LaunchInputCheck} should have stopped such a launch already, and this must not be the place it
+	 * dies if it did not.
+	 *
+	 * <p>Runs after the transform chain and Mixin are installed, so these classes take exactly the path every game
+	 * class takes. Nothing targets them, but a self-check that skipped the pipeline would not be checking the
+	 * thing that can break.
+	 *
+	 * <p>{@code initialize = false}: proving the class links is the point; running its static initialiser at boot
+	 * is not, and for a class that one day holds game state it would be actively wrong.
+	 *
+	 * @return true if the whole seam is present and callable
+	 */
+	public static boolean verify(ForbricClassLoader loader) {
+		List<String> names = compiled();
+		int ok = 0;
+
+		for (String name : names) {
+			Class<?> c;
+			try {
+				c = Class.forName(name, false, loader);
+			} catch (ClassNotFoundException | LinkageError absent) {
+				if (loader.findResource(name.replace('.', '/') + ".class") == null) {
+					ForbricLog.error("[Forbric/Runtime] the kernel's own game-side class %s is in no owned jar. "
+							+ "This boot jar was built without the staged game artifacts, so "
+							+ "forbric-kernel-runtime.jar was never packed into it, and everything needing a "
+							+ "game-side kernel class will fail to link far from here. Fix: put the staged jars "
+							+ "in ../forbric-loader/run/ and rebuild with ./gradlew jar", name);
+				} else {
+					ForbricLog.error("[Forbric/Runtime] the kernel's own game-side class %s is present in an "
+							+ "owned jar but would not define: %s", name, String.valueOf(absent));
+				}
+				continue;
+			}
+
+			List<String> broken;
+			try {
+				broken = unresolvable(c, callsOn(name));
+			} catch (LinkageError unlinkable) {
+				// Loading with initialize=false resolves nothing, so a class whose method signatures name a game type
+				// that is not there loads fine and fails HERE: getMethod resolves the parameter and return types of
+				// every public method the class declares, not only the one asked for. Issue #13's runtime jars held
+				// no NeoForge, and this NoClassDefFoundError was the whole boot's last word -- on stderr, outside
+				// latest.log -- because only NoSuchMethodException was caught.
+				ForbricLog.error("[Forbric/Runtime] the kernel's own game-side class %s is there, but a game type its "
+						+ "methods name cannot be loaded: %s. The kernel was built against a game that has it, so the "
+						+ "game jars this launch was given (--gameJar / --runtimeJar) are incomplete or from another "
+						+ "build. Players: run the Forbric installer again with \"Built artifacts\" left empty; "
+						+ "developers: python3 tools/dev.py prepare", name, String.valueOf(unlinkable));
+				continue;
+			}
+			if (!broken.isEmpty()) {
+				ForbricLog.error("[Forbric/Runtime] %s is there but the boot side calls methods it does not have: "
+						+ "%s. Boot-side call sites name these as strings, so this is not a compile error on "
+						+ "either side — it would have surfaced inside mod construction instead",
+						name, String.join(", ", broken));
+				continue;
+			}
+
+			// No check that c.getClassLoader() == loader. It would read well and it can never fail: this package
+			// is pinned ALWAYS_GAME, so loadClass routes it to defineGameClass, which either defines it here or
+			// throws — there is no path on which it comes back from somewhere else. The invariant that CAN break
+			// is the pin itself, and that is a pure function of DelegationPolicy, asserted in
+			// KernelRuntimeClassesTest where it can actually be made to fail.
+			ok++;
+		}
+
+		if (ok == names.size()) {
+			ForbricLog.info("[Forbric/Runtime] game-side kernel classes: %d/%d linked", ok, names.size());
+			return true;
+		}
+
+		ForbricLog.error("[Forbric/Runtime] game-side kernel classes: %d/%d linked", ok, names.size());
+		return false;
+	}
+
+	/** The calls {@code c} cannot satisfy, described the way a reader would need to fix them. */
+	private static List<String> unresolvable(Class<?> c, List<Call> calls) {
+		List<String> broken = new ArrayList<>();
+
+		for (Call call : calls) {
+			try {
+				Method m = c.getMethod(call.name(), call.parameters());
+				if (!call.returns().isAssignableFrom(m.getReturnType())) {
+					broken.add(call.name() + " returns " + m.getReturnType().getSimpleName() + ", not "
+							+ call.returns().getSimpleName());
+				}
+			} catch (NoSuchMethodException missing) {
+				broken.add(call.name() + describe(call.parameters()));
+			}
+		}
+
+		return broken;
+	}
+
+	private static String describe(Class<?>[] parameters) {
+		List<String> names = new ArrayList<>();
+		for (Class<?> p : parameters) names.add(p.getSimpleName());
+		return "(" + String.join(", ", names) + ")";
+	}
+}
