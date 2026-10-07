@@ -1198,3 +1198,18 @@ public final class PassiveSeeder {
 	/** The mods the audit will judge, held until Mixin has registered its configs. See above. */
 	private static volatile List<DiscoveredMod> pendingAudit = List.of();
 
+	/**
+	 * Runs the dependency audit, now that every source it reads from has actually been written.
+	 *
+	 * <p>Still diagnostic-only and still caught: an audit must never be able to fail the boot it reports on.
+	 */
+	public static void reportDependencies() {
+		List<DiscoveredMod> present = pendingAudit;
+		if (present.isEmpty()) return;
+		try {
+			DependencyAudit.report(present, KernelBoot.nestedJarJarJars(), KernelFabricEcosystem.physicalSide());
+		} catch (Throwable t) {
+			ForbricLog.debug("[Forbric/Deps] dependency audit failed, skipping it: %s", String.valueOf(t));
+		}
+	}
+}
