@@ -298,3 +298,74 @@ class FabricFuelValuesInjectorExecutionTest {
 		for (AbstractInsnNode insn : body.instructions.toArray()) {
 			if (insn.getOpcode() == Opcodes.ARETURN) {
 				body.instructions.insertBefore(insn, new MethodInsnNode(Opcodes.INVOKESTATIC, "fixture/Torrential", "onReturn",
+						"(L" + FabricFuelValuesInjector.FUEL_VALUES + ";)L" + FabricFuelValuesInjector.FUEL_VALUES + ";", false));
+			}
+		}
+		ClassWriter writer = new ClassWriter(0);
+		node.accept(writer);
+		return writer.toByteArray();
+	}
+
+	/** The fuels the server builds, by item id, with the Fabric mod registered. */
+	private static Map<String, Object> serverFuels(ClassLoader loader) throws Throwable {
+		InjectorExecution.invokeStatic(loader.loadClass("fixture.FabricFuels"), "register");
+		Object registries = java.lang.reflect.Proxy.newProxyInstance(loader, new Class<?>[] {loader.loadClass("net.minecraft.core.RegistryAccess")},
+				(proxy, method, args) -> method.getName().equals("hashCode") ? 0 : null);
+		Object features = InjectorExecution.construct(loader.loadClass("net.minecraft.world.flag.FeatureFlagSet"));
+		Object table = InjectorExecution.invokeStatic(loader.loadClass(HOOKS), "populateFuelValues", registries, features);
+		Map<String, Object> fuels = new java.util.TreeMap<>();
+		((Map<?, ?>) table.getClass().getField("values").get(table)).forEach((item, time) -> fuels.put(item.toString(), time));
+		return fuels;
+	}
+
+	private static Map<String, byte[]> transformed(Map<String, byte[]> original, List<String> targets) {
+		Map<String, byte[]> classes = new HashMap<>(original);
+		for (String target : targets) {
+			String internal = target.replace('.', '/');
+			classes.put(internal, InjectorExecution.transform(new FabricFuelValuesInjector(), target, original.get(internal), EnvType.SERVER));
+		}
+		return classes;
+	}
+
+	@Test void aFabricModsFuelsAndAReturnHooksFuelReachTheServersTable(@TempDir Path work) throws Throwable {
+		Map<String, byte[]> original = compile(work);
+		Map<String, byte[]> classes = transformed(original, List.of(HOOKS, FUEL));
+		for (String target : List.of(HOOKS, FUEL)) assertNotSame(original.get(target.replace('.', '/')), classes.get(target.replace('.', '/')), target);
+		String fuel = FabricFuelValuesInjector.FUEL_VALUES;
+		classes.put(fuel, withTorrential(classes.get(fuel)));
+		ClassLoader loader = InjectorExecution.load(classes);
+		for (String target : List.of(HOOKS, FUEL)) assertEquals("", InjectorExecution.verify(classes.get(target.replace('.', '/')), loader), target);
+
+		assertEquals(Map.of("minecraft:coal", 1600, "fabricmod:peat", 800, "torrential:angling_table", 300), serverFuels(loader),
+				"the data map's coal, the Fabric mod's peat (not its non-flammable planks, not the bamboo it excluded), and the Angling Table");
+
+		Map<String, byte[]> stockClasses = new HashMap<>(original);
+		stockClasses.put(fuel, withTorrential(original.get(fuel)));
+		assertEquals(Map.of("minecraft:bamboo", 50, "minecraft:coal", 1600), serverFuels(InjectorExecution.load(stockClasses)),
+				"premise: as merged, the server's fuels are NeoForge's data map alone");
+		for (String target : List.of(HOOKS, FUEL)) {
+			byte[] once = transformed(original, List.of(target)).get(target.replace('.', '/'));
+			assertSame(once, InjectorExecution.transform(new FabricFuelValuesInjector(), target, once, EnvType.SERVER), target + " is edited once");
+		}
+	}
+
+	@Test void withoutTheReturnHooksTheFabricFuelsStillGoIn(@TempDir Path work) throws Throwable {
+		Map<String, byte[]> original = compile(work);
+		System.setProperty(FabricFuelValuesInjector.RETURN_HOOKS_PROPERTY, "off");
+		Map<String, byte[]> classes = transformed(original, List.of(HOOKS, FUEL));
+		assertSame(original.get(FabricFuelValuesInjector.FUEL_VALUES), classes.get(FabricFuelValuesInjector.FUEL_VALUES),
+				"the body is not short-circuited");
+		classes.put(FabricFuelValuesInjector.FUEL_VALUES, withTorrential(classes.get(FabricFuelValuesInjector.FUEL_VALUES)));
+		assertEquals(Map.of("minecraft:coal", 1600, "fabricmod:peat", 800), serverFuels(InjectorExecution.load(classes)),
+				"Fabric's events still run; the return hook's fuel does not reach the server's table");
+	}
+
+	@Test void switchedOffBothClassesAreLeftAsShipped(@TempDir Path work) throws Exception {
+		Map<String, byte[]> original = compile(work);
+		System.setProperty(FabricFuelValuesInjector.PROPERTY, "off");
+		for (String target : List.of(HOOKS, FUEL)) {
+			byte[] bytes = original.get(target.replace('.', '/'));
+			assertSame(bytes, InjectorExecution.transform(new FabricFuelValuesInjector(), target, bytes, EnvType.SERVER), target);
+		}
+	}
+}
