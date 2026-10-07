@@ -67,7 +67,8 @@ def build_chunk_chain(item: dict, cap: int, tmp_dir: str) -> list[dict]:
         if k == len(bounds):
             src = item["src"]
         else:
-            src = str(Path(tmp_dir) / f"{k}.part")
+            # 临时文件名带源文件名——多个链共享 tmp_dir，不能只用块序号
+            src = str(Path(tmp_dir) / f"{k}.{Path(item['rel']).name}.part")
             Path(src).write_bytes(b"".join(lines[:b]))
         chain.append({"src": src, "rel": item["rel"], "path": item["path"],
                       "adds": b - a, "dels": 0})

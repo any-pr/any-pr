@@ -256,9 +256,9 @@ def main() -> None:
     for line in tree.splitlines():
         meta, path = line.split("\t", 1)
         sha_by_path[path] = meta.split()[2]
-    # 验证每个路径的最终状态: 分块链只看末块（src=原文件），普通批看唯一条目
-    submitted = [items[-1] for j, (_, _, items) in enumerate(units, 1)
-                 if j not in errors]
+    # 验证最终状态: 普通批验证全部条目，分块链只看末块（src=原文件）
+    submitted = [it for j, (_, _, items) in enumerate(units, 1)
+                 if j not in errors for it in items]
     missing = [it["path"] for it in submitted if it["path"] not in sha_by_path]
     changed = []
     for it in submitted:
