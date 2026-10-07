@@ -298,3 +298,303 @@ public final class DuplicateModArbiter {
 
 	/**
 	 * The SECOND pass: the same arbitration, over the nested jars both families extract out of their mods.
+	 *
+	 * <p>A JarJar/JiJ child is not in {@code mods/}, so {@link #arbitrate(Path, EnvType)} never saw it — and each
+	 * loader only dedupes against its own family ({@code KernelFabricLoader.register} drops a duplicate Fabric id,
+	 * {@code KernelModLoader} the same for {@code @Mod}), so nobody was checking across. A library nested by a
+	 * Fabric mod AND by a MinecraftForge mod therefore loaded twice, once per ecosystem, and initialised twice.
+	 * Xaero's is the worked example: {@code xaerominimap-fabric} nests {@code xaerolib-fabric},
+	 * {@code xaeroworldmap-forge} nests {@code xaerolib-forge}, and the second {@code XaeroLib.<init>} died on
+	 * "Attempted to register a duplicate config channel: xaerolib:main" — but only AFTER its superclass
+	 * constructor had already overwritten {@code XaeroLib.INSTANCE} with the half-built object, so a live mixin
+	 * then called into it and took the client down on a render frame.
+	 *
+	 * <p>Arbitrated over the UNION of the top-level claims and the nested ones, not over the nested ones alone:
+	 * a nested copy must also lose to a top-level jar of the same mod. The top-level half of the answer is then
+	 * held fixed — those jars' discovery has already run by the time this is called, so re-deciding them would
+	 * describe a load that did not happen. A union that WOULD have changed one is a bug in the ordering, and says
+	 * so rather than pretending.
+	 *
+	 * @param nestedJars every nested jar both families extracted, in extraction order
+	 * @return a decision that suppresses everything phase one did, plus the nested losers
+	 */
+	/**
+	 * One line per suppressed jar whose build carries classes the winning build does not — report only. The
+	 * residual the Alias javadoc measures (Jade: 20 Fabric-only + 8 NeoForge-only) is what a mod on the losing side
+	 * cannot link against; a loser-only glue class is not a KNOWN loss, so nothing is marked — a confidently wrong
+	 * mark is worse than none. Zip listings only, no bytecode. Silent for a pair whose class sets agree.
+	 */
+	static List<String> divergenceReport(List<Claim> claims, Decision decision) {
+		List<String> lines = new ArrayList<>();
+		Map<Path, Set<String>> read = new HashMap<>();
+		Set<String> elsewhere = null;
+		for (Claim loser : claims) {
+			if (!decision.suppressed(loser.jar())) continue;
+			Path winner = null;
+			for (String id : loser.modIds()) {
+				Path owner = decision.ownerByModId().get(id);
+				if (owner != null && !owner.equals(loser.jar().toAbsolutePath())) { winner = owner; break; }
+			}
+			if (winner == null) continue;
+			List<String> only = loserOnlyClasses(loser.jar(), winner, read);
+			if (only.isEmpty()) continue;
+			Ecosystem winnerFamily = null;
+			for (Claim claim : claims) if (claim.jar().toAbsolutePath().equals(winner)) winnerFamily = claim.ecosystem();
+			// The same measurement, kept rather than only printed: a guest mixin that targets one of these has no
+			// target on this instance, and nothing else in the chain can tell that from an ordinary absence.
+			//
+			// But "only the losing build has it" is not "nothing in this instance has it", and the registry is
+			// read as the second. A losing build routinely bundles a third mod's classes: sodium's FABRIC build
+			// ships fabric-api's ExtendedBlockModelSubmit, and the player's own fabric-api supplies it whatever
+			// sodium does. Recording it unsubtracted marked four mods on a 28-mod instance for mixins that were
+			// fine. So what every jar that DID load provides — including inside its bundled jars — is taken back
+			// out first, and only classes no loaded jar has reach the registry.
+			if (elsewhere == null) elsewhere = classesStillLoaded(claims, decision, read);
+			List<String> gone = new ArrayList<>();
+			for (String name : only) if (!elsewhere.contains(name) && !onTheLaunchClasspath(name)) gone.add(name);
+			if (!gone.isEmpty()) {
+				ArbitratedAwayClasses.record(gone,
+						new ArbitratedAwayClasses.Loss(loser.modIds().get(0), loser.ecosystem(), winnerFamily,
+								String.valueOf(loser.jar().getFileName())));
+			}
+			List<String> shown = only.subList(0, Math.min(8, only.size()));
+			lines.add("[Forbric/DupeId] " + loser.modIds().get(0) + ": the losing " + loser.ecosystem() + " build ("
+					+ loser.jar().getFileName() + ") carries " + only.size() + " class(es) the winning "
+					+ (winnerFamily == null ? "other" : winnerFamily.toString()) + " build does not: "
+					+ String.join(", ", shown) + (only.size() > shown.size() ? ", …" : ""));
+		}
+		return lines;
+	}
+
+	/** The .class entries (dotted, no extension) in {@code loser} that {@code winner} lacks; empty if either is unreadable. */
+	static List<String> loserOnlyClasses(Path loser, Path winner) {
+		return loserOnlyClasses(loser, winner, new HashMap<>());
+	}
+
+	private static List<String> loserOnlyClasses(Path loser, Path winner, Map<Path, Set<String>> read) {
+		Set<String> winning = classEntries(winner, read);
+		if (winning == null) return List.of();
+		Set<String> losing = classEntries(loser, read);
+		if (losing == null) return List.of();
+		List<String> only = new ArrayList<>();
+		for (String name : losing) if (!winning.contains(name)) only.add(name);
+		java.util.Collections.sort(only);
+		return only;
+	}
+
+	/**
+	 * Every class the jars that DID load bring, so the ones that did not can be named exactly.
+	 *
+	 * <p>Read once per arbitration, and only when there is something to subtract from — on an instance with no
+	 * duplicated mod id nothing here is opened at all. A jar that cannot be read contributes nothing, which
+	 * widens the "lost" set rather than narrowing it; that direction is the one a reader can check, because a
+	 * name that turns out to be present is visible the moment the mixin applies anyway.
+	 */
+	private static Set<String> classesStillLoaded(List<Claim> claims, Decision decision, Map<Path, Set<String>> read) {
+		Set<String> loaded = new HashSet<>();
+		for (Claim claim : claims) {
+			if (decision.suppressed(claim.jar())) continue;
+			Set<String> names = classEntries(claim.jar(), read);
+			if (names != null) loaded.addAll(names);
+		}
+		return loaded;
+	}
+
+	/**
+	 * Whether the launch classpath already serves {@code name}, so losing a mod's copy of it costs nothing.
+	 *
+	 * <p>The third source, after the winning build and the other mods. A losing build often bundles a shaded
+	 * LIBRARY: glitchcore's Fabric build carries all 189 {@code com.electronwill.nightconfig.core.*} classes,
+	 * which the game's own {@code libraries/} supplies to every mod regardless of which glitchcore loaded. Without
+	 * this those 189 were the whole "arbitrated away" set for that mod, measured on the 28-mod instance.
+	 *
+	 * <p>The system loader is the right question and the sovereign loader is not: this one has {@code libraries/}
+	 * and NOT {@code mods/}, which is exactly the line being drawn. Asking the sovereign loader would answer yes
+	 * for the losing jar's own classes too — it keeps them readable — and that is measured: the live boot still
+	 * served {@code sodium.fabric.render.FluidRendererImpl}'s bytes while the loaded sodium was the NeoForge
+	 * build, so a resource check against it was silent on the one case this registry was written for.
+	 */
+	private static boolean onTheLaunchClasspath(String dottedName) {
+		return ClassLoader.getSystemResource(dottedName.replace('.', '/') + ".class") != null;
+	}
+
+	private static Set<String> classEntries(Path jar, Map<Path, Set<String>> read) {
+		if (read.containsKey(jar)) return read.get(jar);
+		Set<String> names = classEntries(jar);
+		read.put(jar, names);
+		return names;
+	}
+
+	/**
+	 * Every class a jar brings, INCLUDING the ones inside its bundled jars.
+	 *
+	 * <p>Counting only top-level entries makes two builds of the same mod look wildly different when one of them
+	 * nests its shared half and the other inlines it: sodium's NeoForge build bundles the common
+	 * {@code sodium.client.*} classes in {@code META-INF/jars/}, so a flat comparison called 727 classes
+	 * "Fabric-only" that both builds plainly have. That was harmless while this fed one log line and stopped
+	 * being harmless the moment {@link ArbitratedAwayClasses} made a mixin's target depend on it — four mods were
+	 * marked for mixins against classes that were present all along.
+	 */
+	private static Set<String> classEntries(Path jar) {
+		Set<String> names = new LinkedHashSet<>();
+		if (wholeInstancePlan != null && wholeInstancePlan.inventory().nodes().containsKey(jar.toAbsolutePath().normalize())) {
+			try (var zip = new java.util.zip.ZipFile(jar.toFile())) {
+				zip.stream().map(java.util.zip.ZipEntry::getName).filter(name -> name.endsWith(".class"))
+						.forEach(name -> names.add(name.substring(0, name.length() - 6).replace('/', '.')));
+				return names;
+			} catch (IOException unreadable) { return null; }
+		}
+		if (!collectClasses(jar, names)) return null;
+		return names;
+	}
+
+	/** Adds {@code jar}'s classes and those of its bundled jars; false when the jar itself cannot be read. */
+	private static boolean collectClasses(Path jar, Set<String> names) {
+		try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(jar.toFile())) {
+			for (java.util.zip.ZipEntry entry : zip.stream().toList()) {
+				String name = entry.getName();
+				if (name.endsWith(".class")) {
+					names.add(name.substring(0, name.length() - 6).replace('/', '.'));
+				} else if (name.endsWith(".jar")) {
+					// Read in memory: the nested jar is a comparison input, not something to extract.
+					try (java.util.zip.ZipInputStream nested =
+							new java.util.zip.ZipInputStream(zip.getInputStream(entry))) {
+						for (java.util.zip.ZipEntry inner; (inner = nested.getNextEntry()) != null; ) {
+							String innerName = inner.getName();
+							if (!innerName.endsWith(".class")) continue;
+							names.add(innerName.substring(0, innerName.length() - 6).replace('/', '.'));
+						}
+					} catch (java.io.IOException unreadableNested) {
+						// One unreadable bundle must not make the whole jar unreadable — it only widens the diff.
+					}
+				}
+			}
+		} catch (java.io.IOException unreadable) {
+			return false;
+		}
+		return true;
+	}
+
+	public static synchronized Decision arbitrateNested(EnvType envType, List<Path> nestedJars) {
+		Decision phase1 = current();
+		if ("off".equalsIgnoreCase(System.getProperty(SWITCH, "on"))) return phase1;
+		if (wholeInstancePlan != null && envType == cachedSide) {
+			wholeInstancePlan.verify(nestedJars == null ? List.of() : nestedJars);
+			return phase1;
+		}
+		if (nestedJars == null || nestedJars.isEmpty()) return phase1;
+
+		ForbricModDiscoverer discoverer = new ForbricModDiscoverer();
+		List<Claim> nestedClaims = new ArrayList<>();
+		List<Alias> ignored = new ArrayList<>();
+		for (Path jar : nestedJars) {
+			Claim claim = claimOf(discoverer, jar, envType, ignored);
+			if (claim != null) nestedClaims.add(claim);
+		}
+		if (nestedClaims.isEmpty()) return phase1;
+		// Published, not just returned. KernelModLoader reads current() long after the mods directory was walked,
+		// to hand NeoForge the presence aliases (KernelModLoader:159), and PassiveSeeder reads it to skip
+		// suppressed jars. Leaving the nested half out of the cache would mean the answer this boot acted on and
+		// the answer those two see are different answers.
+		cached = arbitrateNested(phase1, topLevelClaims, nestedClaims);
+		return cached;
+	}
+
+	/**
+	 * The pure half of the nested pass, so tests can drive it without a filesystem — the same split as
+	 * {@link #arbitrate(List, List)}.
+	 */
+	static Decision arbitrateNested(Decision phase1, List<Claim> topLevel, List<Claim> nestedClaims) {
+		// Everything that can claim an id, so a nested copy is also weighed against a TOP-LEVEL jar of the same
+		// mod — a library nested inside a Fabric mod must still lose to the NeoForge build the user installed.
+		Map<String, List<Claim>> byId = new LinkedHashMap<>();
+		for (Claim claim : topLevel) {
+			if (phase1.suppressed(claim.jar())) continue;   // already lost phase one; it is not a live claimant
+			for (String id : claim.modIds()) byId.computeIfAbsent(id, k -> new ArrayList<>()).add(claim);
+		}
+		Set<Path> nestedPaths = new LinkedHashSet<>();
+		for (Claim claim : nestedClaims) {
+			nestedPaths.add(claim.jar().toAbsolutePath());
+			for (String id : claim.modIds()) byId.computeIfAbsent(id, k -> new ArrayList<>()).add(claim);
+		}
+
+		Set<Path> suppressed = new LinkedHashSet<>(phase1.suppressedJars());
+		Map<String, Path> owners = new LinkedHashMap<>(phase1.ownerByModId());
+		List<Alias> aliases = new ArrayList<>(phase1.aliases());
+		int contested = 0;
+		for (Map.Entry<String, List<Claim>> e : byId.entrySet()) {
+			List<Claim> claimants = e.getValue();
+			if (claimants.size() < 2) continue;
+
+			// ONLY a cross-ECOSYSTEM contest. Same-family duplicates are the ordinary shape of JarJar — one
+			// library nested by five mods that each bundle it — and both loaders already keep the first and ignore
+			// the rest, without taking anything off the classpath. Withdrawing those jars is not a smaller
+			// version of this fix, it is a different and much larger change: it took Sodium's NeoForge build off
+			// the classpath (its real mod jar is nested inside a wrapper that declares the same id) and its
+			// ServiceLoader lookup then failed. What no loader handles, and what this pass exists for, is the
+			// SAME id claimed by two ecosystems, because each family only ever deduplicates within itself.
+			Set<Ecosystem> families = new LinkedHashSet<>();
+			boolean anyNested = false;
+			for (Claim claim : claimants) {
+				families.add(claim.ecosystem());
+				if (nestedPaths.contains(claim.jar().toAbsolutePath())) anyNested = true;
+			}
+			if (!anyNested || families.size() < 2) continue;
+
+			Claim winner = pick(e.getKey(), claimants, nestedPreference());
+			// A top-level jar is past the point of being withdrawn: phase one already handed it to its family's
+			// discovery. If the preference would pick a nested jar over one, keep the top-level jar and say so.
+			if (nestedPaths.contains(winner.jar().toAbsolutePath())) {
+				Claim installed = null;
+				for (Claim claim : claimants) {
+					if (!nestedPaths.contains(claim.jar().toAbsolutePath())) { installed = claim; break; }
+				}
+				if (installed != null) {
+					ForbricLog.warn("[Forbric/DupeId] '%s' would be taken from the nested %s, but the top-level %s "
+							+ "is already loaded and cannot be withdrawn — keeping the top-level one",
+							e.getKey(), winner.jar().getFileName(), installed.jar().getFileName());
+					winner = installed;
+				}
+			}
+
+			contested++;
+			owners.put(e.getKey(), winner.jar().toAbsolutePath());
+			Set<Ecosystem> lost = new LinkedHashSet<>();
+			for (Claim claim : claimants) {
+				if (claim == winner) continue;
+				if (claim.ecosystem() != winner.ecosystem()) lost.add(claim.ecosystem());
+				// SUBSET RULE, as in the top-level pass: a jar may only lose if every id it declares is also
+				// claimed by someone else, or a library bundling foo + foo_compat is withdrawn because foo alone
+				// collided and foo_compat ends up loaded by nobody.
+				if (!nestedPaths.contains(claim.jar().toAbsolutePath())) continue;
+				List<String> orphaned = new ArrayList<>();
+				for (String id : claim.modIds()) {
+					List<Claim> others = byId.getOrDefault(id, List.of());
+					if (others.size() < 2) orphaned.add(id);
+				}
+				if (!orphaned.isEmpty()) {
+					ForbricLog.warn("[Forbric/DupeId] keeping the nested %s despite losing '%s' — it also declares "
+							+ "%s, which nothing else provides", claim.jar().getFileName(), e.getKey(), orphaned);
+					continue;
+				}
+				suppressed.add(claim.jar().toAbsolutePath());
+			}
+			// The winner's version, but fall back to any claimant that declared one: an alias exists so
+			// isModLoaded answers, and a mod comparing the version it gets back against a range is better served
+			// by the losing jar's real number than by versionOf's "0" placeholder.
+			String version = winner.versionOf(e.getKey());
+			if ("0".equals(version)) {
+				for (Claim claim : claimants) {
+					String declared = claim.versionOf(e.getKey());
+					if (!"0".equals(declared)) { version = declared; break; }
+				}
+			}
+			for (Ecosystem ecosystem : lost) aliases.add(new Alias(e.getKey(), ecosystem, version));
+			ForbricLog.info("[Forbric/DupeId] nested mod id '%s' is claimed by %d jars across %s — loading %s (%s). "
+					+ "Each loader only deduplicates within its own family, so without this it would have been "
+					+ "constructed once per ecosystem%s", e.getKey(), claimants.size(), families,
+					winner.jar().getFileName(), winner.ecosystem(),
+					lost.isEmpty() ? "" : ", aliased into " + lost);
+		}
+		if (contested == 0) {
+			ForbricLog.debug("[Forbric/DupeId] nested pass: %d nested jar(s), no mod id claimed by more than one "
