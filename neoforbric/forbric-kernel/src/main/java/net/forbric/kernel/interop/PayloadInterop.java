@@ -1198,3 +1198,136 @@ public final class PayloadInterop {
 		for (Class<?> c = owner; c != null; c = c.getSuperclass()) {
 			try {
 				return c.getDeclaredField(name);
+			} catch (NoSuchFieldException ignored) {
+				// try superclass
+			}
+		}
+		return null;
+	}
+
+	private static Object invokeNoArg(Object target, String name) {
+		return target == null ? null : invoke(target, name);
+	}
+
+	private static Object invoke(Object target, String name, Object... args) {
+		if (target == null) return null;
+		Method method = findMethod(target.getClass(), name, classes(args));
+		if (method == null) method = findCompatibleMethod(target.getClass(), name, args);
+		if (method == null) return null;
+		try {
+			method.setAccessible(true);
+			return method.invoke(target, args);
+		} catch (ReflectiveOperationException | RuntimeException e) {
+			return null;
+		}
+	}
+
+	private static final Object INVOKE_FAILED = new Object();
+
+	private static Object invokeStatic(Class<?> owner, String name, Object... args) {
+		Method method = findMethod(owner, name, classes(args));
+		if (method == null) method = findCompatibleMethod(owner, name, args);
+		if (method == null) return INVOKE_FAILED;
+		try {
+			method.setAccessible(true);
+			return method.invoke(null, args);
+		} catch (ReflectiveOperationException | RuntimeException e) {
+			return INVOKE_FAILED;
+		}
+	}
+
+	private static Method findMethod(Class<?> owner, String name, Class<?>... params) {
+		for (Class<?> c = owner; c != null; c = c.getSuperclass()) {
+			try {
+				return c.getDeclaredMethod(name, params);
+			} catch (NoSuchMethodException ignored) {
+				// try superclass
+			}
+		}
+		for (Class<?> itf : owner.getInterfaces()) {
+			try {
+				return itf.getMethod(name, params);
+			} catch (NoSuchMethodException ignored) {
+				// try next interface
+			}
+		}
+		return null;
+	}
+
+	private static Method findCompatibleMethod(Class<?> owner, String name, Object[] args) {
+		for (Class<?> c = owner; c != null; c = c.getSuperclass()) {
+			for (Method method : c.getDeclaredMethods()) {
+				if (compatible(method, name, args)) return method;
+			}
+		}
+		for (Class<?> itf : owner.getInterfaces()) {
+			for (Method method : itf.getMethods()) {
+				if (compatible(method, name, args)) return method;
+			}
+		}
+		return null;
+	}
+
+	private static Throwable unwrap(Throwable t) {
+		while (t instanceof java.lang.reflect.InvocationTargetException invocation && invocation.getCause() != null) {
+			t = invocation.getCause();
+		}
+		return t;
+	}
+
+	private static boolean compatible(Method method, String name, Object[] args) {
+		if (!method.getName().equals(name) || method.getParameterCount() != args.length) return false;
+		Class<?>[] params = method.getParameterTypes();
+		for (int i = 0; i < params.length; i++) {
+			if (args[i] != null && !box(params[i]).isInstance(args[i])) return false;
+		}
+		return true;
+	}
+
+	private static Class<?>[] classes(Object[] args) {
+		Class<?>[] out = new Class<?>[args.length];
+		for (int i = 0; i < args.length; i++) out[i] = args[i] == null ? Object.class : args[i].getClass();
+		return out;
+	}
+
+	private static Class<?> box(Class<?> type) {
+		if (!type.isPrimitive()) return type;
+		if (type == boolean.class) return Boolean.class;
+		if (type == byte.class) return Byte.class;
+		if (type == char.class) return Character.class;
+		if (type == short.class) return Short.class;
+		if (type == int.class) return Integer.class;
+		if (type == long.class) return Long.class;
+		if (type == float.class) return Float.class;
+		if (type == double.class) return Double.class;
+		return Void.class;
+	}
+
+	private static Class<?> load(ClassLoader loader, String name) {
+		try {
+			return Class.forName(name, false, loader);
+		} catch (ClassNotFoundException | LinkageError e) {
+			return null;
+		}
+	}
+
+	private static ClassLoader loaderFor(Object... values) {
+		for (Object value : values) {
+			if (value == null) continue;
+			ClassLoader loader = value.getClass().getClassLoader();
+			if (loader != null) return loader;
+		}
+		ClassLoader context = Thread.currentThread().getContextClassLoader();
+		return context != null ? context : PayloadInterop.class.getClassLoader();
+	}
+
+	private static final class Registration {
+		private final boolean register;
+		private final Collection<?> channels;
+
+		private Registration(boolean register, Collection<?> channels) {
+			this.register = register;
+			this.channels = channels;
+		}
+	}
+}
