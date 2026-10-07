@@ -38,6 +38,8 @@ classes/
 
 # ===== 缓存 / 临时文件 =====
 .cache/
+# music-api-rs lyric cache (PHP used ./cache/ relative to cwd)
+cache/
 .gradle/
 .idea/
 .vscode/
