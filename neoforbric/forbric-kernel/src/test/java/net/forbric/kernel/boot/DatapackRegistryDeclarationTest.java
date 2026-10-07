@@ -298,3 +298,296 @@ class DatapackRegistryDeclarationTest {
 	/**
 	 * Mixin 0.8.7 writes the method part of a merged injector's name as {@code %03x} and pads the class part to at
 	 * least three letters, so both can be longer or hex: a later {@code wover_init}, and a mixin past the 4096th.
+	 */
+	@Test
+	void theInjectorsModIsReadWhateverMixinsCountersSay() {
+		for (String handler : List.of("handler$cgo000$wover-core$wover_init", "handler$zza00c$wover-core$wover_init",
+				"handler$baaa0f3$wover-core$wover_init")) {
+			ExceptionInInitializerError init = new ExceptionInInitializerError(new IllegalStateException("frozen"));
+			init.setStackTrace(new StackTraceElement[] {
+					frame("net.minecraft.resources.RegistryDataLoader", handler),
+					frame("net.minecraft.resources.RegistryDataLoader", "<clinit>"),
+			});
+			CompatibilityFinding finding = DatapackRegistryDeclaration.poisonedLoader(init);
+			assertNotNull(finding, handler);
+			assertTrue(finding.detail().contains("a mixin from wover-core ran in it"), handler + ": " + finding.detail());
+		}
+	}
+
+	/** "Could not initialize class RegistryDataLoader$RegistryData" is not the loader failing to initialise. */
+	@Test
+	void aNestedClassOfTheLoaderIsNotTheLoader() {
+		assertNull(DatapackRegistryDeclaration.poisonedLoader(new NoClassDefFoundError(
+				"Could not initialize class net.minecraft.resources.RegistryDataLoader$RegistryData")));
+		assertTrue(DatapackRegistryDeclaration.couldNotInitialize(
+				"Could not initialize class net.minecraft.resources.RegistryDataLoader",
+				DatapackRegistryDeclaration.LOADER));
+		assertTrue(DatapackRegistryDeclaration.couldNotInitialize(
+				"Could not initialize class net.minecraft.resources.RegistryDataLoader [in thread \"main\"]",
+				DatapackRegistryDeclaration.LOADER));
+	}
+
+	/**
+	 * The reconcile reaches NeoForge by reflection, and a signature that drifted would turn it into a WARN with no test
+	 * saying so. Every member it names, as the staged carrier and merged base declare them.
+	 */
+	@Test
+	void theReconcilesReflectiveTargetsExistWithTheseShapes() throws Exception {
+		Path runtime = staged("neoforge-runtime", "neoforge-runtime.jar");
+		Path merged = staged("merged-base", "patched-mc-merged-26.2.jar");
+		TestFixtures.require(Fixture.STAGED, Files.isRegularFile(runtime) && Files.isRegularFile(merged),
+				"carrier or merged base not staged");
+
+		ClassNode wrapper = classIn(runtime, "net/neoforged/neoforge/registries/DataPackRegistryEvent$DataPackRegistryData");
+		assertTrue(declares(wrapper, "<init>", "(Lnet/minecraft/resources/RegistryDataLoader$RegistryData;"
+				+ "Lcom/mojang/serialization/Codec;)V"), "DataPackRegistryData(RegistryData, Codec)");
+		ClassNode hooks = classIn(runtime, "net/neoforged/neoforge/registries/DataPackRegistriesHooks");
+		assertTrue(declares(hooks, "addRegistryCodec",
+				"(Lnet/neoforged/neoforge/registries/DataPackRegistryEvent$DataPackRegistryData;)V"), "addRegistryCodec");
+		assertTrue(declares(hooks, "getDataPackRegistries", "()Ljava/util/List;"), "getDataPackRegistries");
+		ClassNode loader = classIn(merged, "net/minecraft/resources/RegistryDataLoader");
+		assertTrue(loader.fields.stream().anyMatch(f -> "WORLDGEN_REGISTRIES".equals(f.name)
+				&& "Ljava/util/List;".equals(f.desc) && (f.access & Opcodes.ACC_STATIC) != 0), "WORLDGEN_REGISTRIES");
+		ClassNode data = classIn(merged, "net/minecraft/resources/RegistryDataLoader$RegistryData");
+		assertTrue(declares(data, "key", "()Lnet/minecraft/resources/ResourceKey;"), "RegistryData.key()");
+
+		// And these are the names the kernel looks up.
+		MethodNode reconcile = method("reconcileLoaderRegistriesIntoNeoForge");
+		assertTrue(reconcile != null,
+				"KernelLifecycle.reconcileLoaderRegistriesIntoNeoForge not found in the compiled src/main classes, "
+						+ "which exist before any test runs");
+		List<Object> constants = new ArrayList<>();
+		for (AbstractInsnNode insn : reconcile.instructions) {
+			if (insn instanceof org.objectweb.asm.tree.LdcInsnNode ldc) constants.add(ldc.cst);
+		}
+		for (String name : List.of("net.neoforged.neoforge.registries.DataPackRegistryEvent$DataPackRegistryData",
+				"addRegistryCodec", "WORLDGEN_REGISTRIES", "key", "getDataPackRegistries")) {
+			assertTrue(constants.contains(name), "the reconcile no longer looks up " + name + ": " + constants);
+		}
+	}
+
+	/** The stack the sweep pack's client printed, reduced to the frames the finding reads. */
+	@Test
+	void aPoisonedLoaderIsAFindingThatSaysWhatItCosts() {
+		IllegalStateException frozen = new IllegalStateException(
+				"Registry is already frozen (trying to add key ResourceKey[minecraft:root / wover:wover/biome_codec])");
+		frozen.setStackTrace(new StackTraceElement[] {
+				frame("net.minecraft.core.MappedRegistry", "validateWrite"),
+				frame("org.betterx.wover.biome.impl.BiomeCodecRegistryImpl", "<clinit>"),
+		});
+		ExceptionInInitializerError init = new ExceptionInInitializerError(frozen);
+		init.setStackTrace(new StackTraceElement[] {
+				frame("org.betterx.wover.biome.impl.data.BiomeDataRegistryImpl", "initialize"),
+				frame("net.minecraft.resources.RegistryDataLoader", "handler$cgo000$wover-core$wover_init"),
+				frame("net.minecraft.resources.RegistryDataLoader", "<clinit>"),
+				frame("net.neoforged.neoforge.registries.DataPackRegistriesHooks", "<clinit>"),
+				frame("net.forbric.kernel.boot.KernelLifecycle", "registerDataPackRegistries"),
+		});
+		CompatibilityFinding finding = DatapackRegistryDeclaration.poisonedLoader(new InvocationTargetException(init));
+
+		assertNotNull(finding);
+		assertTrue(finding.confirmedRequired());
+		assertEquals("forbric", finding.modId());
+		assertTrue(finding.detail().contains("RegistryDataLoader"), finding.detail());
+		assertTrue(finding.detail().contains("wover-core"), finding.detail());
+		assertTrue(finding.detail().contains("no world can be created, loaded or joined"), finding.detail());
+		assertTrue(finding.evidence().stream().anyMatch(e -> e.contains("Registry is already frozen")),
+				finding.evidence().toString());
+	}
+
+	/** The second touch of an erroneous class says so in its message, with no initialiser frame at all. */
+	@Test
+	void aLaterTouchOfThePoisonedHooksIsRecognisedToo() {
+		CompatibilityFinding finding = DatapackRegistryDeclaration.poisonedLoader(new NoClassDefFoundError(
+				"Could not initialize class net.neoforged.neoforge.registries.DataPackRegistriesHooks"));
+		assertNotNull(finding);
+		assertTrue(finding.detail().contains("DataPackRegistriesHooks"), finding.detail());
+	}
+
+	@Test
+	void anOrdinaryDeclarationFailureIsNotCalledAPoisonedLoader() {
+		IllegalStateException other = new IllegalStateException("a mod's listener threw");
+		other.setStackTrace(new StackTraceElement[] {frame("com.example.Mod", "onNewRegistry")});
+		assertNull(DatapackRegistryDeclaration.poisonedLoader(other));
+	}
+
+	// --- helpers ------------------------------------------------------------------------------------------------
+
+	/**
+	 * Stand-in for {@code RegistryDataLoader}: its list, NeoForge's patched call into the hooks just before it
+	 * returns, then a TAIL injector replacing the list the way wover's does.
+	 */
+	public static final class FakeLoader {
+		public static List<String> worldgen;
+		public static List<String> synced;
+
+		static {
+			worldgen = List.of("minecraft:biome");
+			synced = FakeHooks.grabNetworkable(List.of());
+			List<String> more = new ArrayList<>(worldgen);
+			more.add("wover:biome_data");
+			worldgen = List.copyOf(more);
+		}
+
+		private FakeLoader() {
+		}
+	}
+
+	/** Stand-in for {@code DataPackRegistriesHooks}: its initialiser copies the loader's list. */
+	public static final class FakeHooks {
+		public static final List<String> NEO = new ArrayList<>(FakeLoader.worldgen);
+
+		public static List<String> grabNetworkable(List<String> vanilla) {
+			return vanilla;
+		}
+
+		private FakeHooks() {
+		}
+	}
+
+	/** Stand-in for {@code minecraft:root}: the kernel freezes it outside its registration windows. */
+	public static final class FakeRoot {
+		public static boolean frozen;
+		public static final List<String> KEYS = new ArrayList<>();
+
+		public static void register(String key) {
+			if (frozen) throw new IllegalStateException("Registry is already frozen (trying to add key " + key + ")");
+			KEYS.add(key);
+		}
+
+		private FakeRoot() {
+		}
+	}
+
+	/** Stand-in for wover-biome's {@code BiomeCodecRegistryImpl}: its initialiser creates the registry. */
+	public static final class FakeCodecRegistry {
+		static {
+			FakeRoot.register("wover:biome_codec");
+		}
+
+		public static void touch() {
+		}
+
+		private FakeCodecRegistry() {
+		}
+	}
+
+	/** Stand-in for wover-biome's main entrypoint, which is what creates the registry on native Fabric. */
+	public static final class FakeWoverMain {
+		public static void onInitialize() {
+			FakeCodecRegistry.touch();
+		}
+
+		private FakeWoverMain() {
+		}
+	}
+
+	/** Stand-in for {@code RegistryDataLoader} with WorldWeaver's TAIL injector running a datapack entrypoint. */
+	public static final class FakeTailLoader {
+		static {
+			FakeCodecRegistry.touch();
+		}
+
+		private FakeTailLoader() {
+		}
+	}
+
+	private static void frozen(ClassLoader fresh, boolean value) throws Exception {
+		Class.forName(FakeRoot.class.getName(), true, fresh).getField("frozen").setBoolean(null, value);
+	}
+
+	@SuppressWarnings("unchecked")
+	private static List<String> keys(ClassLoader fresh) throws Exception {
+		return (List<String>) Class.forName(FakeRoot.class.getName(), true, fresh).getField("KEYS").get(null);
+	}
+
+	/** A loader that defines the two stand-ins itself, so each test runs their initialisers afresh. */
+	private static ClassLoader freshPair() {
+		return fresh(FakeLoader.class, FakeHooks.class);
+	}
+
+	/** A loader that defines {@code classes} itself, so each test runs their initialisers afresh. */
+	private static ClassLoader fresh(Class<?>... classes) {
+		java.util.Set<String> names = new java.util.HashSet<>();
+		for (Class<?> c : classes) names.add(c.getName());
+		return new ClassLoader(DatapackRegistryDeclarationTest.class.getClassLoader()) {
+			@Override
+			protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+				if (!names.contains(name)) return super.loadClass(name, resolve);
+				synchronized (getClassLoadingLock(name)) {
+					Class<?> c = findLoadedClass(name);
+					if (c != null) return c;
+					try (InputStream in = DatapackRegistryDeclarationTest.class.getClassLoader()
+							.getResourceAsStream(name.replace('.', '/') + ".class")) {
+						byte[] bytes = in.readAllBytes();
+						return defineClass(name, bytes, 0, bytes.length);
+					} catch (java.io.IOException e) {
+						throw new ClassNotFoundException(name, e);
+					}
+				}
+			}
+		};
+	}
+
+	@SuppressWarnings("unchecked")
+	private static List<String> worldgen(ClassLoader fresh) throws Exception {
+		return (List<String>) Class.forName(FakeLoader.class.getName(), true, fresh).getField("worldgen").get(null);
+	}
+
+	@SuppressWarnings("unchecked")
+	private static List<String> neo(ClassLoader fresh) throws Exception {
+		return (List<String>) Class.forName(FakeHooks.class.getName(), true, fresh).getField("NEO").get(null);
+	}
+
+	private static Path staged(String dir, String jar) {
+		return TestFixtures.stagedRoot().resolve(dir).resolve(jar).normalize();
+	}
+
+	private static ClassNode classIn(Path jar, String internalName) throws Exception {
+		try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(jar.toFile())) {
+			java.util.zip.ZipEntry entry = zip.getEntry(internalName + ".class");
+			assertNotNull(entry, internalName + " absent from " + jar.getFileName());
+			try (InputStream in = zip.getInputStream(entry)) {
+				ClassNode node = new ClassNode();
+				new ClassReader(in.readAllBytes()).accept(node, ClassReader.SKIP_CODE);
+				return node;
+			}
+		}
+	}
+
+	private static boolean declares(ClassNode node, String name, String desc) {
+		return node.methods.stream().anyMatch(m -> name.equals(m.name) && desc.equals(m.desc));
+	}
+
+	private static StackTraceElement frame(String cls, String method) {
+		return new StackTraceElement(cls, method, null, -1);
+	}
+
+	private static MethodNode method(String name) throws Exception {
+		Path compiled = Path.of(System.getProperty("user.dir"), "build", "classes", "java", "main",
+				"net", "forbric", "kernel", "boot", "KernelLifecycle.class");
+		if (!Files.isRegularFile(compiled)) return null;
+		ClassNode node = new ClassNode();
+		new ClassReader(Files.readAllBytes(compiled)).accept(node, 0);
+		for (MethodNode m : node.methods) {
+			if (name.equals(m.name)) return m;
+		}
+		return null;
+	}
+
+	private static int firstCall(MethodNode m, String name) {
+		AbstractInsnNode[] insns = m.instructions.toArray();
+		for (int i = 0; i < insns.length; i++) {
+			if (insns[i] instanceof MethodInsnNode call && name.equals(call.name)) return i;
+		}
+		return -1;
+	}
+
+	private static int lastCall(MethodNode m, String name) {
+		AbstractInsnNode[] insns = m.instructions.toArray();
+		for (int i = insns.length - 1; i >= 0; i--) {
+			if (insns[i] instanceof MethodInsnNode call && name.equals(call.name)) return i;
+		}
+		return -1;
+	}
+}
