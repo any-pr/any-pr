@@ -898,3 +898,238 @@ public final class DuplicateModArbiter {
 
 	/** See {@link #nestedPreference()} — both halves of this order are a measured defect, one each way. */
 	private static final List<Ecosystem> NESTED_DEFAULT =
+			List.of(Ecosystem.NEOFORGE, Ecosystem.FABRIC);
+
+	/** {@code -Dforbric.modOwner=sodium=fabric,lithostitched=neoforge} */
+	private static Ecosystem overrideFor(String modId) {
+		String csv = System.getProperty(OWNER_OVERRIDE);
+		if (csv != null && !csv.isBlank()) {
+			for (String raw : csv.split(",")) {
+				int eq = raw.indexOf('=');
+				if (eq <= 0) continue;
+				if (!raw.substring(0, eq).trim().equals(modId)) continue;
+				Ecosystem eco = ecosystem(raw.substring(eq + 1), "-D" + OWNER_OVERRIDE);
+				if (eco != null) return eco;
+			}
+		}
+		// The command line wins, so a launcher argument can always override a stale file.
+		return fileOverrides.get(modId);
+	}
+
+	/** Parsed {@code forbric-mods.txt}; empty until {@link #loadOverrideFile} runs, and after {@link #reset}. */
+	private static volatile Map<String, Ecosystem> fileOverrides = Map.of();
+
+	/**
+	 * Reads {@code <rundir>/forbric-mods.txt} — the way a player picks a side without touching JVM arguments.
+	 *
+	 * <p>Launchers make {@code -D} flags awkward to set and easy to lose; a text file next to {@code mods/} is
+	 * something anyone can edit, and {@link #writeOverrideTemplate} puts one there with every duplicate already
+	 * listed and commented out, so the edit is deleting a {@code #}.
+	 *
+	 * <p>Parsing is deliberately forgiving — blank lines, {@code #} comments (whole-line and trailing), any casing,
+	 * any spacing. A line that cannot be understood is warned about and SKIPPED: a typo must never be able to stop
+	 * a mod from loading, which is the same rule the ecosystem-name handling follows.
+	 */
+	private static void loadOverrideFile(Path rundir) {
+		fileOverrides = Map.of();
+		if (rundir == null) return;
+		Path file = rundir.resolve(OVERRIDE_FILE);
+		if (!Files.isRegularFile(file)) return;
+
+		Map<String, Ecosystem> parsed = new LinkedHashMap<>();
+		try {
+			int lineNo = 0;
+			for (String raw : Files.readAllLines(file)) {
+				lineNo++;
+				int hash = raw.indexOf('#');
+				String line = (hash >= 0 ? raw.substring(0, hash) : raw).trim();
+				if (line.isEmpty()) continue;
+
+				int eq = line.indexOf('=');
+				if (eq <= 0) {
+					ForbricLog.warn("[Forbric/DupeId] %s line %d: expected '<mod id> = <loader>', got '%s' — skipped",
+							OVERRIDE_FILE, lineNo, line);
+					continue;
+				}
+				Ecosystem eco = ecosystem(line.substring(eq + 1), OVERRIDE_FILE + " line " + lineNo);
+				if (eco != null) parsed.put(line.substring(0, eq).trim(), eco);
+			}
+		} catch (Throwable t) {
+			ForbricLog.warn("[Forbric/DupeId] could not read " + OVERRIDE_FILE + " — using the automatic choice", t);
+			return;
+		}
+		fileOverrides = Map.copyOf(parsed);
+		if (!parsed.isEmpty()) {
+			ForbricLog.info("[Forbric/DupeId] %s pins %s", OVERRIDE_FILE, parsed);
+		}
+	}
+
+	/**
+	 * Writes {@code forbric-mods.txt} the first time an instance has duplicates, pre-filled and fully commented out.
+	 *
+	 * <p>The point is that the player never has to compose anything: every duplicate is already there with the
+	 * choice the kernel made, so switching one is deleting a {@code #}. Never overwrites an existing file — that
+	 * file is the player's.
+	 *
+	 * <p>Best-effort. A read-only rundir must cost a debug line, not the boot.
+	 */
+	private static void writeOverrideTemplate(Path rundir, Decision decision) {
+		if (rundir == null || decision.ownerByModId().isEmpty()) return;
+		Path file = rundir.resolve(OVERRIDE_FILE);
+		if (Files.exists(file)) return;
+
+		try {
+			StringBuilder out = new StringBuilder();
+			for (String line : MergeReport.overrideTemplateHeader()) out.append(line).append('\n');
+			for (Map.Entry<String, Path> e : decision.ownerByModId().entrySet()) {
+				Ecosystem owner = MultiLoaderArbiter.ownerOf(e.getValue());
+				out.append("# ").append(e.getKey()).append(" = ")
+						.append(owner == null ? "fabric" : owner.configId())
+						.append('\n');
+			}
+			Files.writeString(file, out.toString());
+			ForbricLog.info("[Forbric/DupeId] wrote %s — edit it to pick a different copy of any duplicated mod",
+					file);
+		} catch (IOException | RuntimeException e) {
+			ForbricLog.debug("[Forbric/DupeId] could not write %s: %s", OVERRIDE_FILE, String.valueOf(e));
+		}
+	}
+
+	/** Parses one ecosystem name, warning (and returning null) rather than throwing on anything unrecognised. */
+	private static Ecosystem ecosystem(String raw, String where) {
+		// The file this reads is the PLAYER'S. It has always spelled traditional Forge "minecraftforge", which is
+		// why parsing goes through Ecosystem.parse rather than valueOf — the constant is FORGE, but an override
+		// someone wrote months ago must still read back.
+		Ecosystem parsed = Ecosystem.parse(raw);
+		if (parsed == null) {
+			ForbricLog.warn("[Forbric/DupeId] %s: '%s' is not a loader — use fabric or neoforge",
+					where, raw.trim());
+		}
+		return parsed;
+	}
+
+	/**
+	 * Top-level jars only, sorted by path so ties are deterministic.
+	 *
+	 * <p>{@code universalAliases} collects the other half of the identity problem. A UNIVERSAL jar — one file
+	 * carrying manifests for several loaders — enters as exactly ONE claim, under whichever ecosystem
+	 * {@link MultiLoaderArbiter} picked, so the cross-jar pass below never sees it as contested and never issues
+	 * an alias for it. But the losing side's identity is just as gone: the file is loaded once, and a Fabric mod
+	 * asking {@code isModLoaded("iris")} of a jar loaded as NeoForge got no for an answer even though every class
+	 * it wanted was present. Read those manifests here, where the file is already open, and hand their ids back.
+	 */
+	private static List<Claim> scan(Path modsDir, EnvType envType, List<Alias> universalAliases, Set<Path> disabled) {
+		List<Claim> claims = new ArrayList<>();
+		if (modsDir == null || !Files.isDirectory(modsDir)) return claims;
+
+		ForbricModDiscoverer discoverer = new ForbricModDiscoverer();
+		List<Path> jars;
+		try (var entries = Files.list(modsDir)) {
+			jars = entries.filter(p -> p.getFileName().toString().endsWith(".jar"))
+					.filter(Files::isRegularFile).sorted().toList();
+		} catch (Exception e) {
+			ForbricLog.warn("[Forbric/DupeId] could not list %s: %s", modsDir, String.valueOf(e));
+			return claims;
+		}
+
+		for (Path jar : jars) {
+			if (disabled.contains(jar.toAbsolutePath())) continue;
+			Claim claim = claimOf(discoverer, jar, envType, universalAliases);
+			// Language/runtime bundles (notably kotlinforforge's -all jar) have JarJar metadata but no
+			// mod manifest. Keep their physical root in the plan so their declared children are discovered.
+			// An empty identity claims no mod id and cannot compete with a real mod or invent its presence.
+			if (claim == null && MultiLoaderArbiter.ownerOf(jar) == null) {
+				try (JarFile zip = new JarFile(jar.toFile())) {
+					if (zip.getEntry("META-INF/jarjar/metadata.json") != null) {
+						claim = new Claim(jar, Ecosystem.NEOFORGE, List.of(), Map.of());
+					}
+				} catch (Exception e) {
+					ForbricLog.warn("[Forbric/DupeId] could not inspect library bundle %s: %s", jar.getFileName(), String.valueOf(e));
+				}
+			}
+			if (claim != null) claims.add(claim);
+		}
+		return claims;
+	}
+
+	/**
+	 * One jar's claim on the ids it declares, or {@code null} for a plain library — nobody claims it, so it cannot
+	 * contest an id.
+	 *
+	 * <p>Split out of {@link #scan} so the nested pass can build claims for jars that are not in {@code mods/}:
+	 * a JarJar/JiJ child is extracted to {@code .forbric-kernel/}, and the walk that produced this decision never
+	 * goes there.
+	 */
+	static Claim claimOf(ForbricModDiscoverer discoverer, Path jar, EnvType envType, List<Alias> aliasesOut) {
+		Ecosystem owner = MultiLoaderArbiter.ownerOf(jar);
+		if (owner == null) return null;
+		Map<String, String> versions = new LinkedHashMap<>();
+		List<String> ids = owner == Ecosystem.FABRIC
+				? fabricIds(jar, envType, versions)
+				: forgeFamilyIds(discoverer, jar, versions, owner);
+		collectUniversalAliases(discoverer, jar, owner, envType, aliasesOut);
+		return ids.isEmpty() ? null : new Claim(jar, owner, ids, Map.copyOf(versions));
+	}
+
+	/**
+	 * Presence aliases for every ecosystem a universal jar declares but is not loaded as.
+	 *
+	 * <p>The id must come from the LOSING manifest, never the winner's — they are not always the same name. The
+	 * JourneyMap jar declares {@code journeymap} to NeoForge and {@code journeymap-wrongloader} to Fabric, the
+	 * latter being a deliberate marker so stock Fabric ignores the file. Aliasing the winner's id into Fabric
+	 * would answer a question nobody asked and leave the real one unanswered.
+	 */
+	private static void collectUniversalAliases(ForbricModDiscoverer discoverer, Path jar,
+			Ecosystem owner, EnvType envType, List<Alias> out) {
+		List<Ecosystem> declared = MultiLoaderArbiter.declaredBy(jar);
+		if (declared.size() < 2) return;
+
+		for (Ecosystem lost : declared) {
+			if (lost == owner) continue;
+			Map<String, String> versions = new LinkedHashMap<>();
+			List<String> ids = lost == Ecosystem.FABRIC
+					? fabricIds(jar, envType, versions)
+					: forgeFamilyIds(discoverer, jar, versions, lost);
+			for (String id : ids) {
+				out.add(new Alias(id, lost, versions.get(id)));
+			}
+		}
+	}
+
+	private static List<String> fabricIds(Path jar, EnvType envType, Map<String, String> versions) {
+		try (JarFile zip = new JarFile(jar.toFile())) {
+			ZipEntry entry = zip.getEntry(ForbricModDiscoverer.FABRIC_MANIFEST);
+			if (entry == null) return List.of();
+			try (InputStream in = zip.getInputStream(entry)) {
+				KernelModMetadata metadata = FabricModMetadataParser.read(in);
+				if (metadata == null || metadata.getId() == null) return List.of();
+				// The environment filter, mirrored from FabricModDiscovery: a jar the running side will drop must
+				// not win an id here, or the mod ends up loaded by nobody.
+				if (envType != null && !metadata.getEnvironment().matches(envType)) return List.of();
+				if (metadata.getVersion() != null) versions.put(metadata.getId(), metadata.getVersion().toString());
+				return List.of(metadata.getId());
+			}
+		} catch (Exception e) {
+			ForbricLog.debug("[Forbric/DupeId] could not read Fabric metadata from %s: %s", jar.getFileName(),
+					String.valueOf(e));
+			return List.of();
+		}
+	}
+
+	private static List<String> forgeFamilyIds(ForbricModDiscoverer discoverer, Path jar,
+			Map<String, String> versions, Ecosystem family) {
+		List<String> ids = new ArrayList<>();
+		try {
+			for (DiscoveredMod mod : discoverer.discoverJar(jar)) {
+				if (mod.getEcosystem() != family) continue;
+				if (mod.getId() == null || ids.contains(mod.getId())) continue;
+				ids.add(mod.getId());
+				if (mod.getVersion() != null) versions.put(mod.getId(), mod.getVersion());
+			}
+		} catch (Exception e) {
+			ForbricLog.debug("[Forbric/DupeId] could not read Forge-family metadata from %s: %s", jar.getFileName(),
+					String.valueOf(e));
+		}
+		return ids;
+	}
+}
