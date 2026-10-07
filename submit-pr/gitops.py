@@ -12,10 +12,20 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 
-from rules import EXCLUDED_RE, counted_lines
+from rules import (EXCLUDED_RE, MAX_CHANGED_FILES, MAX_CHANGED_LINES,
+                   MAX_FILE_LINES, counted_lines)
+
+_print_lock = threading.Lock()
+
+
+def log(label: str, msg: str) -> None:
+    """线程安全的带前缀输出（并发提交时多个批次同时打印）。"""
+    with _print_lock:
+        print(f"[{label}] {msg}")
 
 
 def run(cmd: list[str], cwd: str | None = None) -> str:
@@ -91,11 +101,11 @@ def probe_changes(repo_root: str, base_sha: str, dest: str,
 
 
 def build_worktree_commit(repo_root: str, base_sha: str, dest: str,
-                          batch: list[dict], max_lines: int, max_files: int,
-                          max_file_lines: int, message: str) -> str:
+                          batch: list[dict], message: str) -> str:
     """在临时 worktree 里基于 base_sha 复制文件并提交，返回 worktree 路径。
 
-    提交前用真实 numstat 再校验一次上限（防御性，理论上 probe 阶段已保证）。
+    提交前用真实 numstat 对照机器人上限（MAX_*，而非用户收紧值——单文件批
+    可能超出用户收紧值但绝不会超出机器人上限）再校验一次，防御性兜底。
     """
     wt = make_worktree(repo_root, base_sha)
     try:
@@ -103,11 +113,11 @@ def build_worktree_commit(repo_root: str, base_sha: str, dest: str,
         ns = staged_numstat(wt, dest)
         total = sum(counted_lines({"path": p, "adds": a, "dels": d})
                     for p, (a, d) in ns.items())
-        assert len(ns) <= max_files, f"文件数 {len(ns)} 超过 {max_files}"
-        assert total <= max_lines, f"计数行数 {total} 超过 {max_lines}"
+        assert len(ns) <= MAX_CHANGED_FILES, f"文件数 {len(ns)} 超过 {MAX_CHANGED_FILES}"
+        assert total <= MAX_CHANGED_LINES, f"计数行数 {total} 超过 {MAX_CHANGED_LINES}"
         for p, (a, d) in ns.items():
             if not EXCLUDED_RE.search(p):
-                assert a + d <= max_file_lines, f"{p} 变更 {a + d} 行超过 {max_file_lines}"
+                assert a + d <= MAX_FILE_LINES, f"{p} 变更 {a + d} 行超过 {MAX_FILE_LINES}"
         run(["git", "-C", wt, "commit", "-q", "-m", message])
         return wt
     except Exception:
@@ -182,3 +192,53 @@ def last_comment(target: str, pr: int) -> str:
         return cs[-1].get("body", "") if cs else ""
     except RuntimeError:
         return ""
+
+
+# ---------------------------------------------------------------------------
+# 单批提交（并发安全: 每批独立 worktree / 分支 / PR，可在多线程中同时运行）
+# ---------------------------------------------------------------------------
+def submit_batch(repo_root: str, target: str, fork: str, base_sha: str, branch: str,
+                 batch: list[dict], dest: str, title: str, body: str,
+                 poll_timeout: int, poll_interval: int, max_retries: int) -> dict:
+    """提交一批文件并等待合并。冲突被关时换新基底重建分支强推重试。
+
+    各批文件路径不相交，因此多批并发提交/合并互不干扰，合并顺序无关。
+    """
+    pr: int | None = None
+    base = base_sha
+    for attempt in range(1, max_retries + 1):
+        wt = build_worktree_commit(repo_root, base, dest, batch, title)
+        try:
+            push_branch(fork, branch, wt, force=pr is not None)
+        finally:
+            drop_worktree(repo_root, wt)
+
+        if pr is None:
+            pr = get_open_pr(target, fork, branch)
+            if pr is None:
+                wait_for_branch(fork, branch)
+                url = create_pr(target, fork, branch, title, body)
+                pr = int(url.rstrip("/").split("/")[-1])
+                log(branch, f"PR #{pr}: {url}")
+
+        deadline = time.time() + poll_timeout
+        status = "timeout"
+        while time.time() < deadline:
+            st = pr_state(target, pr)
+            if st == "MERGED":
+                return {"pr": pr, "result": "merged",
+                        "url": f"https://github.com/{target}/pull/{pr}"}
+            if st == "CLOSED":
+                comment = last_comment(target, pr)
+                if "conflict" in comment.lower() and attempt < max_retries:
+                    log(branch, f"与 main 冲突，换新基底重试 ({attempt}/{max_retries})…")
+                    base = latest_main_sha(target, repo_root)
+                    status = "conflict"
+                    break
+                raise RuntimeError(f"PR #{pr} 被机器人关闭:\n{comment or '(无评论)'}")
+            time.sleep(poll_interval)
+        if status == "conflict":
+            continue
+        return {"pr": pr, "result": "timeout",
+                "url": f"https://github.com/{target}/pull/{pr}"}
+    raise RuntimeError(f"PR #{pr} 重试 {max_retries} 次仍未合并")
