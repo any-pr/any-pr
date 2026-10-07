@@ -298,3 +298,283 @@ class FabricLoadOrderTest {
 		assertEquals(List.of("bclib", "optigui", "optigui", "optigui", "optigui", "optigui", "optigui", "optigui",
 				"pets-mod", "pets-mod", "pets-mod"), client);
 		assertEquals("com.jeff.pets.client.network.PetsNetworked",
+				definitions(KernelFabricLoader.getInstanceOrNull(), "client").get(10),
+				"Pets Mod's JOIN listener is registered by its last client entrypoint");
+		assertTrue(matchesGates(log), log);
+	}
+
+	/**
+	 * The same three under the old order: Pets Mod's client entrypoints come before both, as they did in the Windows
+	 * sweep (there pets-mod was client entrypoint 21–23, bclib 64 and OptiGUI 66–72), so its throw skipped both JOIN
+	 * listeners.
+	 */
+	@Test
+	void switchedOffPetsModRunsBeforeBothAsItDidUnderTheDependencyOrder() throws Exception {
+		System.setProperty(FabricLoadOrder.SWITCH, "off");
+		realMods();
+
+		build();
+		List<String> client = providers(KernelFabricLoader.getInstanceOrNull(), "client");
+
+		assertTrue(client.lastIndexOf("pets-mod") < client.indexOf("bclib"), client.toString());
+		assertTrue(client.lastIndexOf("pets-mod") < client.indexOf("optigui"), client.toString());
+	}
+
+	// -------------------------------------------------------------------------------------------------------------
+	// The reorder itself
+	// -------------------------------------------------------------------------------------------------------------
+
+	@Test
+	void theReorderRefusesAnythingButAPermutationAndChangesNothingWhenItDoes() {
+		KernelFabricLoader loader = KernelFabricLoader.create(EnvType.CLIENT, gameDir, gameDir.resolve("config"),
+				new String[0], "26.2");
+		KernelModContainer a = container("a");
+		KernelModContainer b = container("b");
+		loader.register(a);
+		loader.register(b);
+
+		assertThrows(IllegalArgumentException.class, () -> loader.reorder(List.of(b)));
+		assertThrows(IllegalArgumentException.class, () -> loader.reorder(List.of(b, b)));
+		assertThrows(IllegalArgumentException.class, () -> loader.reorder(List.of(b, container("a"))));
+		assertEquals(List.of("a", "b"), ids(loader));
+
+		loader.reorder(List.of(b, a));
+		assertEquals(List.of("b", "a"), ids(loader));
+
+		loader.freeze();
+		assertThrows(IllegalStateException.class, () -> loader.reorder(List.of(a, b)));
+	}
+
+	@Test
+	void byModIdIsAPlainStringSortThatKeepsTiesAndPutsNoIdLast() {
+		List<String[]> mods = List.of(new String[] {"petsmod-nyan-cat", "1"}, new String[] {null, "2"},
+				new String[] {"pets-mod", "3"}, new String[] {"fabricloader", "4"}, new String[] {"fabric-api", "5"},
+				new String[] {"pets-mod", "6"});
+
+		List<String> sorted = FabricLoadOrder.byModId(mods, mod -> mod[0]).stream().map(mod -> mod[1]).toList();
+
+		// '-' sorts before letters, as String.compareTo has it and as Fabric Loader's comparator does.
+		assertEquals(List.of("5", "4", "3", "6", "1", "2"), sorted);
+	}
+
+	// -------------------------------------------------------------------------------------------------------------
+
+	private String build() throws Exception {
+		return build(new ArrayList<>());
+	}
+
+	/** Runs discovery and {@link KernelFabricEcosystem#build} as KernelBoot does, and returns what it logged. */
+	private String build(List<Path> classPath) throws Exception {
+		FabricModDiscovery discovery = KernelFabricEcosystem.scan(EnvType.CLIENT, gameDir,
+				DuplicateModArbiter.Decision.none());
+		ByteArrayOutputStream log = new ByteArrayOutputStream();
+		PrintStream out = System.out;
+		try {
+			System.setOut(new PrintStream(log, true, StandardCharsets.UTF_8));
+			classPath.addAll(KernelFabricEcosystem.build(discovery, EnvType.CLIENT, gameDir, "26.2", new String[0],
+					DuplicateModArbiter.Decision.none(), null));
+		} finally {
+			System.setOut(out);
+		}
+		KernelFabricEcosystem.bindGameLoader(getClass().getClassLoader());
+		return log.toString(StandardCharsets.UTF_8);
+	}
+
+	/**
+	 * Whether the Fabric-order check of gate-m9 AND of compat/assert.sh accepts {@code log}, by running each one's
+	 * own pattern through {@code grep -acE} as they do, so the wording and the gates cannot drift apart.
+	 */
+	private boolean matchesGates(String log) throws Exception {
+		boolean m9 = grep(gatePattern("run/gate-m9-client.sh", "Fabric mods initialise in Fabric Loader's order (by mod id)"),
+				log);
+		boolean compat = grep(gatePattern("run/compat/assert.sh", "Fabric init is Fabric Loader order"), log);
+		assertEquals(m9, compat, "gate-m9 and compat/assert.sh disagree about the same line");
+		return m9;
+	}
+
+	private static String gatePattern(String gate, String name) throws IOException {
+		Matcher m = Pattern.compile("(?:check|ck)\\s+\"" + Pattern.quote(name) + "\"\\s*\\\\?\\s*\"([^\"]+)\"")
+				.matcher(Files.readString(Path.of(gate)));
+		if (!m.find()) throw new AssertionError(gate + " has no \"" + name + "\" check");
+		return m.group(1);
+	}
+
+	private boolean grep(String pattern, String text) throws Exception {
+		Path log = Files.writeString(gameDir.resolve("boot.log"), text);
+		Process grep = new ProcessBuilder("grep", "-acE", pattern, log.toString()).redirectErrorStream(true).start();
+		assertTrue(grep.waitFor(15, TimeUnit.SECONDS), "grep timed out");
+		return !"0".equals(new String(grep.getInputStream().readAllBytes(), StandardCharsets.UTF_8).strip());
+	}
+
+	private static Field activeLoader() throws NoSuchFieldException {
+		Field field = KernelFabricEcosystem.class.getDeclaredField("loader");
+		field.setAccessible(true);
+		return field;
+	}
+
+	private static List<String> ids(KernelFabricLoader loader) {
+		return loader.getAllMods().stream().map(mod -> mod.getMetadata().getId()).toList();
+	}
+
+	private static List<String> mixinConfigs() {
+		return KernelFabricEcosystem.mixinConfigs().stream().map(MixinConfigOwners.Owned::config).toList();
+	}
+
+	/** Each entry of {@code key} as declared, without constructing anything. */
+	private static List<String> definitions(KernelFabricLoader loader, String key) {
+		return containers(loader, key).stream().map(EntrypointContainer::getDefinition).toList();
+	}
+
+	private static List<String> providers(KernelFabricLoader loader, String key) {
+		return containers(loader, key).stream().map(c -> c.getProvider().getMetadata().getId()).toList();
+	}
+
+	/**
+	 * Every entry under {@code key}. The real mods' classes are not on this class path, so each is handed on as
+	 * matching (a lifecycle key's load failure goes to its driver) and nothing is constructed.
+	 */
+	private static List<EntrypointContainer<Object>> containers(KernelFabricLoader loader, String key) {
+		return loader.getEntrypointContainers(key, Object.class);
+	}
+
+	/** fabric-api's {@code ClientPlayConnectionEvents.JOIN} invoker, in shape: a plain loop, no catch per listener. */
+	private static List<String> fireJoin() {
+		JOINED.clear();
+		try {
+			for (Runnable listener : JOIN) listener.run();
+		} catch (RuntimeException thrown) {
+			// The throw leaves the loop. fabric-networking's caller catches it and logs it, and that is all.
+		}
+		return List.copyOf(JOINED);
+	}
+
+	private static KernelModContainer container(String id) {
+		String json = "{\"schemaVersion\":1,\"id\":\"" + id + "\",\"version\":\"1\"}";
+		return new KernelModContainer(FabricModMetadataParser.read(new StringReader(json)), null, null);
+	}
+
+	private static String manifest(String id, String depends, String entrypoints, String nested) {
+		return "{\"schemaVersion\":1,\"id\":\"" + id + "\",\"version\":\"1\",\"depends\":" + depends
+				+ ",\"entrypoints\":" + entrypoints + ",\"mixins\":[\"" + id + ".mixins.json\"]"
+				+ (nested == null ? "" : ",\"jars\":[{\"file\":\"" + nested + "\"}]") + "}";
+	}
+
+	private static String stub(String id, String depends) {
+		return stub(id, depends, List.of());
+	}
+
+	private static String stub(String id, String depends, java.util.Collection<String> nested) {
+		StringBuilder jars = new StringBuilder();
+		for (String file : nested) jars.append(jars.length() == 0 ? "" : ",").append("{\"file\":\"").append(file)
+				.append("\"}");
+		return "{\"schemaVersion\":1,\"id\":\"" + id + "\",\"version\":\"1\",\"depends\":" + depends
+				+ (nested.isEmpty() ? "" : ",\"jars\":[" + jars + "]") + "}";
+	}
+
+	private static void module(Map<String, byte[]> modules, String file, String id, String depends) throws IOException {
+		modules.put("META-INF/jars/" + file, jarBytes(stub(id, depends)));
+	}
+
+	private static String fixture(String name) throws IOException {
+		try (InputStream in = FabricLoadOrderTest.class.getResourceAsStream("/fabric-order/" + name)) {
+			if (in == null) throw new AssertionError("missing test resource /fabric-order/" + name);
+			return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+		}
+	}
+
+	private void jar(String name, String manifest, Map<String, byte[]> nested) throws IOException {
+		try (OutputStream out = Files.newOutputStream(mods.resolve(name))) {
+			writeJar(out, manifest, nested);
+		}
+	}
+
+	private static byte[] jarBytes(String manifest) throws IOException {
+		ByteArrayOutputStream out = new ByteArrayOutputStream();
+		writeJar(out, manifest, Map.of());
+		return out.toByteArray();
+	}
+
+	private static void writeJar(OutputStream target, String manifest, Map<String, byte[]> nested) throws IOException {
+		try (JarOutputStream out = new JarOutputStream(target)) {
+			out.putNextEntry(new JarEntry(FabricModDiscovery.MANIFEST));
+			out.write(manifest.getBytes(StandardCharsets.UTF_8));
+			out.closeEntry();
+			for (Map.Entry<String, byte[]> entry : nested.entrySet()) {
+				out.putNextEntry(new JarEntry(entry.getKey()));
+				out.write(entry.getValue());
+				out.closeEntry();
+			}
+		}
+	}
+
+	// -------------------------------------------------------------------------------------------------------------
+	// Entrypoints: each records that it ran; each client one registers a JOIN listener, and mmm's throws.
+	// -------------------------------------------------------------------------------------------------------------
+
+	public static final class MmmPre implements PreLaunchEntrypoint {
+		@Override public void onPreLaunch() { RAN.add("MmmPre"); }
+	}
+
+	public static final class ZzzPre implements PreLaunchEntrypoint {
+		@Override public void onPreLaunch() { RAN.add("ZzzPre"); }
+	}
+
+	public static final class AaaMain implements ModInitializer {
+		@Override public void onInitialize() { RAN.add("AaaMain"); }
+	}
+
+	public static final class BbbMain implements ModInitializer {
+		@Override public void onInitialize() { RAN.add("BbbMain"); }
+	}
+
+	public static final class MmmMain implements ModInitializer {
+		@Override public void onInitialize() { RAN.add("MmmMain"); }
+	}
+
+	public static final class ZzzMain implements ModInitializer {
+		@Override public void onInitialize() { RAN.add("ZzzMain"); }
+	}
+
+	public static final class AaaClient implements ClientModInitializer {
+		@Override public void onInitializeClient() {
+			RAN.add("AaaClient");
+			JOIN.add(() -> JOINED.add("aaa-nested"));
+		}
+	}
+
+	public static final class BbbClient implements ClientModInitializer {
+		@Override public void onInitializeClient() {
+			RAN.add("BbbClient");
+			JOIN.add(() -> JOINED.add("bbb"));
+		}
+	}
+
+	/** Pets Mod's shape: this listener dereferences something that is null in singleplayer. */
+	public static final class MmmClientA implements ClientModInitializer {
+		@Override public void onInitializeClient() {
+			RAN.add("MmmClientA");
+			JOIN.add(() -> {
+				throw new NullPointerException("Cannot read field \"ip\" because getCurrentServer() is null");
+			});
+		}
+	}
+
+	public static final class MmmClientB implements ClientModInitializer {
+		@Override public void onInitializeClient() { RAN.add("MmmClientB"); }
+	}
+
+	public static final class ZzzClient implements ClientModInitializer {
+		@Override public void onInitializeClient() {
+			RAN.add("ZzzClient");
+			JOIN.add(() -> JOINED.add("zzz-lib"));
+		}
+	}
+
+	public static final class MmmProbe implements Runnable {
+		@Override public void run() { }
+	}
+
+	public static final class BbbProbe implements Runnable {
+		@Override public void run() { }
+	}
+}
