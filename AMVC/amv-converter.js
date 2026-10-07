@@ -298,3 +298,303 @@ function runFFmpeg(ffmpegPath, args, meta) {
       if (code === 0 && !killed) return resolve();
       // 失败时清理残留的输出文件（之前就存在的不动）
       if (!existedBefore && !meta.keep) {
+        try { if (fs.existsSync(meta.output)) fs.unlinkSync(meta.output); } catch (_) {}
+      }
+      const reason = killed
+        ? '已被用户中断'
+        : `ffmpeg 退出码 ${code}${errTail.trim() ? '\n' + errTail.trim() : ''}`;
+      const err = new Error(reason);
+      err.interrupted = killed;
+      reject(err);
+    });
+  });
+}
+
+/**
+ * 核心转换函数（CLI 与模块共用）。
+ * @returns {Promise<{output: string, duration: number}>}
+ */
+async function convertFile(input, output, opts = {}) {
+  const o = { ...DEFAULTS, ...opts };
+  if (!isURL(input) && !fs.existsSync(input)) {
+    throw new Error(`输入文件不存在: ${input}`);
+  }
+  const ff = resolveFFmpeg(o.ffmpeg);
+  if (!ff) {
+    throw new Error(
+      '未找到可用的 ffmpeg。请任选其一:\n' +
+      '  1) 把 ffmpeg.exe 放在本程序同目录\n' +
+      '  2) 安装 ffmpeg 并加入 PATH\n' +
+      '  3) 用 --ffmpeg 参数指定 ffmpeg 路径'
+    );
+  }
+  if (o.fps !== 10 && o.fps !== 14 && o.fps !== 15) {
+    throw new Error('AMV 帧率仅支持 10/14/15（音频固定 22050Hz，采样率必须能被帧率整除）');
+  }
+  if (o.quality < 2 || o.quality > 31) throw new Error('--quality 取值范围 2~31');
+
+  const outPath = ensureAmvExt(output);
+  if (!o.dryRun) {
+    fs.mkdirSync(path.dirname(path.resolve(outPath)), { recursive: true });
+    if (!o.overwrite && fs.existsSync(outPath)) {
+      throw new Error(`输出文件已存在: ${outPath}（加 --overwrite 覆盖）`);
+    }
+  }
+  const info = probeMedia(ff, input);
+  if (!info.hasVideo && !info.hasAudio && !info.isImage) {
+    throw new Error(`输入文件中没有可用的音视频流: ${input}`);
+  }
+  const args = buildFFmpegArgs(input, outPath, o, info);
+  const command = [ff, ...args].map(quoteArg).join(' ');
+  if (o.dryRun) {
+    return { output: outPath, duration: info.isImage ? o.duration : info.duration, command, dryRun: true };
+  }
+  await runFFmpeg(ff, args, {
+    output: outPath,
+    duration: info.isImage ? o.duration : info.duration,
+    quiet: o.quiet,
+    keep: o.keep,
+  });
+  return { output: outPath, duration: info.isImage ? o.duration : info.duration };
+}
+
+/** 拼接用于展示的命令行 */
+function quoteArg(s) {
+  return /[\s"]/.test(s) ? `"${String(s).replace(/"/g, '\\"')}"` : s;
+}
+
+// ---------------------------------------------------------------- 批量收集
+
+function collectInputs(targets) {
+  const files = [];
+  for (const t of targets) {
+    if (isURL(t)) { files.push(t); continue; }
+    let st;
+    try { st = fs.statSync(t); } catch (_) { throw new Error(`无法访问: ${t}`); }
+    if (st.isDirectory()) {
+      const entries = fs.readdirSync(t)
+        .filter((f) => MEDIA_EXT.has(path.extname(f).toLowerCase()))
+        .sort()
+        .map((f) => path.join(t, f));
+      if (!entries.length) out(`提示: 目录中没有可识别的媒体文件，已跳过: ${t}`);
+      files.push(...entries);
+    } else {
+      files.push(t);
+    }
+  }
+  return files;
+}
+
+// ---------------------------------------------------------------- CLI
+
+function printHelp() {
+  out(`amv-converter v${VERSION} —— 任意格式转 AMV（MP3/MP4 播放器视频格式）
+
+用法: ${path.basename(process.argv[1] || 'amv-converter')} [选项] <输入文件或目录...>
+
+选项:
+  -o, --out <路径>        输出文件（单个输入）或输出目录（批量）
+  -s, --size <宽x高>      分辨率，默认 320x240（自动取 16 的倍数）
+  -r, --fps <N>           帧率，默认 15（仅支持 10/14/15，见下方说明）
+  -q, --quality <N>       视频质量 2~31，越小越清晰，默认 9
+  -j, --jobs <N>          批量转换时的并行数 1~16（默认 1）
+      --stretch           拉伸铺满画面（默认等比缩放并加黑边）
+      --deinterlace       先做 yadif 去隔行（适合 DV/老摄像机源）
+      --duration <N>      静态图片输入时的时长(秒)，默认 30
+      --ffmpeg <路径>     指定 ffmpeg 可执行文件路径
+      --overwrite         覆盖已存在的输出文件
+      --keep              转换失败时保留残留输出
+      --quiet             不显示进度条
+      --info              只显示输入文件的流信息，不转换
+      --dry-run           只打印将执行的 ffmpeg 命令，不转换
+  -h, --help              显示帮助
+  -V, --version           显示版本
+
+说明:
+  · 视频/音频/图片均可转换：纯音频自动配黑屏画面；静态图片默认循环 30 秒。
+  · 按 AMV 标准编码: amv(mjpeg) 视频 + adpcm_ima_amv 音频(22050Hz 单声道)。
+  · 帧率只支持 10/14/15: AMV 音频固定 22050Hz, 采样率必须能被视频帧率整除。
+  · 缩放使用 lanczos 算法；输出默认与源文件同目录同名，扩展名 .amv。
+
+示例:
+  amv-converter movie.mp4                       # → movie.amv (320x240@15fps)
+  amv-converter -s 160x120 -o ./amv ./视频目录    # 批量转 160x120 到 ./amv
+  amv-converter -j 4 -o ./amv ./视频目录          # 4 路并行批量
+  amv-converter song.mp3                        # 音乐 → 带黑屏画面的 .amv
+`);
+}
+
+function parseCLI(argv) {
+  const opts = { ...DEFAULTS, size: '320x240' };
+  const inputs = [];
+  const VAL_OPTS = new Set(['-o', '--out', '-s', '--size', '-r', '--fps', '-q', '--quality',
+    '--duration', '--ffmpeg', '-j', '--jobs']);
+
+  for (let i = 0; i < argv.length; i++) {
+    let a = argv[i];
+    let inline = null;
+    if (a.startsWith('--') && a.includes('=')) {
+      const eq = a.indexOf('=');
+      inline = a.slice(eq + 1);
+      a = a.slice(0, eq);
+    }
+    const need = VAL_OPTS.has(a);
+    if (need && inline == null) {
+      if (i + 1 >= argv.length) die(1, `错误: 参数 ${a} 缺少值（见 --help）`);
+      inline = argv[++i];
+    }
+    switch (a) {
+      case '-h': case '--help': printHelp(); process.exit(0); break;
+      case '-V': case '--version': out(`amv-converter v${VERSION}`); process.exit(0); break;
+      case '-o': case '--out': opts.out = inline; break;
+      case '-s': case '--size': opts.size = inline; break;
+      case '-r': case '--fps': opts.fps = Number(inline); break;
+      case '-q': case '--quality': opts.quality = Number(inline); break;
+      case '-j': case '--jobs': opts.jobs = Number(inline); break;
+      case '--duration': opts.duration = Number(inline); break;
+      case '--ffmpeg': opts.ffmpeg = inline; break;
+      case '--stretch': opts.stretch = true; break;
+      case '--deinterlace': opts.deinterlace = true; break;
+      case '--overwrite': opts.overwrite = true; break;
+      case '--keep': opts.keep = true; break;
+      case '--quiet': opts.quiet = true; break;
+      case '--dry-run': opts.dryRun = true; break;
+      case '--info': opts.info = true; break;
+      default:
+        if (a.startsWith('-') && a !== '-') die(1, `错误: 未知选项 ${a.split('=')[0]}（见 --help）`);
+        inputs.push(inline != null ? inline : a);
+    }
+  }
+  return { opts, inputs };
+}
+
+async function main() {
+  // 兼容普通 node 运行与 SEA 单文件 exe 两种 argv 形态
+  const argv = process.argv.slice(2);
+  if (argv.length && path.resolve(argv[0]) === path.resolve(process.execPath)) argv.shift();
+
+  const { opts, inputs } = parseCLI(argv);
+  if (!inputs.length) { printHelp(); process.exit(1); }
+
+  const size = parseSize(opts.size); // 解析失败会直接报错退出
+  if (![10, 14, 15].includes(opts.fps)) {
+    die(1, '错误: --fps 仅支持 10/14/15（AMV 音频固定 22050Hz，采样率必须能被帧率整除）');
+  }
+  Object.assign(opts, { width: size.w, height: size.h });
+
+  const ff = resolveFFmpeg(opts.ffmpeg);
+  if (!ff) {
+    die(2,
+      '错误: 未找到可用的 ffmpeg。请任选其一:\n' +
+      '  1) 把 ffmpeg.exe 放在本程序同目录（打包版已内嵌，无需处理）\n' +
+      '  2) 安装 ffmpeg 并加入 PATH\n' +
+      '  3) 用 --ffmpeg 参数指定 ffmpeg 路径');
+  }
+
+  let files;
+  try { files = collectInputs(inputs); } catch (e) { die(1, '错误: ' + e.message); }
+  if (!files.length) die(1, '错误: 没有可转换的输入');
+
+  // ---- --info 模式: 只查看输入信息 ----
+  if (opts.info) {
+    for (const f of files) {
+      const info = probeMedia(ff, f);
+      const kind = info.isImage ? '图片'
+        : (info.hasVideo ? (info.hasAudio ? '视频+音频' : '视频(无音轨)')
+                         : (info.hasAudio ? '纯音频' : '未知'));
+      out(`${f}  [${kind}, ${fmtSec(info.duration)}]`);
+    }
+    process.exitCode = 0;
+    return;
+  }
+
+  // 决定输出路径（串行/并行/dry-run 共用）
+  const batch = files.length > 1;
+  let outDir = null, outFile = null;
+  if (opts.out) {
+    if (batch) {
+      if (/\.[a-z0-9]+$/i.test(opts.out) && !fs.existsSync(opts.out)) {
+        die(1, '错误: 多个输入时 --out 必须是目录');
+      }
+      outDir = opts.out;
+    } else if (/\.[a-z0-9]+$/i.test(opts.out)) {
+      outFile = opts.out; // 指定了具体输出文件
+    } else {
+      outDir = opts.out;
+    }
+  }
+  const dests = files.map((f) => outFile && files.length === 1
+    ? outFile
+    : path.join(outDir || path.dirname(f),
+                path.basename(isURL(f) ? f.split('?')[0] : f, path.extname(f)) + '.amv'));
+
+  if (!opts.quiet) {
+    out(`ffmpeg: ${ff}`);
+    out(`参数: ${opts.width}x${opts.height}@${opts.fps}fps q=${opts.quality} 音频 adpcm_ima_amv 22050Hz 单声道` +
+        (opts.deinterlace ? ' +去隔行' : '') +
+        (opts.jobs > 1 ? ` 并行x${opts.jobs}` : ''));
+    out(`共 ${files.length} 个文件，开始转换...`);
+  }
+
+  // ---- --dry-run 模式: 只打印命令不执行 ----
+  if (opts.dryRun) {
+    let fail = 0;
+    for (let i = 0; i < files.length; i++) {
+      try {
+        const r = await convertFile(files[i], dests[i], { ...opts, dryRun: true });
+        out(`将执行: ${r.command}`);
+      } catch (e) {
+        out(`[失败] ${files[i]}: ${e.message}`);
+        fail++;
+      }
+    }
+    process.exitCode = fail ? 3 : 0;
+    return;
+  }
+
+  // ---- 并行批量 ----
+  if (opts.jobs > 1 && files.length > 1) {
+    const jobs = Math.max(1, Math.min(16, opts.jobs | 0));
+    let next = 0, done = 0, fail = 0, interrupted = false;
+    const worker = async () => {
+      while (next < files.length && !interrupted) {
+        const i = next++;
+        try {
+          const t1 = Date.now();
+          await convertFile(files[i], dests[i], { ...opts, quiet: true });
+          done++;
+          out(`[完成 ${done + fail}/${files.length}] ${files[i]} → ${dests[i]}（${((Date.now() - t1) / 1000).toFixed(1)}s）`);
+        } catch (e) {
+          fail++;
+          out(`[失败 ${done + fail}/${files.length}] ${files[i]}: ${e.message}`);
+          if (e.interrupted) interrupted = true;
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(jobs, files.length) }, worker));
+    if (interrupted) process.exit(130);
+    out(`转换完成: 成功 ${done}，失败 ${fail}`);
+    process.exitCode = fail ? 3 : 0;
+    return;
+  }
+
+  // ---- 串行（默认, 带进度条）----
+  let ok = 0, fail = 0;
+  const t0 = Date.now();
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    try {
+      const t1 = Date.now();
+      const r = await convertFile(f, dests[i], opts);
+      out(`[完成] ${f} → ${r.output}（${((Date.now() - t1) / 1000).toFixed(1)}s）`);
+      ok++;
+    } catch (e) {
+      out(`[失败] ${f}: ${e.message}`);
+      fail++;
+      if (e.interrupted) process.exit(130);
+    }
+  }
+
+  out(`转换完成: 成功 ${ok}，失败 ${fail}，总耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+  process.exitCode = fail ? 3 : 0;
+}
