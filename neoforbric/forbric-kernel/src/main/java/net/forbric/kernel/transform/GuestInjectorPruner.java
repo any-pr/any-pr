@@ -298,3 +298,205 @@ public final class GuestInjectorPruner implements ClassTransformer {
 
 	/** Whether {@code m} carries an injector annotation whose {@code method} list has a selector starting with {@code prefix}. */
 	static boolean isInjectorInto(MethodNode m, String prefix) {
+		for (AnnotationNode a : allAnnotations(m)) {
+			if (!INJECTOR_DESCS.contains(a.desc)) continue;
+			List<Object> values = a.values;
+			if (values == null) continue;
+			for (int i = 0; i + 1 < values.size(); i += 2) {
+				if (!"method".equals(values.get(i))) continue;
+				Object v = values.get(i + 1);
+				if (v instanceof List<?> list) {
+					for (Object s : list) if (s instanceof String str && str.startsWith(prefix)) return true;
+				} else if (v instanceof String str && str.startsWith(prefix)) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Whether {@code m} carries an injector annotation whose {@code method} list is exactly {@code selector}, and a
+	 * {@code @Share} parameter — the shape of fabric-item-api's five, which only move together.
+	 */
+	static boolean isInjectorExactlyInto(MethodNode m, String selector) {
+		boolean shared = false;
+		for (List<AnnotationNode> parameter : m.invisibleParameterAnnotations == null ? new List[0] : m.invisibleParameterAnnotations) {
+			if (parameter != null) for (AnnotationNode a : parameter) shared |= "Lcom/llamalad7/mixinextras/sugar/Share;".equals(a.desc);
+		}
+		for (List<AnnotationNode> parameter : m.visibleParameterAnnotations == null ? new List[0] : m.visibleParameterAnnotations) {
+			if (parameter != null) for (AnnotationNode a : parameter) shared |= "Lcom/llamalad7/mixinextras/sugar/Share;".equals(a.desc);
+		}
+		if (!shared) return false;
+		for (AnnotationNode a : allAnnotations(m)) {
+			if (!INJECTOR_DESCS.contains(a.desc) || a.values == null) continue;
+			for (int i = 0; i + 1 < a.values.size(); i += 2) {
+				if (!"method".equals(a.values.get(i))) continue;
+				Object v = a.values.get(i + 1);
+				if (v instanceof List<?> list) return list.size() == 1 && selector.equals(list.get(0));
+				return selector.equals(v);
+			}
+		}
+		return false;
+	}
+
+	private static List<AnnotationNode> allAnnotations(MethodNode m) {
+		List<AnnotationNode> out = new ArrayList<>();
+		if (m.visibleAnnotations != null) out.addAll(m.visibleAnnotations);
+		if (m.invisibleAnnotations != null) out.addAll(m.invisibleAnnotations);
+		return out;
+	}
+
+	private static boolean alreadyPruned(ClassNode node, List<Prune> prunes) {
+		for (Prune p : prunes) {
+			for (MethodNode m : node.methods) {
+				if (p.name().equals(m.name) && p.desc().equals(m.desc)) return false;
+			}
+		}
+		return true;
+	}
+
+	private static int countInjectors(ClassNode node) {
+		int n = 0;
+		for (MethodNode m : node.methods) {
+			for (AnnotationNode a : allAnnotations(m)) {
+				if (INJECTOR_DESCS.contains(a.desc)) { n++; break; }
+			}
+		}
+		return n;
+	}
+
+	/** How many injector methods were removed, for the boot summary. */
+	public int prunedInjectors() {
+		return pruned;
+	}
+
+	// -----------------------------------------------------------------------------------------------------------------
+	// Injectors Mixin rejects outright
+
+	/**
+	 * An {@code @Inject} the adapter found Mixin would reject: in {@code config}, the mixin {@code mixin} (internal name),
+	 * the handler {@code name}{@code desc}, the refused binding, and whether its loss is required -- the author's own count
+	 * for it ({@code require}, else the config's {@code defaultRequire}) is at least one, as FinalMixinApplications judges
+	 * an injector that did not attach.
+	 */
+	public record Refused(String config, String mixin, String name, String desc, String reason, boolean required) {
+	}
+
+	/** Mixin (internal name) → the injectors to take out of it. */
+	private static final Map<String, List<Refused>> REFUSED = new java.util.concurrent.ConcurrentHashMap<>();
+	/** What was taken out already, so a mixin Mixin reads twice is logged once. */
+	private static final Set<String> REFUSED_DONE = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+	/** Whether injectors Mixin rejects outright are taken out: this kind's switch, and the pruner's own. */
+	public static boolean refusedEnabled() {
+		return enabled() && !"off".equalsIgnoreCase(System.getProperty(REFUSED_PROPERTY, "on"));
+	}
+
+	/**
+	 * Whether {@code name}{@code desc} in {@code mixin} can go on its own: an injector method, in no {@code @Group} (whose
+	 * count would then be the group's to fail), and nothing else in the mixin calls it or takes a handle to it.
+	 */
+	public static boolean prunable(ClassNode mixin, String name, String desc) {
+		MethodNode handler = null;
+		for (MethodNode m : mixin.methods) if (m.name.equals(name) && m.desc.equals(desc)) handler = m;
+		if (handler == null || countInjectors(handler) != 1) return false;
+		for (AnnotationNode a : allAnnotations(handler)) if ("Lorg/spongepowered/asm/mixin/injection/Group;".equals(a.desc)) return false;
+		for (MethodNode m : mixin.methods) {
+			if (m == handler || m.instructions == null) continue;
+			for (org.objectweb.asm.tree.AbstractInsnNode insn : m.instructions) {
+				if (insn instanceof org.objectweb.asm.tree.MethodInsnNode call && call.owner.equals(mixin.name)
+						&& call.name.equals(name) && call.desc.equals(desc)) return false;
+				if (insn instanceof org.objectweb.asm.tree.InvokeDynamicInsnNode indy) {
+					for (Object argument : indy.bsmArgs) {
+						if (argument instanceof org.objectweb.asm.Handle h && h.getOwner().equals(mixin.name)
+								&& h.getName().equals(name) && h.getDesc().equals(desc)) return false;
+					}
+				}
+			}
+		}
+		return true;
+	}
+
+	/**
+	 * {@code mixinBytes} without {@code name}{@code desc} and the {@code @Surrogate}s of that name, which stand in only
+	 * for it: what Mixin will receive once {@link #pruneRefused} has run, for the verdict to judge.
+	 */
+	public static byte[] without(byte[] mixinBytes, List<String> handlers) {
+		ClassNode node = new ClassNode();
+		new ClassReader(mixinBytes).accept(node, 0);
+		for (String handler : handlers) {
+			int paren = handler.indexOf('(');
+			remove(node, handler.substring(0, paren), handler.substring(paren));
+		}
+		ClassWriter writer = new ClassWriter(0);
+		node.accept(writer);
+		return writer.toByteArray();
+	}
+
+	/** Remembers {@code refused} for {@link #pruneRefused}. */
+	public static void rememberRefused(Refused refused) {
+		REFUSED.computeIfAbsent(refused.mixin(), k -> new java.util.concurrent.CopyOnWriteArrayList<>()).add(refused);
+	}
+
+	/**
+	 * Takes the remembered injectors out of {@code node}, the mixin as Mixin is about to receive it, each only while
+	 * {@code stillRejected} -- the verdict's rule asked of this node -- still names a refused binding; one an adapter
+	 * already moved where it fits stays. Each one taken out is a confirmed finding.
+	 *
+	 * @return how many were taken out
+	 */
+	public static int pruneRefused(ClassNode node, java.util.function.BiFunction<ClassNode, MethodNode, String> stillRejected) {
+		List<Refused> entries = node == null || node.methods == null ? null : REFUSED.get(node.name);
+		if (entries == null || !refusedEnabled()) return 0;
+		int removed = 0;
+		for (Refused entry : entries) {
+			MethodNode handler = null;
+			for (MethodNode m : node.methods) if (m.name.equals(entry.name()) && m.desc.equals(entry.desc())) handler = m;
+			if (handler == null) continue;
+			String why = stillRejected.apply(node, handler);
+			String key = node.name + "." + entry.name() + entry.desc();
+			if (why == null) {
+				if (REFUSED_DONE.add(key + "?")) {
+					ForbricLog.info("[Forbric/GuestInjectorPruner] %s.%s is no longer rejected once the mixin adapters ran; "
+							+ "left in place", node.name.replace('/', '.'), entry.name());
+				}
+				continue;
+			}
+			remove(node, entry.name(), entry.desc());
+			removed++;
+			String mixin = node.name.replace('/', '.');
+			net.forbric.kernel.mixin.MixinCompatibility.recordRemovedInjector(entry.config(), mixin, entry.name(), entry.desc(),
+					"the kernel removed injector " + entry.name() + " before Mixin read it: " + why + ". Mixin would have "
+							+ "rejected it (\"Invalid descriptor\") and failed the mixin with it; the rest of the mixin applies",
+					entry.required(),
+					List.of("kernel pruned " + entry.name() + entry.desc() + " from " + mixin, "refused binding: " + why,
+							"source=GuestInjectorPruner (an injector Mixin rejects outright)",
+							"-D" + REFUSED_PROPERTY + "=off keeps it, and Mixin rejects the mixin"));
+			if (REFUSED_DONE.add(key)) {
+				ForbricLog.info("[Forbric/GuestInjectorPruner] pruned %s.%s — %s; Mixin would have rejected it and failed the "
+						+ "mixin with it, so the other %d injector(s) apply as written", mixin, entry.name(), why, countInjectors(node));
+			}
+		}
+		return removed;
+	}
+
+	/** Test seam: forget every remembered injector. */
+	public static void forgetRefused() {
+		REFUSED.clear();
+		REFUSED_DONE.clear();
+	}
+
+	/** Removes {@code name}{@code desc} and the {@code @Surrogate}s of that name from {@code node}. */
+	private static void remove(ClassNode node, String name, String desc) {
+		node.methods.removeIf(m -> m.name.equals(name) && (m.desc.equals(desc) || allAnnotations(m).stream()
+				.anyMatch(a -> "Lorg/spongepowered/asm/mixin/injection/Surrogate;".equals(a.desc))));
+	}
+
+	/** How many injector annotations {@code m} carries. */
+	private static int countInjectors(MethodNode m) {
+		int n = 0;
+		for (AnnotationNode a : allAnnotations(m)) if (INJECTOR_DESCS.contains(a.desc)) n++;
+		return n;
+	}
+}
