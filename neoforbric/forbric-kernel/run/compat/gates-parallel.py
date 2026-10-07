@@ -298,3 +298,69 @@ def main() -> int:
         progressed = False
         for gate in list(pending):
             if can_start(gate):
+                pending.remove(gate)
+                start(gate)
+                progressed = True
+        # Nothing runnable and nothing running: the head of the queue does not fit the budget on its own.
+        # Run it anyway rather than hang -- the budget is a throttle, not a promise.
+        if not running and pending:
+            gate = pending.pop(0)
+            say(f"[gates] {gate.name} wants {gate.mem} MB, over the {budget} MB budget — running it alone")
+            start(gate)
+            progressed = True
+        if not running:
+            break
+        if progressed and pending:
+            continue
+        # Wait for whichever gate finishes first.
+        while True:
+            done = [r for r in running if r.proc.poll() is not None]
+            if done:
+                break
+            time.sleep(0.25)
+        for r in done:
+            rc = r.proc.returncode
+            r.log.close()
+            running.remove(r)
+            free_slots.append(r.slot)
+            free_slots.sort()
+            held.difference_update(r.gate.rundirs)
+            used_mb -= r.gate.mem
+            if r.gate.exclusive:
+                exclusive_running = False
+            elapsed = time.time() - r.started
+            v = verdict_for(r.gate, rc, out_dir / f"{r.gate.name}.log")
+            results[r.gate.name] = (v, rc, elapsed)
+            say(f"[gates] +{int(time.time() - t0):4d}s {v:12s} {r.gate.name} ({elapsed:.0f}s)")
+
+    wall = time.time() - t0
+    failed = 0
+    lines = []
+    for g in gates:
+        v, rc, secs = results.get(g.name, ("RED", -1, 0.0))
+        if v == "SKIP":
+            if args.release:
+                failed = 1
+                lines.append(f"RESULT {g.name} SKIP (explicit --skip; not run, so the release run fails)")
+            else:
+                lines.append(f"RESULT {g.name} SKIP (explicit --skip)")
+            continue
+        if v == "RED" or (v == "EXPECTED_RED" and args.release):
+            failed = 1
+        if v == "EXPECTED_RED" and args.release:
+            lines.append(f"RESULT {g.name} {v} (exit={rc}; still red, so the release run fails)")
+        else:
+            lines.append(f"RESULT {g.name} {v} (exit={rc})")
+    (out_dir / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print("\n".join(lines))
+
+    serial = sum(r[2] for r in results.values())
+    speedup = f" ({serial / wall:.1f}x)" if wall > 0 else ""
+    say(f"[gates] wall {wall / 60:.1f} min; the same gates back-to-back "
+        f"would be {serial / 60:.1f} min{speedup}")
+    progress_file.close()
+    return failed
+
+
+if __name__ == "__main__":
+    sys.exit(main())
