@@ -598,3 +598,230 @@ public final class VanillaEarlyReturns implements ClassTransformer {
 			}
 		}
 		if (tailFrame == null || tailLabel == null) return 0;
+		List<List<Object>> state = stateAt(owner, method, tailFrame);
+		if (state == null) return 0;
+
+		TreeMap<Integer, LabelNode> blocks = new TreeMap<>();
+		Integer fallGroup = null;
+		for (Map.Entry<Edge, Integer> decision : decisions.entrySet()) {
+			blocks.computeIfAbsent(decision.getValue(), g -> new LabelNode());
+			if (decision.getKey().kind() == Kind.FALL) fallGroup = decision.getValue();
+		}
+
+		// Chains through a GOTO this moves would follow it: point those edges at the tail directly first.
+		Set<AbstractInsnNode> movedGotos = new HashSet<>();
+		for (Edge edge : decisions.keySet()) if (edge.kind() == Kind.GOTO) movedGotos.add(edge.source());
+		if (!movedGotos.isEmpty()) {
+			for (Edge edge : edges) {
+				if (decisions.containsKey(edge) || edge.target() != tail || edge.kind() == Kind.FALL) continue;
+				if (passesThrough(labelOf(edge), movedGotos)) retarget(edge, tailLabel);
+			}
+		}
+		for (Map.Entry<Edge, Integer> decision : decisions.entrySet()) {
+			if (decision.getKey().kind() != Kind.FALL) retarget(decision.getKey(), blocks.get(decision.getValue()));
+		}
+
+		// The blocks go in vanilla's return order, so RETURN ordinals count as vanilla's do; what fell into the tail
+		// falls into its own block when that block comes first, and jumps to it when it does not.
+		LabelNode gate = new LabelNode();
+		InsnList code = new InsnList();
+		code.add(gate);
+		AbstractInsnNode before = previousReal(runStart);
+		if (fallGroup != null) {
+			if (!fallGroup.equals(blocks.firstKey())) code.add(new JumpInsnNode(Opcodes.GOTO, blocks.get(fallGroup)));
+		} else if (before != null && !endsFlow(before)) {
+			code.add(new JumpInsnNode(Opcodes.GOTO, tailLabel));
+		}
+		for (int group : blocks.keySet()) {
+			code.add(blocks.get(group));
+			code.add(fullFrame(state));
+			code.add(new InsnNode(tail.getOpcode()));
+		}
+		method.instructions.insertBefore(runStart, code);
+
+		// The tail's compressed frame was relative to the frame before it, which is now a block's.
+		tailFrame.type = Opcodes.F_FULL;
+		tailFrame.local = new ArrayList<>(state.get(0));
+		tailFrame.stack = new ArrayList<>(state.get(1));
+
+		// Ranges that ended where the tail begins end where the blocks begin: the blocks are covered by exactly the
+		// ranges the tail is.
+		// (A range that also STARTS in the run covers only the tail and is left as it is.)
+		if (method.tryCatchBlocks != null) {
+			for (TryCatchBlockNode range : method.tryCatchBlocks) {
+				if (run.contains(range.end) && !run.contains(range.start)) range.end = gate;
+			}
+		}
+		if (method.localVariables != null) {
+			for (LocalVariableNode local : method.localVariables) {
+				if (run.contains(local.end) && !run.contains(local.start)) local.end = gate;
+			}
+		}
+		cutAnnotations(method.visibleLocalVariableAnnotations, run, gate);
+		cutAnnotations(method.invisibleLocalVariableAnnotations, run, gate);
+		return blocks.size();
+	}
+
+	private static void cutAnnotations(List<LocalVariableAnnotationNode> annotations, Set<LabelNode> run, LabelNode gate) {
+		if (annotations == null) return;
+		for (LocalVariableAnnotationNode annotation : annotations) {
+			for (int i = 0; i < annotation.end.size(); i++) {
+				if (run.contains(annotation.end.get(i)) && !run.contains(annotation.start.get(i))) annotation.end.set(i, gate);
+			}
+		}
+	}
+
+	private static FrameNode fullFrame(List<List<Object>> state) {
+		return new FrameNode(Opcodes.F_FULL, state.get(0).size(), state.get(0).toArray(), state.get(1).size(), state.get(1).toArray());
+	}
+
+	private static LabelNode labelOf(Edge edge) {
+		if (edge.source() instanceof JumpInsnNode jump) return jump.label;
+		if (edge.source() instanceof TableSwitchInsnNode table) return edge.entry() < 0 ? table.dflt : table.labels.get(edge.entry());
+		if (edge.source() instanceof LookupSwitchInsnNode lookup) return edge.entry() < 0 ? lookup.dflt : lookup.labels.get(edge.entry());
+		return null;
+	}
+
+	private static void retarget(Edge edge, LabelNode to) {
+		if (edge.source() instanceof JumpInsnNode jump) jump.label = to;
+		else if (edge.source() instanceof TableSwitchInsnNode table) {
+			if (edge.entry() < 0) table.dflt = to; else table.labels.set(edge.entry(), to);
+		} else if (edge.source() instanceof LookupSwitchInsnNode lookup) {
+			if (edge.entry() < 0) lookup.dflt = to; else lookup.labels.set(edge.entry(), to);
+		}
+	}
+
+	private static boolean passesThrough(LabelNode label, Set<AbstractInsnNode> gotos) {
+		AbstractInsnNode insn = label;
+		for (int guard = 0; guard < 64; guard++) {
+			insn = real(insn);
+			if (!(insn instanceof JumpInsnNode jump) || jump.getOpcode() != Opcodes.GOTO) return false;
+			if (gotos.contains(jump)) return true;
+			insn = jump.label;
+		}
+		return false;
+	}
+
+	/**
+	 * The full locals and stack {@code at} declares, decoded from the method's initial frame and every compressed
+	 * frame before it. Null when the chain does not decode (a CHOP past the start), which no javac output has.
+	 */
+	static List<List<Object>> stateAt(String owner, MethodNode method, FrameNode at) {
+		List<Object> locals = initialLocals(owner, method);
+		List<Object> stack = new ArrayList<>();
+		for (AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+			if (!(insn instanceof FrameNode frame)) continue;
+			switch (frame.type) {
+				case Opcodes.F_NEW, Opcodes.F_FULL -> {
+					locals = new ArrayList<>(frame.local);
+					stack = new ArrayList<>(frame.stack);
+				}
+				case Opcodes.F_SAME -> stack = new ArrayList<>();
+				case Opcodes.F_SAME1 -> stack = new ArrayList<>(List.of(frame.stack.get(0)));
+				case Opcodes.F_APPEND -> {
+					locals.addAll(frame.local);
+					stack = new ArrayList<>();
+				}
+				case Opcodes.F_CHOP -> {
+					if (frame.local.size() > locals.size()) return null;
+					for (int k = 0; k < frame.local.size(); k++) locals.remove(locals.size() - 1);
+					stack = new ArrayList<>();
+				}
+				default -> {
+					return null;
+				}
+			}
+			if (frame == at) return List.of(locals, stack);
+		}
+		return null;
+	}
+
+	private static List<Object> initialLocals(String owner, MethodNode method) {
+		List<Object> locals = new ArrayList<>();
+		if ((method.access & Opcodes.ACC_STATIC) == 0) {
+			locals.add("<init>".equals(method.name) && !"java/lang/Object".equals(owner) ? Opcodes.UNINITIALIZED_THIS : owner);
+		}
+		for (Type parameter : Type.getArgumentTypes(method.desc)) {
+			switch (parameter.getSort()) {
+				case Type.BOOLEAN, Type.CHAR, Type.BYTE, Type.SHORT, Type.INT -> locals.add(Opcodes.INTEGER);
+				case Type.FLOAT -> locals.add(Opcodes.FLOAT);
+				case Type.LONG -> locals.add(Opcodes.LONG);
+				case Type.DOUBLE -> locals.add(Opcodes.DOUBLE);
+				case Type.ARRAY -> locals.add(parameter.getDescriptor());
+				default -> locals.add(parameter.getInternalName());
+			}
+		}
+		return locals;
+	}
+
+	// --- small helpers ---
+
+	static AbstractInsnNode lastReturn(MethodNode method) {
+		for (AbstractInsnNode insn = method.instructions.getLast(); insn != null; insn = insn.getPrevious()) {
+			if (isReturn(insn)) return insn;
+		}
+		return null;
+	}
+
+	static List<AbstractInsnNode> returns(MethodNode method) {
+		List<AbstractInsnNode> out = new ArrayList<>();
+		for (AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+			if (isReturn(insn)) out.add(insn);
+		}
+		return out;
+	}
+
+	static boolean isReturn(AbstractInsnNode insn) {
+		return insn != null && insn.getOpcode() >= Opcodes.IRETURN && insn.getOpcode() <= Opcodes.RETURN;
+	}
+
+	private static boolean endsFlow(AbstractInsnNode insn) {
+		int opcode = insn.getOpcode();
+		return isReturn(insn) || opcode == Opcodes.GOTO || opcode == Opcodes.ATHROW
+				|| insn instanceof TableSwitchInsnNode || insn instanceof LookupSwitchInsnNode;
+	}
+
+	private static AbstractInsnNode real(AbstractInsnNode insn) {
+		while (insn != null && insn.getOpcode() < 0) insn = insn.getNext();
+		return insn;
+	}
+
+	private static AbstractInsnNode previousReal(AbstractInsnNode insn) {
+		insn = insn.getPrevious();
+		while (insn != null && insn.getOpcode() < 0) insn = insn.getPrevious();
+		return insn;
+	}
+
+	/** The instruction control actually reaches from {@code label}, following GOTOs. */
+	private static AbstractInsnNode resolve(LabelNode label) {
+		AbstractInsnNode insn = label;
+		for (int guard = 0; guard < 64; guard++) {
+			insn = real(insn);
+			if (insn instanceof JumpInsnNode jump && jump.getOpcode() == Opcodes.GOTO) insn = jump.label;
+			else return insn;
+		}
+		return null;
+	}
+
+	private static int inverse(int opcode) {
+		return switch (opcode) {
+			case Opcodes.IFEQ -> Opcodes.IFNE;
+			case Opcodes.IFNE -> Opcodes.IFEQ;
+			case Opcodes.IFLT -> Opcodes.IFGE;
+			case Opcodes.IFGE -> Opcodes.IFLT;
+			case Opcodes.IFGT -> Opcodes.IFLE;
+			case Opcodes.IFLE -> Opcodes.IFGT;
+			case Opcodes.IF_ICMPEQ -> Opcodes.IF_ICMPNE;
+			case Opcodes.IF_ICMPNE -> Opcodes.IF_ICMPEQ;
+			case Opcodes.IF_ICMPLT -> Opcodes.IF_ICMPGE;
+			case Opcodes.IF_ICMPGE -> Opcodes.IF_ICMPLT;
+			case Opcodes.IF_ICMPGT -> Opcodes.IF_ICMPLE;
+			case Opcodes.IF_ICMPLE -> Opcodes.IF_ICMPGT;
+			case Opcodes.IF_ACMPEQ -> Opcodes.IF_ACMPNE;
+			case Opcodes.IF_ACMPNE -> Opcodes.IF_ACMPEQ;
+			case Opcodes.IFNULL -> Opcodes.IFNONNULL;
+			case Opcodes.IFNONNULL -> Opcodes.IFNULL;
+			default -> -1;
+		};
+	}
+}
