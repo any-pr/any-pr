@@ -598,3 +598,49 @@ java -cp <boot-cp> net.forbric.kernel.boot.Main --scan --mods <dir> --report out
 | `forbric.mergedBaseCompat` | `off`：去掉内置的不兼容清单 |
 | `forbric.disableMixinConfigs`, `forbric.enableMixinConfigs` | 要禁用 / 强制启用的配置，csv |
 | `forbric.suppressMixins`, `forbric.keepMixins` | 要丢弃 / 保留的 `config:Mixin`，csv |
+
+**诊断与测试驱动**
+
+| 属性 | 作用 |
+| --- | --- |
+| `forbric.clientSmoke`（+ `clientSmokeWorld`、`clientSmokeReadyTicks`、`clientSmokeDisconnectTicks` 等） | 无人值守的客户端运行：进入世界、停留、离开、退出 |
+| `forbric.eventChainAudit` | 跨总线审计的报告文件 |
+| `forbric.definedClassEvidence` | 存放每个已定义类的内容寻址记录的目录 |
+| `forbric.traceClassDefine` | 二进制类名的 csv；每个类第一次被定义时记下调用栈 |
+| `forbric.tickSampler` | `off`：不对服务端 tick 耗时采样 |
+
+**部分修复开关**——`forbric.commonNetworkInterop`、`forbric.playPayloadFallThrough`、`forbric.chunkExecutorGuard`、`forbric.forgeCapabilities`、`forbric.forgeWorldgen`、`forbric.transferBridge`、`forbric.hopperFabricStorage`、`forbric.clientResourcePreload`、`forbric.earlyConfigs`、`forbric.fabricHooks`、`forbric.fabricImpl`、`forbric.kernelBundledFirst`、`forbric.modDataPacks`、`forbric.modMenuStandIn`。`forbric.kernel.registryRedirect=true` 会启用一个实验性的注册表包装器重定向。
+
+## 18. 不变量
+
+违反其中任何一条，故障通常都会在离原因很远的地方冒出来。
+
+1. **引导代码不直接引用任何游戏类型。** 它通过字符串访问游戏侧，所有这类字符串都在 `KernelRuntimeClasses` 里。跨边界共享的一律是 `ALWAYS_PARENT`；游戏侧的一律是 `ALWAYS_GAME`。每个 JVM 中每个类只有一份。
+2. **`MIXIN` 是末端阶段。** 没有任何东西通过 `TransformChain` 注册到它里面；Mixin 拿到的是 Mixin 前的字节；Mixin 后各阶段的顺序是固定的。
+3. **加载器身份在第一个类到达 Mixin 转换器之前就已存在。** 晚于这一刻再预置，第三方插件的 `<clinit>` 就会永久决定 MinecraftForge 的 `dist`。
+4. **一个注册窗口，一次冻结。** 内容注册发生在 `unfreeze` 和 `closeRegistrationWindow` 之间；客户端会为自己的入口点重新打开一次，然后重新冻结。
+5. **要么生命周期触发点完成重定向，要么内核不启动。**
+6. **游戏总线在各初始化阶段之前启动；负载阶段在这些阶段之后关闭。**
+7. **仲裁只决定一次。** 预扫描得出的方案由两次发现共同使用；后续各轮只做核验，绝不重新选择。选择的上限按工作量算，不按时间算。
+8. **修复一旦停用，就会明说** —— `AnchorSet`/`AnchorLedger`、`EventBridges.verify`、每个开关一条 WARN。
+9. **归因从不改变结果。** 错误处理器和报告只做记录；Mixin 的决定和 mod 的失败都保持原样。`CompatibilityDecision` 从不退出 JVM；只有启动边界才会退出。
+10. **任何带有 Mojang、MinecraftForge 或 NeoForge 字节的东西都不提交、不分发。** 游戏侧以 `compileOnly` 方式链接暂存的 jar；这些 jar 由安装器在玩家的机器上构建。
+
+## 19. 现状与已知边界
+
+- **仅支持 Minecraft 26.2**，以 Mojmap 为恒等命名空间。没有重映射步骤：针对其他命名空间编译的 jar 不做转换（`kernel/mapping/` 是从焊接方案沿用过来的，不在启动路径上）。
+- **合并基底是 NeoForge 的游戏，再拼进 MinecraftForge。** 两边都打过补丁的方法只保留了一个方法体（已提交的报告里有 1000 处方法冲突）；落败一方的 mod 因此丢掉的东西逐个修复 —— 转换器、适配器、桥 —— 没修复的由 `DeadEventAudit`、`HookCallSiteCensus`、`FieldDriftAudit`、`AbiLinkAudit`、`CapabilityUseAudit` 报告。结构性冲突（`Entity` 有两个真正的父类）在字节码层面无解；MinecraftForge 的 capability 由转换器重新组合进来。
+- **`PARTIAL` 的 mixin 默认应用** —— 宁可保留只应用了一半的结果（并让它可见），也不丢掉还能工作的钩子。
+- **一个类，一份副本。** 同一个 mod 的两个生态构建相互竞争时，只有一个胜出；落败的生态看到的是在场别名，而不是该 mod 自己的平台胶水代码。
+- **靠实测，不靠承诺。** `MOD_TEST_FAILURES.md` 记录了针对当前 `main` 代码的逐 mod 测试（每个 jar 只带上它必需的依赖单独运行，进入世界、截图、退出），用的是三组全新随机抽取的 Modrinth mod：平均 89.0% 加载时没有失败行（91.8% 进入了世界；79.1% 在加载报告里没有任何一项被标为 DEGRADED），而同一批 jar 在发布版 v0.2.0 上是 80.5%。
+- **版本。** `forbric-kernel/build.gradle` 写的是 `0.1.0-SNAPSHOT`；安装器是 `0.3.1-beta2`。`net.forbric.api` 是内部 API，随时可能变动，不另行通知。
+
+## 20. 延伸阅读
+
+- [`forbric-kernel/README.md`](forbric-kernel/README.zh-CN.md) —— 内核自己的概述和闸门说明
+- [`forbric-kernel/run/compat/PROTOCOL.md`](forbric-kernel/run/compat/PROTOCOL.md) —— 兼容性批量测试的流程
+- [`forbric-loader/README.md`](forbric-loader/README.zh-CN.md)、[`forbric-loader/run/README.md`](forbric-loader/run/README.md) —— 第一代，以及产物流水线
+- [`forbric-loader/CREDITS.md`](forbric-loader/CREDITS.md)、[`forbric-loader/MAPPINGS.md`](forbric-loader/MAPPINGS.md) —— 净室边界与在映射上的立场
+- 类的 javadoc。`net.forbric.kernel` 下几乎每个类的开头都写着它是为了哪个故障而存在的。
+
+Forbric 与 Mojang、FabricMC、MinecraftForge、NeoForged 均无关联。
