@@ -298,3 +298,303 @@ the environment is one the scheduler exports; no gate writes a literal port; a g
 server calls the lost-port check; and a "never reached Done" exit calls it before it leaves. It
 reads text, so it holds the call and that one shared exit, not every path through a gate.
 
+The script's output is exactly the RESULT lines, byte for byte the same as `summary.txt`.
+The running commentary — what started when, on which slot and port, what each gate cost, and
+what the run would have taken sequentially — goes to `build/gates/progress.log`; `--progress`
+also mirrors it to stderr.
+
+`gate-m25-worldgen.sh` still deliberately exposes the missing MinecraftForge biome-modifier
+mechanism (its Forge half is expected red until workstream D). `gate-m26-forgeclient.sh` was
+born expected red and turned green with Phase 1 A; it stages a data-free copy of its canary so adding a worldgen datapack cannot block
+quick-play behind a new-pack confirmation; the source jar remains intact and m25 tests its data.
+It also invokes `win/prepare-world.py` on the zero-mod test save to acknowledge the
+carrier experimental-generation prompt before quick-play.
+Header `EXPECTED: RED until ...`, exit code 2, and an
+`EXPECTED-RED` observation together distinguish a known failure from boot failures
+or broken control assertions (exit 1). Remove the expected-red contract when its
+implementation lands, as m26's was. `gate-m27-frame.sh` requires the 97-jar pack and a PNG newer
+than the current launch. Gate headers document `M25_NO_DATA`, `M26_EXTRA_JVM`,
+`M27_SHOT_TICKS`, and `M27_FRAME` negative controls.
+
+`gate-m28-forgeconfig.sh` opens a fresh dedicated-server fixture, checks both the
+canary and Forge's own COMMON files, then changes the canary value from 11 to 73
+while the server is running. Only a new Reloading event within 40 seconds and a
+matching file readback pass. `M28_EXTRA_JVM=-Dforbric.earlyConfigs=off` is its negative
+control. `gate-m16-forge-handshake.sh` also checks that the client loads its CLIENT
+config exactly once while the dedicated server creates no CLIENT file.
+
+After each step, run `./gradlew --offline cleanTest test`, read the JUnit XML, and
+deliberately break new behavior once to verify the test fails. After a workstream,
+run its gate and negative controls plus every gate. Phase 0 ends with all gates and
+Windows `popular-baseline` / `random-baseline`. Each later phase reruns the popular
+set; Phase 2 and the final phase rerun the random set too. If an unrelated observation
+regresses, isolate it with the frame-based subset test before the next phase.
+# Bind validation to its inputs
+
+Use `evidence.py run` for candidate acceptance commands. It hashes source contents (including uncommitted
+and newly added source files), the supplied artifacts, and every top-level/nested mod archive before the
+command; afterwards it verifies that none changed. The command log and JSON verdict are saved beside the
+manifest. An exit-zero command whose inputs changed is a failure. This is provenance, not a substitute for
+the command's own behavior assertions.
+
+`python3 run/compat/test_evidence.py` checks the evidence recorder, including missing required inputs,
+changed source/mod/archive bytes, and a nominally successful command that changes its own inputs.
+
+```bash
+python3 run/compat/evidence.py run --source .. \
+  --artifact kernel=build/libs/forbric-kernel-0.1.0-SNAPSHOT.jar \
+  --mods run/client-merged-pack/mods --output build/evidence/client.json \
+  -- bash forbric-kernel/run/gate-m9-client.sh
+```
+
+Run from `forbric-kernel/`; command paths are resolved from the recorded repository source root. Supply every
+actual game/runtime/tool jar as a named `--artifact` in real acceptance runs. `--release` requires clean
+committed sources, a mods directory (empty is valid for zero-mod tests), and all of: `vanilla`,
+`forge-patched`, `neo-patched`, `merged`, `forge-runtime`, `neo-runtime`, `forge-interop`, `kernel`,
+`kernel-runtime`, `merge-tools`. Missing inputs fail. Keep output under ignored `build/` or outside the repo.
+
+A release capture also fails unless:
+- the versions read out of the artifacts are the pins (Minecraft `26.2` from each game jar's `version.json`,
+  MinecraftForge `26.2-65.0.1` and NeoForge `26.2.0.88` from the carriers' manifests);
+- the merged base and both runtimes the kernel build compiles against and its bytecode tests read
+  (`$FORBRIC_OLD/run/...`, else `forbric-loader/run/...`) are byte-identical to the attested ones;
+- `<merged>.provenance.json`, written by `build-merged-base.sh`, names the attested inputs and outputs, an
+  enforced link check, and merge-tool sources identical to the attested commit.
+A release `run` refuses `--skip`, requires `gates-all.sh --release`, and records any `RESULT ... SKIP` or
+`EXPECTED_RED` line as a failed command. `${file.jarVersion}` mod versions are resolved from the archive's own
+`Implementation-Version` and kept beside the raw declaration.
+
+`evidence.py release-check --manifest <run.json> ... --publish kernel=<jar> ...` passes only when every manifest
+is a passed release run, all bind the same source and the same hash per role, and each published file is the
+accepted one. The installer's `releaseAssets` requires `-PreleaseEvidence=<run.json>[,...]` and runs it on the
+kernel and merge-tools jars it is about to publish.
+
+`native-controls.py prepare` installs the fixed native Fabric, Forge and NeoForge servers into
+`build/native-controls`; `build` compiles one public-API canary per ecosystem. `run --engine native` and
+`run --engine forbric` execute the same jar hashes, seed and world actions, each in a fresh owned instance.
+`compare <native-result.json> <forbric-result.json>` rejects mismatched inputs before comparing behavior.
+`NATIVE_CONTROL_CACHE` selects the read-only reference checkout; its default is the parent of `FORBRIC_OLD`,
+or this checkout when that variable is absent. All generated files remain under this kernel's `build/`.
+
+`native-controls.py run-set --engine native|forbric --family fabric --mods JAR... [--ticks 200] [--timeout 900]
+[--xmx 3G] [--level-type minecraft:normal] [--policy strict] [--keep]` boots one fresh server under `build/native-controls/instances/`
+with exactly those jars (a normal world from the fixed seed, view and simulation distance 3, pause when empty off),
+waits for `Done (` as `control-diff.sh` does, asks `time query gametime` until the game has advanced `--ticks`, then
+saves and stops. The native arm is the image `prepare --family fabric` installed; the Forbric arm builds this
+checkout's kernel jar first and runs `launch-kernel-server.sh` under the strict policy (a dedicated server has no
+window, so the product default refuses the same way; `--policy continue` shows what a refused launch would have
+done, as a diagnostic and never as the comparison). `results/<run>/result.json` records `outcome`, the
+`modSetSha256` over the sorted jar SHA-256s (equal on both arms means they ran the same bytes), the kernel jar's
+SHA-256 (Forbric) or the launcher's (native), the measured game time, `signature` (`mac/ddmin_core.signature` of a
+failure), crash-report count, uncaught exceptions of other threads, and whether a non-daemon thread kept the JVM
+alive after the server had stopped (`lingeredAfterStop`, killed and not a failure). The console is classified by
+`server_outcome(log, ticks, exit_code)` alone: no `Done (` is `FAILED_TO_START` when the process ended on its own or
+printed a start failure (`Failed to start the minecraft server`, an uncaught `main` exception, a Forbric policy
+stop) and `STALL` when it had to be killed; after `Done (`, a crash report, the run loop's `Encountered an unexpected
+exception`, an exception escaping the server or main thread, a failed stop or a JVM fatal error is `CRASH`, and so is
+a JVM that went away by itself before the stop; it is `DONE` only when the ticks were reached and the stop was
+acknowledged. A mod that logs a caught exception and keeps ticking is not a crash. `test_native_controls.py` pins
+these on synthetic consoles. The instance is deleted after a `DONE` without `--keep`; the console, crash reports and
+the kernel's reports stay in `results/<run>/`.
+
+`fabric-ab.py --data <pick dir> --out <dir> pack|per-mod|confirm|ddmin|summary` runs a pure-Fabric pick (for example
+`PICK_LOADER=fabric PICK_COUNT=130 PICK_SIDE=server mac/pick.py`, then `mac/closure.py`) through `run-set` on both arms.
+It refuses a jar that is not the manifest's bytes or a closure that names a jar outside the manifest. `pack` runs
+every jar together (`--subjects native-pass` only the subjects that ran alone on native Fabric, `matched-pass` those
+that ran alone on both, each with its dependencies); `per-mod --jobs N` runs each subject with its `closure.json`
+dependencies; `confirm` reruns, one at a time, each per-mod pair whose arms disagree; `ddmin [--subjects ...]`
+minimises a pack's Forbric failure with `mac/ddmin_core.py` (oracle: the Forbric arm; FAIL: the pack session's
+signature; seeds: that session's own evidence, where a named library or nested mod stands for the at most three
+candidates that pull it in, since only candidates can be taken out) and then runs the minimal set on native Fabric, so the result says
+`FORBRIC_ONLY` or `BOTH_FAIL` from a run rather than an argument. Every session is a line of `<out>/runs.jsonl`
+keyed by engine, mod-set SHA-256, ticks and the engine's identity (the kernel jar's SHA-256 or the launcher's), so a
+repeated or interrupted command runs only what it has not seen, and a session of another kernel is never reused.
+A pair is `MATCHED_PASS`, `FORBRIC_ONLY`, `NATIVE_ONLY`, `BOTH_FAIL`, or `INPUT_MISMATCH` when its arms ran different
+bytes. `summary [--report DIR]` writes `summary.json` with jar names, digests, outcomes and signatures and no local
+path. `test_fabric_ab.py` runs all of it against a fake server: verdicts, the cache, kernel refusal, the minimiser
+with a dependency, pack selection and the summary. The 2026-10-03 run is `reports/2026-10-03-pure-fabric-server/`.
+
+`retention-control.py` requires the prepared native NeoForge image and the fixed Unlit Campfire jar in
+the copied mixed pack. It compiles an independent canary, saves a real campfire and compares the untouched
+mod's static cache after normal shutdown on native NeoForge and Forbric. Both arms and their exact mod
+hashes must agree. This attributes one observed native retention issue; it does not clear another retained
+root by itself. Evidence stays under `build/retention-control/`, and `native-retention.json` names the root
+and exact jar hash it proved; a release M34 run re-reads that evidence before launching.
+
+`ui-control.py` requires the built kernel, `FORBRIC_OLD`, `MERGED`, `FORGE_RT` and `NEO_RT`. It creates a
+nonce-owned copy of the full mixed pack/world under `build/compat-ui/`, publishes late necessary findings,
+clicks the actual native Continue button, then closes a second prompt. It requires preserved failure
+evidence, initial refusal focus, normal save/return to title and two fresh game screenshots. Its deliberately
+incompatible control scenario is separate from a strict compatibility acceptance run.
+
+`gate-m39-transfer-core.sh` first runs the transfer engine suite (`transferTest`) as a required step: every
+`@Test` declared under `src/transferTest` must appear in its XML report, none failed, errored or skipped, and a
+missing game side fails instead of skipping. It then packages the existing real-carrier transfer scenarios as a
+game canary. It
+requires all fourteen Forge snapshot/alias/metadata/facade cases (including a dying endpoint) and a real full watchdog thread dump, including
+the final-defined native-helper equivalence finding. Inputs are hash-bound and its server remains strict.
+
+`gate-m40-energy.sh` checks block-entity energy between Team Reborn Energy (the Fabric energy API; Fabric API
+has none), NeoForge's `Capabilities.Energy.BLOCK` and MinecraftForge's `ForgeCapabilities.ENERGY`, through those
+public lookups only. It needs `energy-5.0.0.jar` (team_reborn_energy, MIT): `M40_REBORN_ENERGY`, default
+`forbric-kernel/run/energy-api/energy-5.0.0.jar` beside the staged tree; the gate fails if it is missing and copies
+it into its own world's mods. The canaries are built with `TRANSFER_CANARY_ENERGY=1` into `build/energy-canary/`,
+never into `run/canary/`. Four hash-bound phases in the nonce-owned `run/server-energy-m40`: `prepare` (all three
+ecosystems: 12 routes, 60,000 E conserved, faces, native precedence, a refused custom Forge store reported once, store
+limits, nested rollback, replacement including the cached NeoForge/Forge views of a Reborn cell, a Fabric addon's
+explicit Reborn provider on a NeoForge block reached by NeoForge and Forge consumers, a Forge battery loaded at
+1,500/1,000 E that moves nothing on bridged insertion and keeps its energy, one dirty mark per root commit, long/int
+clamping), `reload` (amounts after a real save; the overfull battery refuses again after the restart, then drains
+into its bounds), `noreborn` (the same pack without Reborn: 4 Forge <-> NeoForge routes, the overfull battery for
+NeoForge, and the JVM's class-load log must show no Reborn class) and `negative` (bridge off, must fail at a foreign
+lookup). 1 FE = 1 E. Item energy is not bridged. Evidence: `build/verification/m40-energy/`.
+
+The kernel game side compiles the energy bridge against the same jar (`-Pforbric.rebornEnergy=<jar>`, same default,
+else this checkout's own `forbric-kernel/run/energy-api/energy-5.0.0.jar`). Nothing fetches it and `*.jar` is not
+committed: take it from Team Reborn Energy's release (https://github.com/TechReborn/Energy, the project page in the
+jar's own `fabric.mod.json`). `verifyRebornEnergy` runs before every game-side compile and transfer-test run and fails
+naming the file when it is missing or when its SHA-256 is not
+`889afc438d3e4add5cfdac76517da7987a2c495e4731690a56f2c5dee775db59`; the runtime jar is checked to contain the energy
+classes and to bundle no `team/reborn/` entry. M33 also requires that its item/fluid-only pack logs no energy
+bridge activity.
+
+`gate-m34-soak.sh` builds once, then `soak-run.py` freezes the exact boot/runtime/game jars, dependencies and
+mod pack into a nonce-owned copy of the test world. Default acceptance requires at least 7,200 seconds of
+occupied, advancing simulation, three normal same-JVM world sessions, all three dimensions and six chunks
+observed unloading and reloading. Paused time cannot satisfy the requirement. Sources and snapshots must
+remain unchanged; release runs require committed sources and strict compatibility policy. The original
+world is never opened by the client. Retained retired servers produce REVIEW_REQUIRED, not a pass or an
+unsupported claim of a leak. The one exception is differential: after measurement ends, the controller
+removes only the entries of `native-retention.json` roots (present in this run with the registered jar hash)
+that belong to its own stopped servers, then collects again. If every retired server is then gone, nothing
+else held it and the acceptance records `nativeRetentionAttributed`; if any server survives, it is still a
+review. Heap, thread and chunk samples and thread dumps remain in the run's evidence. A watchdog records a
+FAIL result with a thread dump and halts the owned JVM when the client thread stays inside a native world
+open or save-and-disconnect loop longer than the timeout, and a controller that cannot start stops the game.
+Activity is independently verified even when retention requires review; releaseAccepted remains false and
+the command remains nonzero. Release runs also require a fresh final strict compatibility report with zero
+confirmed necessary losses and no unclassified failed initialization.
+
+Use `--control --seconds 30 --sessions 2 --dwell-ticks 20 --settle-seconds 10` only to test the controller;
+CONTROL_PASS is never release acceptance. `python3 run/compat/test_soak.py` verifies rejection of stale or
+incomplete telemetry, fake activity totals, missing reentry/unload observations and short release claims.
+
+`corpse-repro.py` compiles two read-only Mixin probes and opens a nonce-owned copy of the mixed pack. It
+requires Corpse's actual dummy constructor to complete with vanilla name-tag distance zero and its actual
+render submission to run, then requires screenshots and normal save/exit. The unmodified mod jar remains
+hash-bound. A crash marker terminates only this child process group within five seconds. Run the offline
+CorpseNameTagAdapterTest before this client test; an off-adapter graphics run is unnecessary to reproduce
+the known missing-field error because the actual original constructor is executed in the JVM test.
+
+## macOS random sweep
+
+`mac/pick.py <data-dir> <seed> <exclude-manifest> ...` selects up to 38 previously untested popular projects from the top 200
+and fills the remaining places with random projects for the selected game version, then downloads and verifies required dependencies.
+`PICK_COUNT` changes the 100 subjects (38 in 100 stay popular), `PICK_LOADER=fabric|neoforge|forge` takes every subject's
+build for that loader and skips a project without one instead of substituting another ecosystem's build, and
+`PICK_SIDE=server` keeps only projects whose Modrinth server side is required or optional and, for Fabric, whose own
+`fabric.mod.json` does not declare `"environment": "client"`. Without them the selection is the earlier sweeps' for the
+same seed. `mac/test_pick.py` checks the loader choice, the settings and a whole selection against a fake registry.
+`mac/api.py` supplies registry requests; `mac/archive.py` reads declared nested dependencies recursively.
+Set `PERMOD_DATA=<data-dir>` and run `mac/closure.py` to produce the per-subject transitive dependency sets.
+`mac/per-mod.py` runs each subject separately; dependency libraries are not counted as subjects. Configure
+`PERMOD_MC` to an isolated installed Minecraft root and `FORBRIC_VERSION` to its kernel profile (a single
+kernel profile is detected automatically), `FORBRIC_JAVA` to Java 25+, and `PERMOD_OUT` to a new evidence
+folder. `mac/mac-run.py` adapts the installed-profile client drivers to macOS and captures thread dumps
+for owned Java processes that time out. `SWEEP_WORLD_TICKS` extends the standard world session for pack
+validation. Evidence remains under the selected data directory. The current world/options fixtures come
+from the preserved local `build/sweep80-mac` baseline; a missing fixture is a setup error, not a mod failure.
+
+Run `python3 -m unittest discover -s run/compat/mac -p test_archive.py` to verify recursive dependency handling (`mac/test_archive.py`).
+
+After all subjects finish, run `mac/mixed.py` with the same `PERMOD_MC`, `PERMOD_DATA`, `PERMOD_OUT`,
+`FORBRIC_VERSION` and `FORBRIC_JAVA`. It checks kernel/input fingerprints, combines every strictly passing
+subject and its dependencies, tests 6,000 world ticks, then reloads the saved world. Its full pack manifest,
+reports and screenshots go to `mixed/`. `PERMOD_MIXED_OUT` and `PERMOD_MIXED_INSTANCE` select fresh
+evidence/instance names for a later candidate. `--subjects all` combines every subject in `manifest.json` instead,
+and needs no individual sweep at all: in place of the per-mod fingerprints it checks each jar's bytes against the
+digest the manifest records (`sha256` when a row has one, else Modrinth's `sha1` and `size`). Either way
+`result.json` names the mode and the SHA-256 of every jar, which must still match after the last session.
+Each session's evidence also keeps `forbric-mods.txt`, and `.forbric-kernel/crash-analysis.txt` and
+`merge-report.txt` when that session wrote them (a crash-analysis file is never counted as a crash report).
+Importing `mixed.py` starts nothing and reads no environment: `run(label, ticks, subjects, out, jvm, stall,
+timeout, grace)` is one session of the prepared instance with the subjects, extra JVM flags and the driver's
+`CLIENT_STALL`/`RUN_TIMEOUT`/`GRACE` all explicit, which is how the minimiser below drives it.
+`mac/test_mixed.py` runs it against a fake driver. Save verification uses `mac/world_save.py` for both save layouts: fresh level data, existing region data,
+and a fresh player or region write. `mac/test_world_save.py` rejects copied or incomplete saves. The disposable mixed instance disables pause on lost focus. A partial or failed first load leaves reload explicitly NOT_RUN.
+The runner clears only directories bearing its `.forbric-sweep-instance` marker. Use a new evidence folder
+for a new candidate; unfinished or differently fingerprinted individual results cannot feed a mixed test.
+
+`mac/dependency_selection.py` keeps already required API providers ahead of unrelated sampled hosts;
+`mac/test_archive.py` also verifies this selection rule.
+
+What a run says is decided in one place, `mac/sweep_verdict.py` (standard library only; it reads no file and no
+environment): `classify_run` (PASS, CRASH, STALL, STALL_IN_WORLD, NO_WORLD, NOT_DRAWN, FAIL), `mod_status` (a jar's
+worst row, its bundled rows included; ABSENT when the kernel never listed it), `subject_strict` (per-mod's strict
+pass) and `pack_strict` (mixed's). per-mod.py, mixed.py and the minimiser below all read runs through it.
+`mac/test_sweep_verdict.py` pins each outcome and compares every predicate, over input grids, with the code the two
+scripts carried before it moved here.
+
+## Minimise a failing pack
+
+`mac/ddmin_core.py` is the game-free half of replacing hand bisection (halving a failing mixed pack, or
+`--bisect` above) with delta debugging. It uses only the standard library and reads no environment or files.
+An oracle maps a jar list to FAIL (the full pack's failure signature), PASS, or UNRESOLVED (it failed some other
+way); only FAIL ever shrinks the set. `ddmin` is Zeller and Hildebrandt's ddmin2: subsets, then complements,
+then double the granularity. `one_minimal` removes single jars until none can go. `closed` adds every
+`closure.json` dependency to each run; dependencies are never minimised. `signature` names a failure by the
+crash report's top exception, with timestamps, paths, Mixin handler prefixes, hex and digits removed and a
+`Sources: a and b` list sorted; exit 78 is `POLICY_STOP:` plus the sorted keys of the confirmed required
+findings. `seeds` turns a run's own evidence (the clash `Sources`, `crash-analysis.txt` suspects, jars in the
+exception chain's frames, report rows that are not OK) into jars, mapping mod ids only through the report's
+`mods[]` rows. `minimise` runs the closed seed set first and starts ddmin there when it FAILs; runs are
+remembered by the closed configuration, so two subsets that launch the same jars run once. Nothing in it starts
+a client. `mac/test_ddmin.py` checks it with fake oracles and the fixtures in `mac/testdata/`; `python3 tools/dev.py
+tool-test` runs it with every other `mac/test_*.py`.
+
+`mac/ddmin.py` is the half that runs the game: every configuration is one `mixed.run` session in a fresh
+disposable instance, with the strict compatibility policy and short limits.
+
+    PERMOD_DATA=<data-dir> PERMOD_MC=<isolated root> FORBRIC_VERSION=<profile> FORBRIC_JAVA=<java 25> \
+      python3 run/compat/mac/ddmin.py --manifest <failing mixed run>/manifest.json [--out DIR] \
+      [--ticks 200] [--stall 120] [--timeout 420] [--grace 20] [--jvm=-D...] [--budget 80] \
+      [--no-seeds] [--iterate] [--narrow]
+
+- **Pack.** The jars are the manifest's rows, each checked against the manifest's digest like `mixed.py --subjects
+  all`; dependencies come from `PERMOD_DATA/closure.json`, which must hold every subject and no jar outside the pack.
+  The candidates ddmin may take out are the subjects (`popular`, `random`) plus any jar no subject needs; every
+  other jar only ever arrives through `closed`. The instance is `PERMOD_DATA/ddmin-inst` (`PERMOD_DDMIN_INSTANCE`),
+  prepared like per-mod's, with pause on lost focus off.
+- **Reference.** The whole pack is run first, with the same flags and limits as every later session, and that
+  session defines the failure: its signature (`ddmin_core.signature`; when no exception names it, the session's
+  outcome is added, e.g. `STALL EXIT:None` or `PASS EXIT:0 bad:mod=DEGRADED`, so a stall and a degraded mod stay
+  different failures) and its arbitration. A reference that passes strictly is `PASSED` (nothing to minimise). A
+  failure that needs more than 200 world ticks to appear needs `--ticks`.
+- **Verdicts.** A session is PASS when `sweep_verdict.pack_strict` passes, FAIL when its signature is the
+  reference's, UNRESOLVED otherwise — and UNRESOLVED whatever it printed when its arbitration differs from the
+  reference's: a mod id loaded from another jar, ecosystem or version (`compatibility-report.json` rows), an id the
+  reference did not load, or a different `forbric-mods.txt` choice. Duplicate builds make that happen: a subset
+  holding only `sodium-fabric` runs Fabric Sodium where the pack ran NeoForge Sodium, which is a different program.
+  `ddmin-result.json` records the reference's choices (`arbitration`: id, loader and copy); `merge-report.txt` is
+  kept as evidence but not compared, since it is written in the system language. When subsets hold both copies but
+  arbitration would choose the other one, `--jvm=-Dforbric.modOwner=<id>=<loader>` pins the reference's choice for
+  every session; a subset holding only the other copy stays UNRESOLVED.
+- **Seeds.** The reference's own evidence (`ddmin_core.seeds`) is tried first; `--no-seeds` starts from the whole
+  pack.
+- **Cache.** `<out>/ddmin/cache.jsonl` (out defaults to `PERMOD_DATA`) keeps every finished session keyed by the
+  installed kernel's SHA-256, the sorted SHA-256 of its jars, its JVM flags and the world ticks (which reach the game
+  as a JVM flag), so an interrupted or repeated minimisation launches only what it has not seen and the verdicts are
+  recomputed against each round's reference. A cache written by another kernel is refused; so is a kernel that
+  changes between or during sessions, and a jar whose bytes change before the result is written. Evidence for each
+  session is `<out>/ddmin/runs/<nnn>-<key>/` (mixed's evidence, crash-analysis.txt included).
+- **Budget.** `--budget` caps the game launches of one invocation (cache hits are free). Running out gives
+  `BUDGET` with the smallest failing configuration seen so far.
+- **`--iterate`.** After a round is `MINIMISED`, its minimal jars leave the candidates and the rest is run as the
+  next round's reference: its failure, whatever it is, is minimised next, against that round's own arbitration.
+  Rounds stop when a reference passes, the candidates run out, or a round does not finish. A minimal jar that other
+  candidates need comes back with them, so the next round may name one of its dependents.
+- **`--narrow`.** The closed minimal set is narrowed further, by ddmin over what stays enabled: first the mixin
+  configs (every other one goes into `-Dforbric.disableMixinConfigs`), then the mixin classes of those configs as
+  `config:Entry` (the rest into `-Dforbric.suppressMixins`). Configs are read as each loader declares them
+  (`fabric.mod.json` `mixins`, `[[mixins]]` in either `mods.toml`, a manifest's `MixinConfigs`), in nested jars too;
+  a server-only config or a config's `server` list is left out. With every config off first: a failure that survives
