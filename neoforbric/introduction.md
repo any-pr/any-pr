@@ -298,3 +298,303 @@ Fabric and NeoForge need opposite states in the constructor, so the kernel has t
 
 ### 4.1 Reading manifests
 
+- `discovery.ForbricModDiscoverer` classifies a jar by descriptor — `fabric.mod.json`,
+  `META-INF/mods.toml`, `META-INF/neoforge.mods.toml` — and reports *every* manifest a jar carries. Which one
+  loads is policy (§4.2). A jar whose only manifest is `META-INF/mods.toml` is a MinecraftForge mod and is
+  not supported: Forbric reports it as unsupported and skips it.
+- `metadata.forge.ModsTomlParser` (clean-room; NightConfig for TOML lexing) reads NeoForge's
+  `META-INF/neoforge.mods.toml` (the mods.toml format), with `ForgeModsToml`,
+  `ForgeModEntry`, `ForgeDependency`; `ForgeVersionRangeTranslator` turns Maven ranges into Fabric-style
+  predicates, so `net.forbric.api.UnifiedDependency` has one dialect (`VersionPredicate` evaluates it).
+  `UnifiedDependency` also keeps the two axes Fabric has no word for: ordering (`BEFORE`/`AFTER`) and side scope.
+- `fabric.FabricModMetadataParser` is the full `fabric.mod.json` v1 reader (entrypoints incl. adapter form, `jars`,
+  per-side `mixins`, `accessWidener`, `custom`). `fabric.FabricModDiscovery` follows Fabric JiJ (its extraction
+  cache is `.forbric-kernel/jij/`); mods whose `environment` excludes the side are skipped, as on Fabric.
+- A nested Fabric mod is resolved as fabric-loader 0.19.5's `ModSolver` resolves it (`fabric.NestedFabricRequirements`,
+  applied by `NestedCandidateInventory` and by `FabricModDiscovery` when there is no plan): a `depends` on `minecraft`
+  or `java` that excludes the running version, or a `breaks` that includes it, leaves it out, and with it any nested
+  mod that hard-depends only on left-out ones or that only they bundle. ViaFabric is the case: it nests
+  `viafabric-mc26-1` (`minecraft >=26.1 <=26.1.2`) beside `viafabric-mc26-2`, and native loads only
+  `viafabric-mc26-2`. Only what a Fabric mod declares in its `jars` is judged. A NeoForge mod's nested
+  jar is not, even if all it carries is a `fabric.mod.json`, because Fabric Loader never opens a jar without one. A
+  child the parent's `META-INF/jarjar/metadata.json` declares is FML's, which loads it as the parent's library; a jar
+  that only sits in `META-INF/jars/` or `META-INF/jarjar/` with no entry in that file is loaded by no native loader,
+  and the kernel keeps it because its NeoForge walk has always taken both directories. A jar reached both ways is
+  kept, whichever route the walk took first. One departure from native: when a mod the kernel loads hard-requires an
+  id and nothing that loads meets the requirement, the left-out copies that meet it are kept, with whatever bundles
+  them on the way to a loaded parent, and a WARN `[Forbric/JiJ] nested <id> <version> in <parent> loaded although
+  Fabric Loader would leave it out (<reason>): <dependent> requires <id> <range>, and nothing else installed meets
+  that` says so. When no installed copy meets it and nothing that loads provides the id at all, every left-out copy
+  is kept, as the kernel loaded it before the rule, and the WARN ends `<dependent> requires <id> <range>; no installed
+  build meets that, and no other <id> would load` instead. For a mod in `mods/` native refuses to start there; the
+  kernel loads such a mod even with a dependency missing, so leaving the provider out would only take that dependency
+  away. Every mod that stays left out gets one `[Forbric/JiJ] nested <id> <version> in <parent> left out: <reason>`
+  line, including what it bundles: a left-out jar is still opened, so a loaded mod's need for something inside it is
+  seen. Jars in `mods/` are never judged; `fabricloader`/`mixinextras` ranges, unreadable ranges and dependencies
+  nothing installed meets do not leave anything out. Without a plan (`-Dforbric.crossJarArbitration=off`),
+  `FabricModDiscovery` walks `mods/` and Fabric `jars` only, so `KernelBoot.scanFabricMods` hands it what the jars it
+  does not read hard-require: the Forge-family mods, and the Fabric manifests of the jars their JarJar carries (no
+  Fabric container there, but on the classpath). `-Dforbric.nestedRequirements=off` loads every nested mod again;
+  `off:<id>,<id>` exempts only those ids (the kernel does not read Fabric's `config/fabric_loader_dependencies.json`).
+- `discovery.ModAnnotationScanner` finds `@Mod` classes by bytecode descriptor; `ModFileScanner` builds a full
+  `ModFileScanData` (NeoForge's shape) because JEI, Jade,
+  Sophisticated Core and Sodium find their plugins through `ModList.getAllScanData()`.
+- `net.forbric.api.DiscoveredMod` is the one mod model.
+
+The `--scan` mode (`boot.Main --scan --mods <dir> --report out.json`) runs discovery alone and writes
+deterministic JSON; `run/diff-oracle.sh` cross-checks it against an independent Python reader of the same
+manifests.
+
+### 4.2 One jar, several manifests — `MultiLoaderArbiter`
+
+A universal jar ships a manifest and glue class per loader. Unarbitrated, both ecosystems initialise it.
+`MultiLoaderArbiter.ownerOf(jar)` picks one by preference — default **NeoForge, Fabric**
+(`-Dforbric.multiLoaderPreference=…`). NeoForge first because the game base is NeoForge's own. A jar that
+carries a leftover manifest without its implementation is not given to that loader. The jar stays on the
+classpath; only its identity is decided.
+
+### 4.3 Two jars, one mod id — `DuplicateModArbiter`
+
+Merging a Fabric pack with a NeoForge pack puts two *files* under one id. The loser must come **off** the
+classpath (first-URL-wins would otherwise let it shadow the winner and contribute its mixin configs).
+
+- **Inventory** — `NestedCandidateInventory` walks every root and nested jar (depth ≤ 8, zip-bomb byte caps, no
+  archive-count cap) into a graph of candidates and parent→child edges; nested jars are extracted, keyed by
+  SHA-256, under `.forbric-kernel/candidates/`.
+- **Selection** — `ReachableCandidateSelector` builds a whole-instance Boolean model (nested candidates exist only
+  through selected parents) and solves it with SAT4J; `JointCandidateSelector` supplies the clauses: hard/soft
+  dependencies, `breaks`/`incompatible` exclusions, and symbol contracts from `CandidateContractScanner` (only
+  evidence strong enough to constrain selection — e.g. a mixin's required members). The search is bounded by
+  work, never by a clock (`CONFLICT_BUDGET`, `VARIABLE_LIMIT`, `-Dforbric.arbitrationMaxNodes`, default 100 000),
+  so the same folder selects the same jars on any machine.
+- **Preferences** — top-level duplicates: `-Dforbric.dupeIdPreference`, falling back to `multiLoaderPreference`.
+  Nested duplicates: `-Dforbric.nestedDupePreference`, default NeoForge, Fabric — chosen because a
+  multi-loader library's per-loader builds stub out phases their loader lacks, and that order leaves the fewest
+  callers talking to an empty method (the javadoc records the two cases that fixed it).
+- **Overrides** — `-Dforbric.modOwner=sodium=fabric,…` or `<rundir>/forbric-mods.txt` (`<mod id> = <loader>`, one
+  per line; the kernel writes a commented template the first time an instance has duplicates). The command line
+  wins over the file.
+- **Switched off** — `<rundir>/forbric-disabled.txt` lists jar file names in `mods/` (comments and bad lines as in
+  `forbric-mods.txt`). `DisabledMods` keeps those jars out of the scan, so they never become claims, and they go
+  into `Decision.suppressedJars` but never `rescueJars`; with `-Dforbric.crossJarArbitration=off` a decision
+  holding only them is still cached. `load-report.txt` names them.
+- **Residuals** — the losing ecosystem gets a presence-only alias so `isLoaded(id)` still answers
+  (`Decision.aliases`); the other ecosystem's build of a mod that did load may lend a missing class as a last
+  resort (`rescueJars`); `ArbitratedAwayClasses` measures what the losing build had that the winner lacks.
+  `MergeReport` writes `.forbric-kernel/merge-report.txt` explaining each decision.
+- `-Dforbric.crossJarArbitration=off` disables it entirely.
+
+### 4.4 Answering "which loader am I on?" and "is X installed?"
+
+- `LoaderProbePolicy` + `transform.LoaderProbeRewriter` (COREMOD phase) rewrite `Class.forName` call sites in a
+  single-loader guest class so a platform probe (`FMLLoader`, `FabricLoader`) answers for the ecosystem that jar
+  was arbitrated to (`-Dforbric.loaderProbes=off`).
+- `net.forbric.api.ModPresence` is the cross-ecosystem answer. `transform.ForeignModPresenceInjector` ORs it into
+  NeoForge's `ModList.isLoaded`; the Fabric side registers every NeoForge mod as a presence-only container
+  (identity only — no entrypoints, mixins or assets), so `FabricLoader.isModLoaded` answers; and the NeoForge
+  list is seeded with the Fabric mods (`-Dforbric.crossEcosystemPresence=off` restores single-loader answers).
+  `net.forbric.api.ModIds` maps ids the ecosystems spell differently (`cloth-config` / `cloth_config`).
+- `ModConstructionOrder` orders NeoForge construction topologically — a mod after everything it requires or
+  declares `AFTER`; ties alphabetical; cycles named, not broken silently (`-Dforbric.modOrder=name` restores
+  file-name order). Fabric mods initialise in Fabric Loader's own order, by mod id (`FabricLoadOrder`;
+  `-Dforbric.fabricOrder=off` puts them back on the topological order).
+
+## 5. The two ecosystems, driven by the kernel
+
+### 5.1 Fabric — no Fabric Loader code runs
+
+- `fabric.KernelFabricLoader` *is* the `FabricLoader` singleton: a view over kernel state, with its entrypoint
+  index frozen before mod code runs. `KernelModContainer` exposes each jar through a zip `FileSystem`;
+  `KernelLanguageAdapters` honours `languageAdapters` (fabric-language-kotlin); `KernelObjectShare`,
+  `KernelVersion`, `KernelMappingResolver` (identity) complete the API.
+- The mod-facing API is vendored under its own names: `src/main/java/net/fabricmc/api` (7 files) and
+  `src/main/java/net/fabricmc/loader` (30 files: `loader.api.*` plus the narrow internals mods actually link against
+  — `FabricLoaderImpl`, `ModContainerImpl`, `EntrypointStorage`, `Hooks`, `FabricLauncher`/`FabricLauncherBase`,
+  `DefaultLanguageAdapter`, `StringUtil`, legacy `net.fabricmc.loader.FabricLoader`). `FabricLoaderInternals`
+  pins those internals to the parent by exact name; `-Dforbric.fabricImpl=off` withholds them. The API level
+  reported is `KernelFabricEcosystem.FABRIC_LOADER_API_LEVEL = "0.19.3"`.
+- Entrypoints: `preLaunch` after Mixin (§3.2 step 19); `main` inside the registration window (server) or in
+  `Minecraft.<init>` (client, default); `client` in `Minecraft.<init>`; `server` on the dedicated server. Each
+  mod's entrypoint is invoked in isolation — one throwing mod is recorded and skipped — with a NeoForge
+  `ModContainer` for that mod active (`KernelForeignShimContext`), because a Fabric mod may hold the NeoForge build
+  of a multi-loader library.
+- Fabric access wideners / class tweakers run in the `ACCESS` phase (`access.ClassTweakerTransformer`);
+  `@Environment` stripping in `ENV_STRIP` (`EnvironmentStripTransformer`, only for classes from jars arbitrated to
+  Fabric).
+
+### 5.2 NeoForge
+
+- **Identity** — `PassiveSeeder` creates a current `FMLLoader`, `FMLPaths`, a `LoadingModList` and `ModList` built
+  from the jars this boot selected — no discovery, no module layer, no sorting.
+- **Construction** — `KernelModLoader`: a `BusBuilder` `IEventBus` plus a kernel `ModContainer`
+  (`net.forbric.kernel.runtime.KernelModContainer`); constructor arguments filled by type (`IEventBus`, `Dist`,
+  `ModContainer`).
+- **Buses** — mod-bus events the kernel posts itself go through `KernelLifecycle.postModBusEvent`; setup phases
+  through `runtime.KernelNeoSetup`; deferred work runs on the thread NeoForge runs it on (`NeoDeferredWork`).
+- **Enum extensions** — `NeoEnumExtensions` feeds every jar's `META-INF/enumextensions.json` to NeoForge's own
+  `RuntimeEnumExtender`; `NeoEnumExtensionInjector` is registered near the end of COREMOD (its placement is
+  load-bearing: it defines FML classes at that point), and only if some mod declares an extension.
+- **Coremods** — NeoForge's coremod jar is never loaded; `transform.NativeCoremodParity` performs its rewrites
+  (flower pot `potted`, biome climate/effects, structure settings, `finalizeSpawn`) *after* Mixin, where NeoForge
+  runs them.
+
+### 5.3 Cross-ecosystem services that are not events
+
+- **Networking** — `interop.PayloadInterop` selects a custom-payload codec by runtime payload class where Fabric
+  API and NeoForge share a vanilla channel id; `CommonNetworkInteropInjector` arbitrates the `c:version` /
+  `c:register` channel both claim (`-Dforbric.commonNetworkInterop=off`); the kernel applies NeoForge's
+  registry sync, and fabric-api's when fabric-api is installed, to the game registries, and
+  `KernelRegistryRevert` restores pre-connection ids on disconnect; `NetworkChannelCensus` compares registered
+  vs declared channels. `KernelClientSmoke`'s
+  `-Dforbric.clientSmokeCarry=<tick>` drill drives the whole chain through the game's own key and mouse input.
+- **Item/fluid/energy transfer** — `KernelTransferInterop` + `runtime/transfer/` bridge Fabric's transfer API
+  and NeoForge's `ResourceHandler`, and Team Reborn Energy when installed
+  (`-Dforbric.transferBridge=off`, `-Dforbric.hopperFabricStorage=off`). Active only when the relevant APIs are
+  present, checked by resource.
+
+## 6. The transform pipeline
+
+`transform.TransformPhase` fixes the order: `RAW_PATCH`, `DEOBF_REMAP`, `ENV_STRIP`, `ACCESS`, `COREMOD`,
+`FABRIC_BUILTIN`, `MIXIN`. `TransformChain` runs the chain phases (`RAW_PATCH` … `FABRIC_BUILTIN`); within a phase,
+`predepends` topologically, then `sortIndex`, then registration order. `MIXIN` is terminal and cannot be registered
+into the chain. On 26.2 nothing is registered in `RAW_PATCH` or `DEOBF_REMAP`.
+
+What `KernelBoot` registers (91 call sites; some conditional):
+
+| Phase | Registered |
+| --- | --- |
+| `ENV_STRIP` | `EnvironmentStripTransformer` |
+| `ACCESS` | `ClassTweakerTransformer` (Fabric), `access.AccessTransformer` built from every mod jar's **and the carrier's** `META-INF/accesstransformer*.cfg` — the carrier's AT matters because the base's access must match what NeoForge's own runtime expects (`MenuScreens.register` came out private without it) |
+| `COREMOD` | 86 registrations: the loader-probe rewriter, the Mixin-weaver slot (`FmlContextLoaderRewriter`, `ModuleClassLoaderInitInjector`), `GuestMixinPluginGuard`, the lifecycle redirect, `ForbricMergedBaseCompatTransformer`, and most of the 70 `*Injector` classes in `transform/`, each repairing one named seam the patched base broke or landing one bridge (§8) |
+| `FABRIC_BUILTIN` | `RestoredAccessTransformer` (re-applies access to members COREMOD restored) |
+
+The post-Mixin stage (`KernelMixinBootstrap`) is a fixed composition:
+
+```
+Mixin (via MixinWeaverSlot) → NativeCoremodParity → PostMixinFixups → InterfaceDefaultConflictRepair
+```
+
+Notable repairs by family (read each class's javadoc for the case that motivated it):
+
+- **Base invariants** — `ForbricMergedBaseCompatTransformer` (lambda bootstrap handles vs. static-ness, key-mapping
+  `MAP` initializer and vanilla's `KeyMapping.MAP` back as a view of
+  the mappings by key (`KernelKeyMappingMap`; NeoForge re-types it, and LiquidBounce reads it on every key press in
+  a screen), vanilla's `FriendlyByteBuf.writeByte(int)` called again where NeoForge's recompile bound a byte-typed call to
+  its extension's `writeByte(byte)`, which only forwards there (14 sites in 10 network `write` methods; ViaFabricPlus'
+  ability-flag redirect anchors on vanilla's call; `-Dforbric.vanillaWriteByte=off`), and retargeting the base's baked-in
+  calls to `net/forbric/loader/impl/…` onto `net.forbric.kernel.interop`), `DuplicateLambdaPruneInjector`
+  (orphaned lambdas a name-only mixin selector would bind to), `WidenedFieldTwinInjector` (vanilla-descriptor
+  twins of re-typed fields), `MethodBodyNeuter`.
+- **Packs and data** — `DataPackHookInjector`, `ClientPackHookInjector`, `PackMetadataFailSoftInjector`,
+  `PackOverlayMutabilityInjector`, `NullPackGuardInjector`, `PackScreenHiddenFilterInjector`,
+  `RegistryDirectoryOwnerInjector`, `RegistryAliasParityInjector` (§9).
+- **UI** — `ModsButtonRedirector` (NeoForge's pause-menu lambda opens `KernelModListScreen`),
+  `HudElementBridgeInjector`, `CreativePagerBridgeInjector`, `EarlyKeyMappingRegistrationInjector`.
+- **Instrumentation** — `ClientSmokeTickInjector` (inert unless `-Dforbric.clientSmoke=true`),
+  `ServerTickSamplerInjector`, `CompatibilityPromptTickInjector`,
+  `ServerCompatibilityTickInjector`.
+- **Hardening** — `ChunkExecutorGuardInjector` (refuses work offered to a stopped server's chunk executor;
+  `-Dforbric.chunkExecutorGuard=off`).
+
+Transformers that promise to land on a class declare it (`AnchorSet`); `AnchorLedger` reports a class that
+passed through without being changed (a **Miss**, logged at ERROR immediately) and, at the census landmark,
+classes never loaded. `RepairDriftCensus` (`run/compat/repair-drift.sh`) replays the claims against a *candidate*
+game build — the question a carrier bump asks.
+
+## 7. Mixin on the patched base
+
+### 7.1 The kernel is the Mixin service
+
+`mixin.ForbricMixinService` is registered through `META-INF/services/org.spongepowered.asm.service.IMixinService`
+(with `ForbricMixinServiceBootstrap` and `ForbricGlobalPropertyService`); the Mixin library is Fabric's fork
+(`net.fabricmc:sponge-mixin`, `mixin_version` in `gradle.properties`), and MixinExtras is the kernel-bundled
+`mixinextras-fabric` (game-side, because its generated `LocalRef` classes must share the game's loader).
+`KernelMixinBootstrap.init` binds the service, registers every config, installs `KernelMixinErrorHandler`, installs
+the weaver as the last pipeline stage, then moves the environment to `INIT` and `DEFAULT`. Configs are prepared —
+and plugins constructed — on the first class through the transformer, which is `KernelRuntimeClasses.verify`.
+
+Order: Fabric configs in Fabric Loader's order, NeoForge configs appended. Mixin orders by priority;
+registration order only breaks ties, so the least-proven set becomes the outer wrapper around a known-good stack.
+`MixinWeaverSlot` lets a guest replace the weaver the way NeoForge allows (LibJF wraps
+`FMLMixinClassProcessor.transformer`).
+
+### 7.2 What happens to a guest config before Mixin reads it
+
+`ForbricMixinService` rewrites each config's JSON:
+
+1. **Whole-config gate** — `MixinConfigPolicy.isDisabled`: the built-in list in `MergedBaseMixinCompat`
+   (`-Dforbric.mergedBaseCompat=off` drops it; `-Dforbric.enableMixinConfigs` forces one back),
+   plus `-Dforbric.disableMixinConfigs` (csv, trailing `*` glob).
+2. **Relaxation** — every config not starting with `forbric` is a guest config and is relaxed:
+   `injectors.defaultRequire → 0`, `overwrites.requireAnnotations → false`, `required → false`. Per-injector
+   `require`/`expect` still win. `-Dforbric.relaxGuestMixins=off` restores strict behaviour;
+   `-Dforbric.relaxMixinOverwrites` relaxes named configs when that is off; `-Dforbric.mixinDiagnostics` keeps
+   injection requirements strict (so every misfit is reported) while keeping `required=false`.
+3. **Per-mixin drops** — the union of `KernelGuestMixinAdapter.unfitMixins` (below), the hand list
+   `MergedBaseMixinCompat.SUPPRESSED_MIXINS`, and `-Dforbric.suppressMixins=config:Mixin,…`, minus
+   `-Dforbric.keepMixins`. Dropping a mixin also drops every mixin that depends on an interface it contributed.
+
+### 7.3 `MixinFit` — resolution, not provenance
+
+`KernelGuestMixinAdapter` asks `MixinFit.evaluate` to resolve every anchor a guest mixin names — each `@Shadow`,
+each injector's target method, each `@At(target=…)` — against the **post-chain** bytes of the target:
+
+| Verdict | Meaning | Default action |
+| --- | --- | --- |
+| `FIT` | every anchor resolves | apply |
+| `PARTIAL` | some resolve | **apply** (drop only under `-Dforbric.mixinFit=strict`); always reported |
+| `UNFIT` | none resolve | drop |
+| `HAZARD` | applies cleanly but shadows a field the base orphaned | drop |
+
+Refinements: pure accessor/invoker mixins are always kept; anchors satisfied by another mod's mixin
+(`ForeignMixinTargets`, `MixinAddedMembers`) count as resolved; `@Group` injectors are judged as a group; an
+injector bound only to a merged-base method nothing in the merged game calls is **not** resolved (liveness,
+`MergedBaseUncalledMethods`, `-Dforbric.mixinFit.liveness=off`) unless an installed mod calls it; and a name-only
+`@Inject` selector is **not** resolved when the method it binds — Mixin takes the first of that name the target
+declares — is not one the handler was written for (that method's arguments then the callback its return calls for, or
+the callback alone), which Mixin would reject as "Invalid descriptor" (`-Dforbric.mixinFit.handlerFit=off`): the merged
+base can put a carrier's overload where vanilla's method was, for a mod of any ecosystem. A selector `MixinOverloadPin`
+will spell (§7.4) is judged on the overload it lands on, so the pin and this rule never both act on one injector; a
+`@Surrogate` counts only as Mixin looks one up — the handler's name, exactly the bound method's callback descriptor, a
+visible annotation. Where the name binds exactly one method, the handler captures no locals and one of its `@At`s is
+sure to find a point in that method (`HEAD`; `RETURN`/`TAIL` where it returns; an `INVOKE`, `INVOKE_ASSIGN`, `FIELD` or
+`NEW` whose member is there, past its `ordinal`; never with a slice), the miss is a *rejection* (`MixinFit.Rejection`):
+Mixin checks the handler at each point it finds and throws at the first, whatever `require` says, and the exception
+fails the mixin's application to that class — every injector after it, and the game in a config that stays required.
+Where no point is sure, Mixin may find none, inject nothing and throw nothing, so the binding stays an ordinary miss
+and its line says so (`-Dforbric.mixinFit.rejectionPoint=off` reads every such binding as a rejection, as before). A
+mixin kept with a rejection — `PARTIAL`, kept for its misses on another mod's class, or `UNFIT` and kept because another
+mod's mixin targets the class — is therefore never left as it is: the injector is taken out before Mixin reads the
+mixin (`GuestInjectorPruner`, §7.4, asking the same rule of the node Mixin receives, with the target's code) when
+nothing else in the mixin calls it, it is in no `@Group` and no target binds it as written — the rest of the mixin
+applies, and the removal is a `CONFIRMED` finding, required when the author's own count (`require`, else
+`defaultRequire`) is at least one — and otherwise the whole mixin is left out like an `UNFIT` one. A mixin a kernel
+repair supersedes (`SupersededMixins`) is always left out whole, with a row that asks nothing and resolves once the
+repair is seen. A mixin kept by name (`MergedBaseMixinCompat.KEPT_MIXINS`, `-Dforbric.keepMixins`) is handed to Mixin
+unjudged. `-Dforbric.guestInjectorPruner.refused=off` keeps such a mixin in front of Mixin as before, and the `PARTIAL`
+summary then counts it apart. A `PARTIAL` or `UNFIT` mixin is first offered to `MixinRetarget`, and its plan is taken when the
+rewritten mixin misses fewer anchors, is one the adapter keeps, and adds no rejection — an `UNFIT` one's rewrite may
+keep none (`MixinRetarget.adopt`). A mixin the kernel leaves out by name is not judged at all, so it gets no verdict line
+and no place in the `PARTIAL` count. `MixinFitReport` runs the same judgement offline:
+`MixinFitReport <merged-base.jar> <mods-dir> [--verbose]`.
+
+A miss is the merge's only if the mod's own platform had the member: vanilla 26.2 for a Fabric mod, MinecraftForge's
+or NeoForge's patched 26.2 for theirs (the config owner's ecosystem, `MixinConfigOwners.ecosystemOf`; a config no
+single mod claims is not asked). Those patched games declare methods vanilla does not — `KeyMapping.getKeyModifier()`,
+`AxeItem.canPerformAction`, NeoForge's `EnderDragon.getParts()` — and the merge dropped or retyped some of them, so
+"vanilla lacks it too" proves nothing for a MinecraftForge or NeoForge mod. An injector whose `method` selectors are
+all plain names of methods that platform lacks too, and which nothing requires to inject — no `require` ≥ 1, the
+config's original `injectors.defaultRequire` 0, no `@Group`, no `mixin.debug.countInjections` — is one native Mixin
+skips without a word while the rest of the mixin applies (sponge-mixin 0.17.x and upstream Mixin 0.8.7 alike:
+`TargetSelectors.validate` throws only for a required count; the config's `required` flag only decides whether such an
+error is fatal). "Plain" means a name, optionally a descriptor, optionally the target itself as owner: a `@`-dynamic
+selector (MixinSquared's `@MixinSquared:Handler` resolves to another mixin's handler), a `+` or `{n,}` quantifier (its
+minimum throws whatever `require` says), a dotted owner, a regex and a malformed descriptor are never answered.
+`NativeAbsentTargets` counts such an injector neither resolved nor missing and logs it on one info line, so the mixin
+is judged on the rest and, with nothing else missing, goes to Mixin whole — no finding, no policy stop. Not Enough
+Crashes' `@Inject` into `BlockEntity.populateCrashReport` (26.2 calls it `fillCrashReportCategory`) is the case.
+"The platform lacks it" is answered from the merged base's raw bytes plus the shipped difference
+`native-only-methods.txt`: per platform, the methods its game declares in vanilla's packages that the merged base does
+not (565 for vanilla, 424 for MinecraftForge, 14 for NeoForge) and the classes there only the merged base has (18, 10
+and 6). A method the raw class still declares, a class outside `net/minecraft/`/`com/mojang/`, and another mod's class
+are never called absent. The rows hold only for the base they were derived from, so the table also records that base's
