@@ -298,3 +298,134 @@ public final class KernelHudBridge {
 
 	/** Resolves fabric-rendering-v1 once. False (permanently) when it is not installed. */
 	private static synchronized boolean resolve() {
+		if (state == State.PRESENT) return true;
+		if (state == State.ABSENT) return false;
+
+		ClassLoader loader = guestLoader;
+		if (loader == null) {
+			state = State.ABSENT;
+			return false;
+		}
+		try {
+			Class<?> registry = Class.forName(REGISTRY_IMPL, false, loader);
+			Class<?> rootLayer = Class.forName(ROOT_LAYER, false, loader);
+			Class<?> hudElement = Class.forName(HUD_ELEMENT, false, loader);
+			Class<?> guiLayer = Class.forName(GUI_LAYER, false, loader);
+			vanillaElements = Class.forName(VANILLA_ELEMENTS, false, loader);
+
+			Method extract = single(hudElement);
+			Method render = single(guiLayer);
+			Method rootExtract = rootLayer.getMethod(extract.getName(), extract.getParameterTypes()[0],
+					extract.getParameterTypes()[1], hudElement);
+
+			getRoot = getRootOf(registry);
+			generated = guestLoader.defineRuntimeClass(GEN.replace('/', '.'),
+					generate(rootLayer, guiLayer, hudElement, render, extract, rootExtract));
+			generatedCtor = generated.getDeclaredConstructor(rootLayer, guiLayer);
+
+			state = State.PRESENT;
+			return true;
+		} catch (Throwable absent) {
+			// A normal instance without fabric-rendering-v1 — not a defect, so debug rather than warn.
+			ForbricLog.debug("[Forbric/HudBridge] Fabric HudElementRegistry not present (%s) — leaving the NeoForge "
+					+ "layer manager exactly as it is", String.valueOf(absent));
+			state = State.ABSENT;
+			return false;
+		}
+	}
+
+	/** {@code getRoot(Identifier)}, found by shape so {@code Identifier} is never named boot-side. */
+	private static Method getRootOf(Class<?> registry) throws NoSuchMethodException {
+		for (Method m : registry.getMethods()) {
+			if ("getRoot".equals(m.getName()) && m.getParameterCount() == 1) return m;
+		}
+		throw new NoSuchMethodException("HudElementRegistryImpl.getRoot");
+	}
+
+	/** The single abstract method of a functional interface. */
+	private static Method single(Class<?> iface) throws NoSuchMethodException {
+		for (Method m : iface.getMethods()) {
+			if (java.lang.reflect.Modifier.isAbstract(m.getModifiers())) return m;
+		}
+		throw new NoSuchMethodException(iface.getName() + " has no abstract method");
+	}
+
+	/**
+	 * Generates {@code KernelHudLayer implements GuiLayer, HudElement}.
+	 *
+	 * <p>{@code render} hands the Fabric root {@code this} as the vanilla element; {@code extractRenderState} —
+	 * what the root calls back when it reaches the vanilla entry in its list — calls the layer NeoForge registered.
+	 * Neither method branches, so no {@code StackMapTable} is needed and {@code COMPUTE_MAXS} suffices;
+	 * {@code COMPUTE_FRAMES} would have to resolve game types through a loader this code does not have.
+	 */
+	private static byte[] generate(Class<?> rootLayer, Class<?> guiLayer, Class<?> hudElement,
+			Method render, Method extract, Method rootExtract) {
+		String rootName = Type.getInternalName(rootLayer);
+		String layerName = Type.getInternalName(guiLayer);
+		String elementName = Type.getInternalName(hudElement);
+		String rootDesc = "L" + rootName + ";";
+		String layerDesc = "L" + layerName + ";";
+		String frameDesc = Type.getMethodDescriptor(render); // (GuiGraphicsExtractor, DeltaTracker)V — both interfaces
+
+		ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_MAXS);
+		cw.visit(Opcodes.V21, Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL, GEN, null, "java/lang/Object",
+				new String[] {layerName, elementName});
+		cw.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_FINAL, "root", rootDesc, null, null).visitEnd();
+		cw.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_FINAL, "delegate", layerDesc, null, null).visitEnd();
+
+		MethodVisitor ctor = cw.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "(" + rootDesc + layerDesc + ")V",
+				null, null);
+		ctor.visitCode();
+		ctor.visitVarInsn(Opcodes.ALOAD, 0);
+		ctor.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false);
+		ctor.visitVarInsn(Opcodes.ALOAD, 0);
+		ctor.visitVarInsn(Opcodes.ALOAD, 1);
+		ctor.visitFieldInsn(Opcodes.PUTFIELD, GEN, "root", rootDesc);
+		ctor.visitVarInsn(Opcodes.ALOAD, 0);
+		ctor.visitVarInsn(Opcodes.ALOAD, 2);
+		ctor.visitFieldInsn(Opcodes.PUTFIELD, GEN, "delegate", layerDesc);
+		ctor.visitInsn(Opcodes.RETURN);
+		ctor.visitMaxs(0, 0);
+		ctor.visitEnd();
+
+		// GuiLayer: root.extractRenderState(extractor, tracker, this)
+		MethodVisitor draw = cw.visitMethod(Opcodes.ACC_PUBLIC, render.getName(), frameDesc, null, null);
+		draw.visitCode();
+		draw.visitVarInsn(Opcodes.ALOAD, 0);
+		draw.visitFieldInsn(Opcodes.GETFIELD, GEN, "root", rootDesc);
+		draw.visitVarInsn(Opcodes.ALOAD, 1);
+		draw.visitVarInsn(Opcodes.ALOAD, 2);
+		draw.visitVarInsn(Opcodes.ALOAD, 0);
+		draw.visitMethodInsn(Opcodes.INVOKEVIRTUAL, rootName, rootExtract.getName(),
+				Type.getMethodDescriptor(rootExtract), false);
+		draw.visitInsn(Opcodes.RETURN);
+		draw.visitMaxs(0, 0);
+		draw.visitEnd();
+
+		// HudElement: delegate.render(extractor, tracker) — the vanilla entry in the root's list calls this back.
+		MethodVisitor vanilla = cw.visitMethod(Opcodes.ACC_PUBLIC, extract.getName(),
+				Type.getMethodDescriptor(extract), null, null);
+		vanilla.visitCode();
+		vanilla.visitVarInsn(Opcodes.ALOAD, 0);
+		vanilla.visitFieldInsn(Opcodes.GETFIELD, GEN, "delegate", layerDesc);
+		vanilla.visitVarInsn(Opcodes.ALOAD, 1);
+		vanilla.visitVarInsn(Opcodes.ALOAD, 2);
+		vanilla.visitMethodInsn(Opcodes.INVOKEINTERFACE, layerName, render.getName(), frameDesc, true);
+		vanilla.visitInsn(Opcodes.RETURN);
+		vanilla.visitMaxs(0, 0);
+		vanilla.visitEnd();
+
+		cw.visitEnd();
+		return cw.toByteArray();
+	}
+
+	/** The bridging table, for tests. */
+	static Map<String, String[]> mapping() {
+		return ROOTS;
+	}
+
+	/** How many vanilla layers have been bridged, for the boot summary. */
+	public static int bridgedLayers() {
+		return bridged;
+	}
+}
