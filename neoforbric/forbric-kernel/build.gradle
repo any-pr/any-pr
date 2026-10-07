@@ -298,3 +298,303 @@ tasks.named('compileRuntimeJava') {
 // No outputs, so never up to date: it runs whenever the game side is built.
 def verifyRebornEnergy = tasks.register('verifyRebornEnergy') {
 	description = 'Checks the Team Reborn Energy jar the game side compiles against: present, and exactly the pinned 5.0.0 file.'
+	onlyIf { !stagedGameJars.isEmpty() }
+	doLast {
+		if (!stagedRebornEnergy.isFile()) throw new GradleException("The kernel game side includes its energy bridge " +
+				"and compiles it against Team Reborn Energy 5.0.0, but ${stagedRebornEnergy} does not exist. Pass " +
+				"-Pforbric.rebornEnergy=<energy-5.0.0.jar> or put the file in forbric-kernel/run/energy-api/ " +
+				"(team_reborn_energy 5.0.0, MIT, https://github.com/TechReborn/Energy; SHA-256 ${rebornEnergySha256}).")
+		def digest = java.security.MessageDigest.getInstance('SHA-256').digest(stagedRebornEnergy.bytes).encodeHex().toString()
+		if (digest != rebornEnergySha256) throw new GradleException("${stagedRebornEnergy} is not the Team Reborn Energy " +
+				"5.0.0 jar the energy bridge is built and tested against: its SHA-256 is ${digest}, expected " +
+				"${rebornEnergySha256}. Use that exact file; another Reborn build needs the bridge re-verified and this pin changed.")
+	}
+}
+tasks.named('compileRuntimeJava') { dependsOn verifyRebornEnergy }
+// Links against the game side, so it is built exactly when the game side is.
+tasks.named('compileModMenuApiJava') {
+	onlyIf { !stagedGameJars.isEmpty() }
+}
+
+test {
+	useJUnitPlatform()
+	// These integration fixtures read the released Create Fly jar, so replacing it must invalidate the tests. A
+	// file collection, not inputs.file: a fresh clone (and CI) has no such jar, and the tests skip without it.
+	def createFlyFixture = file(project.findProperty('forbric.createFlyJar')
+			?: 'build/compat-inputs/create-fly/create-fly.jar')
+	inputs.files(createFlyFixture).withPropertyName('createFlyFixture').optional()
+	systemProperty 'forbric.createFlyJar', createFlyFixture.absolutePath
+	// Only EventChainAuditTest's own loader gets log4j (the real buses need it); the test classpath keeps none,
+	// because several tests assert ForbricLog's fallback when log4j is absent.
+	doFirst { systemProperty 'forbric.log4jApiForTests', configurations.compileClasspath.files.find { it.name.startsWith('log4j-api-') }?.absolutePath ?: '' }
+	// Game-side tests that name MixinExtras (KernelWrapOperationsTest) load it beside build/classes/java/runtime.
+	doFirst { systemProperty 'forbric.mixinExtrasForTests', configurations.nestedMods.files.find { it.name.startsWith('mixinextras-') }?.absolutePath ?: '' }
+	// The real-Mixin weave harness (net.forbric.kernel.mixin.weave) runs each bootstrap in a child JVM on this
+	// classpath, because Mixin's bootstrap is one-shot per JVM. Its fixtures include the mixin-outcome canary's
+	// sources, read in place, so editing that canary must re-run the tests.
+	doFirst { systemProperty 'forbric.weaveHarnessClasspath', sourceSets.test.runtimeClasspath.asPath }
+	inputs.files(fileTree('canary/mixin-outcome')).withPropertyName('weaveCanaries')
+	// Component/decision tests do not own macOS's first UI thread. Actual windows are exercised
+	// by the separately forked dialog/client gates, not by the Gradle worker's AppKit instance.
+	systemProperty 'java.awt.headless', 'true'
+	// The GAME-side output is an INPUT to these tests, and Gradle cannot see that on its own.
+	//
+	// Several tests load src/runtime classes through a URLClassLoader over build/classes/java/runtime -- it is the
+	// only way to drive game-side code off-game, and it is a file path rather than a declared dependency. So
+	// `test` was UP-TO-DATE after a runtime-source edit: the suite reported green against the PREVIOUS compile,
+	// and a mutation check on any of those classes silently proved nothing. That trap is written down in the wall
+	// ledger from the last time it cost a day; this is the fix rather than the note.
+	dependsOn tasks.named('compileRuntimeJava')
+	inputs.files(sourceSets.runtime.output).withPropertyName('gameSideClasses').optional()
+	// The same for the Mod Menu API stand-in, which ModMenuApiStandInShapeTest reads off build/classes/java/modMenuApi.
+	dependsOn tasks.named('compileModMenuApiJava')
+	inputs.files(sourceSets.modMenuApi.output).withPropertyName('modMenuApiStandIn').optional()
+	// NoRawAssumptionsTest reads the test sources and its allowlist as TEXT. An allowlist edit changes no class, so
+	// without these the task stayed UP-TO-DATE and kept the verdict on the previous list.
+	inputs.file('src/test/raw-assumption-allowlist.txt').withPropertyName('rawAssumptionAllowlist')
+	inputs.files(fileTree('src/test/java'), fileTree('src/transferTest/java')).withPropertyName('testSourceText')
+	// ProcessBuilder tests execute these files; their edits must invalidate the test task too.
+	inputs.files(fileTree('run/compat') { include '**/*.py', '**/*.sh', '**/*.md' })
+			.withPropertyName('compatibilityTools').optional()
+	inputs.files(fileTree('run') { include 'gate-m*.sh', 'lib.sh' })
+			.withPropertyName('gateContracts').optional()
+	inputs.files(fileTree(stagedRoot) {
+		include 'build-testmods.sh', 'livemod-src-neoforge/**',
+				'neoforge-runtime/forbricneolive.jar'
+	}).withPropertyName('compatibilityCanaries').optional()
+	inputs.files(fileTree('build/compat-inputs') { include '**/mods/*.jar' })
+			.withPropertyName('compatibilityModFixtures').optional()
+	// The staged game base the real-bytecode tests read. Without this, rebuilding it leaves the test task
+	// UP-TO-DATE and every one of those tests silently keeps its previous verdict — which is exactly what
+	// happened the first time the base was rebuilt: a green run that had not looked at the new jar at all.
+	//
+	// Through stagedRoot, NOT the literal path: these three lines hardcoded '../forbric-loader/run/...' while
+	// the variable that honours FORBRIC_OLD was declared thirty lines up and already used by the canary inputs.
+	// On a second worktree -- the one configuration FORBRIC_OLD exists for -- the declared input was a file that
+	// does not exist, so rebuilding the real staged base left `test` UP-TO-DATE and every bytecode test kept its
+	// previous verdict. That is the exact failure these lines were added to prevent, reintroduced by the knob
+	// meant to support the case.
+	inputs.files(files(stagedBase))
+			.withPropertyName('gameBase').optional()
+	// The NeoForge carrier, for exactly the same reason, one artifact over. About twenty test classes read it --
+	// ForeignTypeCarrierTest checks every ForeignType name against it, CarrierAccessTransformerTest reads the
+	// real AT out of it -- and none of that was declared. So a carrier upgrade, which is the single event those
+	// tests exist to catch, left `test` UP-TO-DATE and every one of them silently kept its previous verdict.
+	inputs.files(files(stagedNeoRuntime))
+			.withPropertyName('neoforgeCarrier').optional()
+	// The bytecode tests find the staged jars themselves, through FORBRIC_OLD, so hand them the root this build
+	// compiled against. -Pforbric.stagedRoot used to move the compile and the declared inputs and leave the tests
+	// reading another base, the same divergence a release capture now refuses (evidence.py stagedBuildInputs).
+	environment 'FORBRIC_OLD', stagedRoot.parentFile.absolutePath
+	systemProperty 'forbric.stagedRoot', stagedRoot.absolutePath
+	// The same for Minecraft's own jar and libraries (TestFixtures.minecraftDir): the directory the game side compiled
+	// against, so a prepared .dev/minecraft or -Pforbric.mcLibraries reaches the tests instead of a platform default.
+	environment 'MC_DIR', mcLibraries.parentFile.absolutePath
+	systemProperty 'forbric.fabricApi', stagedFabricApi.absolutePath
+	// Refused when the tests RUN, never while the build is configured: this block configures every invocation,
+	// and a root that does not exist is the documented way to build the boot jar as a machine without staged
+	// artifacts would (above). run/test-staged-root.sh checks both halves.
+	doFirst {
+		if (stagedRoot.name != 'run') throw new GradleException("forbric.stagedRoot must name a run/ directory, as"
+				+ " FORBRIC_OLD/run does: the tests resolve FORBRIC_OLD + '/run'. Got ${stagedRoot}")
+	}
+	// No unit test may fork a window. DependencyAuditTest drives DependencyAudit.report with Side.CLIENT and
+	// deliberately unmet requirements, which is exactly the input that opens one -- and a test suite that stops
+	// on an invisible dialog looks like a hang, not a failure. DependencyDialogTest drives the fork itself, with
+	// its own explicit flags, so it does not need this to be on.
+	systemProperty 'forbric.dependencyDialog', 'off'
+}
+
+// The engine tests need the whole game side. Without staged game jars they are skipped and say so, except in an
+// integration run, where -Pforbric.requireTransfer=true turns that skip into a failure.
+def transferSuiteRuns = { String task ->
+	if (stagedGameJars.size() == 2 || requireTransfer) return true
+	logger.lifecycle("${task}: SKIPPED — staged game jars absent (${stagedGameJars.size()}/2 under ${stagedRoot})")
+	return false
+}
+tasks.named('compileTransferTestJava') {
+	onlyIf { transferSuiteRuns('compileTransferTestJava') }
+	// Thrown from an action, not from onlyIf, where Gradle would bury the message under "could not evaluate spec".
+	doFirst {
+		if (stagedGameJars.size() != 2) throw new GradleException("The staged game jars are absent (" +
+				"${stagedGameJars.size()}/2 under ${stagedRoot}), and -Pforbric.requireTransfer=true forbids skipping " +
+				"the transfer engine tests")
+	}
+}
+tasks.register('transferTest', Test) {
+	description = 'Exercises transfer conservation and nested rollback using the real Fabric/NeoForge transaction engines.'
+	// The Reborn jar is on this classpath at RUN time too; an up-to-date compile does not re-check it.
+	dependsOn verifyRebornEnergy
+	onlyIf { transferSuiteRuns('transferTest') }
+	testClassesDirs = sourceSets.transferTest.output.classesDirs
+	classpath = sourceSets.transferTest.runtimeClasspath
+	useJUnitPlatform()
+	// Resolved at execution, NOT configuration. The classpath includes the extracted API modules, and read at
+	// configuration time on a clean build directory that glob is still empty: every scenario then failed with
+	// NoClassDefFoundError on the first run after `clean` and passed on the second.
+	doFirst { systemProperty 'forbric.transferTestClasspath', classpath.asPath }
+	// Without Minecraft's own library set every scenario fails on a ClassNotFoundException for a netty or Commons
+	// Lang class, which reads as a transfer bug. Say what is missing instead. A run narrowed with --tests may be
+	// after a scenario that needs none of it, so that one only warns.
+	doFirst {
+		def problem = !stagedMcVersionJson.isFile()
+				? "${stagedMcVersionJson} is absent, so Minecraft 26.2's library list is unknown"
+				: !missingTransferTestLibraries.isEmpty()
+						? "${missingTransferTestLibraries.size()} of the libraries ${stagedMcVersionJson} lists are not under " +
+								"${mcLibraries}: ${missingTransferTestLibraries.take(5).join(', ')}"
+						: null
+		if (problem == null) return
+		def advice = "Point -Pforbric.mcLibraries or MC_DIR at a Minecraft install that has run 26.2, or run " +
+				"`python tools/dev.py prepare`"
+		if (filter.commandLineIncludePatterns.isEmpty()) throw new GradleException("The transfer suite needs Minecraft's " +
+				"own libraries: ${problem}. ${advice}")
+		logger.warn("[forbric] transferTest: ${problem}; a scenario that loads Minecraft classes will fail. ${advice}")
+	}
+}
+tasks.named('check') { dependsOn tasks.named('transferTest') }
+
+// BOOT jar: parent-loaded kernel core (classloading, discovery, resolve, transform, mixin service, mapping, access,
+// metadata, vendored fabric api surface). No game types.
+//
+// MixinExtras rides along under META-INF/jars. It must NOT be parent-loaded (the LocalRef generated-class law: its
+// generated classes must share the game's loader), so the boot orchestrator extracts it and hands it to
+// ForbricClassLoader as an owned jar. Bundling keeps the kernel self-sufficient — no launcher-supplied path.
+jar {
+	archiveBaseName = 'forbric-kernel'
+	into('META-INF/jars') {
+		from configurations.nestedMods
+		rename '.*\\.jar', 'mixinextras-fabric.jar'
+	}
+}
+
+// GAME jar: forbric-kernel-runtime — the half ForbricClassLoader defines, compiled against the staged jars.
+//
+// It does NOT nest MixinExtras. The boot jar above already carries it and KernelBundledJars extracts it; a
+// second copy here would ride inside an owned jar where nothing reads nested jars, so it would be a megabyte of
+// dead weight AND a second place to update when the version moves. One bundler owns it.
+tasks.register('runtimeJar', Jar) {
+	archiveBaseName = 'forbric-kernel-runtime'
+	dependsOn 'compileRuntimeJava'
+	from sourceSets.runtime.output
+	// Mod Menu's API stand-in, as bytes under META-INF and under a name no class loader resolves: see the modMenuApi
+	// source set and ModMenuApiStandIn, which reads them from here.
+	from(sourceSets.modMenuApi.output.classesDirs) {
+		include '**/*.class'
+		into 'META-INF/forbric/modmenu-api'
+		rename { String file -> file + '.bin' }
+	}
+	// The boot seam requires exactly these three when the transfer APIs are installed; a jar without them is a
+	// release that turns every fabric-api pack into a required loss. Checked on the artifact itself.
+	doLast {
+		def entries = new java.util.zip.ZipFile(archiveFile.get().asFile).withCloseable { zip -> Collections.list(zip.entries())*.name as Set }
+		// The stand-in is there, and only as resources. A loadable com/terraformersmc class in this jar would be
+		// defined ahead of a real Mod Menu's and break every mod that uses more of Mod Menu than its API.
+		def loadable = entries.findAll { it.startsWith('com/terraformersmc/') }
+		if (loadable) throw new GradleException("forbric-kernel-runtime.jar must not carry Mod Menu classes as classes: ${loadable.take(3)}")
+		def standIn = ['api/ModMenuApi', 'api/ConfigScreenFactory', 'api/UpdateChecker', 'api/UpdateInfo', 'api/UpdateChannel',
+				'util/NullScreenFactory']
+				.collect { "META-INF/forbric/modmenu-api/com/terraformersmc/modmenu/${it}.class.bin".toString() }
+				.findAll { !entries.contains(it) }
+		if (standIn) throw new GradleException("forbric-kernel-runtime.jar was built without its Mod Menu API stand-in: ${standIn}")
+		def missing = ['BlockTransferBridge', 'TransferIssues', 'PairedTransactions', 'RebornEnergyBridge',
+				'RebornEnergyAdapters', 'EnergyUnits']
+				.collect { "net/forbric/kernel/runtime/transfer/${it}.class".toString() }.findAll { !entries.contains(it) }
+		if (missing) throw new GradleException("forbric-kernel-runtime.jar was built without its transfer component: ${missing}")
+		// Team Reborn Energy is the player's mod, compiled against and never shipped.
+		def bundled = entries.findAll { it.startsWith('team/reborn/') }
+		if (bundled) throw new GradleException("forbric-kernel-runtime.jar must not bundle Team Reborn Energy: ${bundled.take(3)}")
+	}
+}
+
+// Carry the game-side jar INSIDE the boot jar, next to MixinExtras and delivered the same way — so the kernel
+// stays one file and neither a launcher nor the installer has to learn a new path.
+//
+// Wired at CONFIGURATION time and only when the staged jars are present. That is the whole reason this is an
+// `if` and not an `onlyIf`: `onlyIf` skips the task but keeps the wiring, so a machine without staged artifacts
+// would still get an `into` block sourced from a jar that was never built — which packs an EMPTY runtime jar,
+// and an empty one is worse than none at all (every game-side class then fails to link at the moment of use,
+// far from the cause). With the wiring itself absent, `gradlew jar` on such a machine is byte-identical to what
+// it was before this block existed, and the boot-side gate is untouched.
+//
+// Nothing is lost there either: this jar links against Mojang/NeoForge/Fabric types, so a machine that cannot build
+// it also cannot run the game that would load it. Its prerequisites ARE the game's prerequisites.
+//
+// This is a SIBLING of the MixinExtras block on purpose. `rename` is a property of the CopySpec it sits in, so
+// putting this `from` inside that block would rename the runtime jar to mixinextras-fabric.jar and silently
+// replace the wrong file.
+if (!stagedGameJars.isEmpty()) {
+	jar {
+		dependsOn 'runtimeJar'
+		into('META-INF/jars') {
+			from tasks.named('runtimeJar').flatMap { it.archiveFile }
+			rename '.*\\.jar', 'forbric-kernel-runtime.jar'
+		}
+	}
+}
+
+// Emits the boot-side runtime classpath so launch scripts can compose it with the game classpath.
+tasks.register('printBootClasspath') {
+	doLast { println sourceSets.main.runtimeClasspath.asPath }
+}
+
+// Development workflow. Preparation runs in a separate invocation because runtime wiring is configured above.
+def devDriver = file('../tools/dev.py')
+def devPython = project.findProperty('forbric.python') ?: (osName.contains('windows') ? 'python' : 'python3')
+tasks.register('prepareDev', Exec) {
+	group = 'development'
+	description = 'Download and assemble isolated development game inputs using the installer pipeline.'
+	workingDir projectDir.parentFile
+	commandLine devPython, devDriver, 'prepare', '--java', System.getProperty('java.home')
+	// The canary mods take sponge-mixin and ASM from this classpath; without it dev.py would start a second build here.
+	doFirst { environment 'FORBRIC_KERNEL_CLASSPATH', sourceSets.main.runtimeClasspath.asPath }
+}
+tasks.register('devDoctor', Exec) {
+	group = 'development'
+	description = 'Read-only development prerequisite check; exit 2 means preparation is needed.'
+	workingDir projectDir.parentFile
+	commandLine devPython, devDriver, 'doctor', '--java', System.getProperty('java.home')
+}
+tasks.register('toolTest', Exec) {
+	group = 'verification'
+	description = 'Run portable development and compatibility tooling self-tests without staged game jars.'
+	workingDir projectDir.parentFile
+	commandLine devPython, devDriver, 'tool-test'
+}
+tasks.named('check') { dependsOn 'toolTest' }
+tasks.register('linkToolTest', Exec) {
+	group = 'verification'
+	description = 'Run the installer packaged-link-gate tests on synthetic jars, without game inputs or bootstrap.'
+	workingDir file('../forbric-kernel-installer')
+	commandLine(osName.contains('windows') ? ['cmd', '/d', '/c', 'gradlew.bat', 'linkGateTest'] : ['./gradlew', 'linkGateTest'])
+}
+tasks.named('check') { dependsOn 'linkToolTest' }
+// The suites whose tests ran in THIS invocation. Results left by an earlier invocation are not evidence.
+def executedSuites = Collections.synchronizedSet(new HashSet<String>())
+// Fixture file names are Unicode ("[钠] sodium-fabric-….jar"). A JVM started under the C/POSIX locale cannot encode
+// them and throws InvalidPathException; minimal Linux images and containers start there. tools/dev.py never saw it
+// because Python coerces that locale for its children, but a plain ./gradlew does not.
+def inheritedLocale = ['LC_ALL', 'LC_CTYPE', 'LANG'].collect { System.getenv(it) }.find { it }
+def utf8TestLocale = osName.contains('linux') && !(inheritedLocale ==~ /(?i).*utf-?8.*/)
+tasks.withType(Test).configureEach {
+	def suiteName = name
+	if (utf8TestLocale) environment 'LC_ALL', 'C.UTF-8'
+	inputs.property('strictIntegration', strictIntegration)
+	inputs.property('skipBaseline', skipBaseline ?: '')
+	// The fixtures whose absence fails instead of skipping (TestFixtures.Fixture ids, or 'all'), read by
+	// TestFixtures and FixturePolicyExtension. An integration run requires all of them, at the test that skipped
+	// rather than only in the totals afterwards.
+	systemProperty 'forbric.requireFixtures', project.findProperty('forbric.requireFixtures') ?: (strictIntegration ? 'all' : '')
+	// A previous permissive result must never bypass the no-skips verdict of an integration invocation, and the
+	// skip ratchet must judge tests that ran now.
+	outputs.upToDateWhen { !strictIntegration && skipBaseline == null }
+	def totals = [tests: 0, skipped: 0]
+	afterSuite { descriptor, result ->
+		if (descriptor.parent == null) {
+			executedSuites.add(suiteName)
+			totals.tests = result.testCount
+			totals.skipped = result.skippedTestCount
+			logger.lifecycle("${name}: ${result.testCount} tests, ${result.skippedTestCount} skipped, ${result.failedTestCount} failed")
+		}
+	}
+	// After the task action, not in afterSuite: throwing there stopped the task before it wrote the reports this
+	// message sends the reader to, so the skipped fixtures could not be looked up.
