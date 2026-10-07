@@ -298,3 +298,105 @@ public final class MixinOverloadPin {
 			Function<String, ClassNode> targets) {
 		for (String targetName : targetNames) {
 			ClassNode target = targets.apply(targetName);
+			if (target == null || target.methods == null) continue;
+
+			List<MethodNode> named = new ArrayList<>();
+			for (MethodNode method : target.methods) if (method.name.equals(selector)) named.add(method);
+			if (named.isEmpty()) continue;
+			// It binds; there is nothing to explain.
+			if (MixinHandlerShim.binds(handler.desc, named.get(0).desc)) return false;
+
+			if (!selector.startsWith("lambda$")) {
+				List<String> written = new ArrayList<>();
+				for (MethodNode method : named.subList(1, named.size())) if (takes(handler, method)) written.add(method.desc);
+				if (written.isEmpty()) continue;
+				String wanted = String.join(" or ", written);
+				ForbricLog.warn("[Forbric/Mixin] %s.%s cannot bind to %s.%s: the merged class declares %d methods of that "
+						+ "name, a bare name binds the first, %s, and the handler was written for %s%s",
+						mixin.name, handler.name, targetName, selector, named.size(), named.get(0).desc, wanted,
+						written.size() > 1 ? " — more than one, so the kernel will not choose" : "");
+				REASONS.put(mixin.name, "its " + handler.name + " selects " + selector + " by name, which binds the first of "
+						+ named.size() + " methods the merged class declares with that name, " + named.get(0).desc
+						+ "; the handler was written for " + wanted);
+				return true;
+			}
+
+			for (String dropped : net.forbric.kernel.transform.DuplicateLambdaPruneInjector
+					.droppedDescriptors(targetName, selector)) {
+				if (!fits(handler.desc, dropped)) continue;
+				ForbricLog.warn("[Forbric/Mixin] %s.%s cannot bind to %s.%s: the shape it was written for, %s, was "
+						+ "a lambda of the body the byte merge did NOT keep — the merge took the other ecosystem's "
+						+ "%s, whose lambda has a different shape, so this injection has no live target here",
+						mixin.name, handler.name, targetName, selector, dropped, enclosing(selector));
+				REASONS.put(mixin.name, "its " + handler.name + " targets " + selector + ", a lambda of the "
+						+ enclosing(selector) + " body the byte merge did not keep");
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** Test seam: forget what earlier mixins were diagnosed with. */
+	static void clearReasons() {
+		REASONS.clear();
+	}
+
+	/** The method a {@code lambda$foo$0} belongs to, for a sentence a reader can act on. */
+	static String enclosing(String lambdaName) {
+		if (!lambdaName.startsWith("lambda$")) return lambdaName;
+		int last = lambdaName.lastIndexOf('$');
+		return last > "lambda$".length() ? lambdaName.substring("lambda$".length(), last) : lambdaName;
+	}
+
+	/**
+	 * Whether an {@code @Inject} handler of {@code handlerDesc} is the one written for {@code targetDesc}.
+	 *
+	 * <p>The rule Mixin itself applies, in the shape that can be decided from descriptors alone: the target's
+	 * parameters in order, then a {@code CallbackInfo} (or {@code CallbackInfoReturnable}), then any number of
+	 * captured locals. Deliberately strict — Mixin also accepts a handler taking only a PREFIX of the target's
+	 * parameters, and honouring that here would let a no-argument handler fit every overload at once, which is
+	 * the ambiguity this whole class exists to avoid.
+	 */
+	static boolean fits(String handlerDesc, String targetDesc) {
+		Type[] handlerParams = Type.getArgumentTypes(handlerDesc);
+		Type[] targetParams = Type.getArgumentTypes(targetDesc);
+		if (handlerParams.length < targetParams.length + 1) return false;
+		for (int i = 0; i < targetParams.length; i++) {
+			if (!handlerParams[i].equals(targetParams[i])) return false;
+		}
+		String callback = handlerParams[targetParams.length].getInternalName();
+		return CALLBACK_INFO.equals(callback) || CALLBACK_INFO_RETURNABLE.equals(callback);
+	}
+
+	/** The internal names the {@code @Mixin} annotation points at, from both {@code value} and {@code targets}. */
+	static List<String> targetsOf(ClassNode mixin) {
+		List<String> names = new ArrayList<>();
+		AnnotationNode annotation = annotation(mixin.visibleAnnotations, MIXIN_DESC);
+		if (annotation == null) annotation = annotation(mixin.invisibleAnnotations, MIXIN_DESC);
+		if (annotation == null || annotation.values == null) return names;
+
+		for (int i = 0; i + 1 < annotation.values.size(); i += 2) {
+			Object key = annotation.values.get(i);
+			Object value = annotation.values.get(i + 1);
+			if (!(value instanceof List<?> entries)) continue;
+			for (Object entry : entries) {
+				if ("value".equals(key) && entry instanceof Type type) names.add(type.getInternalName());
+				else if ("targets".equals(key) && entry instanceof String binary) names.add(binary.replace('.', '/'));
+			}
+		}
+		return names;
+	}
+
+	private static AnnotationNode annotation(MethodNode method, String descriptor) {
+		AnnotationNode found = annotation(method.visibleAnnotations, descriptor);
+		return found != null ? found : annotation(method.invisibleAnnotations, descriptor);
+	}
+
+	private static AnnotationNode annotation(List<AnnotationNode> annotations, String descriptor) {
+		if (annotations == null) return null;
+		for (AnnotationNode annotation : annotations) {
+			if (descriptor.equals(annotation.desc)) return annotation;
+		}
+		return null;
+	}
+}
