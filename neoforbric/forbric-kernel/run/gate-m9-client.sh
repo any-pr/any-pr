@@ -298,3 +298,303 @@ CARRIERS=$(grep -aoE 'served [0-9]+ datapack\(s\).*— [0-9]+ loader carrier' "$
 assert_eq "loader carriers served" 2 "${CARRIERS:-none}"
 # The ORDER, not the file names. This asserted the basenames of one machine's staged artifacts, so pointing the
 # gate at another machine's — a user's own install, where the same jars are named forge-runtime-26.2.jar — failed
+# it for a reason that has nothing to do with where the carriers sit. What it is about is 1- before 2-.
+check "carriers sit below the mods"   "forbric/carrier/1-forge-runtime[^,]*, forbric/carrier/2-neoforge-runtime" "$LOG"
+check "registry alias parity restored" "Forbric/Aliases\] gave .* alias-resolving lookup"      "$LOG"
+check "NeoForge registration order"    "fired RegisterEvent in NeoForge.s registration order"  "$LOG"
+# A mod whose items name their own data components: with RegisterEvent in field order the item registry is filled
+# 57 registries too early, DeferredHolder.value() throws, and the mod loses every item it had not reached yet.
+check_absent "no unbound data component" "Trying to access unbound value"                      "$LOG"
+# I5: the registries freeze NeoForge-first on both windows (server + client entrypoint), so NeoForge's freezeData
+# finishes instead of aborting at the first registry MinecraftForge had already frozen. RED with
+# M9_EXTRA_JVM=-Dforbric.freezeNeoForgeFirst=off (the THREW line returns twice).
+check_absent "NeoForge's freezeData finished on both windows" "GameData.freezeData\(\) THREW" "$LOG"
+check "registries frozen NeoForge-first, twice"  "froze the registries NeoForge-first: [1-9][0-9]* registr(ies|y), [0-9]+ tag key" "$LOG" 2
+check_absent "no RegisterEvent listener failed" "RegisterEvent listener failed"                "$LOG"
+check_absent "no tag lost to a dangling id"     "Couldn.t load tag"                            "$LOG"
+
+step "one NightConfig, and it is the working one (must PASS)"
+# The MinecraftForge carrier bundles NightConfig 3.7.4 at the UNSHADED package name, where
+# StampedConfig.valueMap() is a stub that throws. Child-first handed the game that copy and shadowed the working
+# 3.8.x on the parent classpath, so every config read that descends a dotted path into a nested table died.
+# zfastnoise is the visible victim — it reads config in its mixin PLUGIN's constructor, and Mixin responds to a
+# plugin it cannot build by applying that config's mixins with no opinion, which then killed chunk generation.
+# The positive assertion is the load-bearing one: the plugin only gets guarded once it has been CONSTRUCTED.
+check "a config-reading mixin plugin constructs" "guarded .*FastNoiseMixinPlugin"             "$LOG"
+check_absent "no NightConfig version split"      "StampedConfig does not support valueMap"      "$LOG"
+
+step "every failure that has cost a world load here (must be ABSENT)"
+# Each of these is a bug that actually happened on this pack; the wording is the log's, not ours to change lightly.
+check_absent "JEI found its plugins"        "plugins must not be empty"                        "$LOG"
+check_absent "no plugin name unloadable"    "Failed to load: [a-z0-9_]+/"                      "$LOG"
+check_absent "no null pack reached the repo" "streamSelfAndChildren.* because .pack. is null"  "$LOG"
+check_absent "no pack metadata read failed" "Failed to read pack .* metadata"                  "$LOG"
+check_absent "no entity missing attributes" "has no attributes"                                "$LOG"
+check_absent "render-layer latch is set"    "Render layers can only be set"                    "$LOG"
+check_absent "no skipped-element leak"      "StubException"                                    "$LOG"
+check_absent "no duplicate registry key"    "Duplicate key ResourceKey"                        "$LOG"
+# NOT a bare "Unknown registry key": a save carries chunk sections referencing content the CURRENT mod set no
+# longer has, and vanilla reports those as "Recoverable errors when loading section" — 1214 of them here,
+# every one a terralith biome from before that mod was dropped. That is a property of the save. The shape
+# that matters is a datapack ELEMENT failing to parse, which is what an unregistered modifier type produced.
+check_absent "no datapack element unparseable" "Failed to parse .* from pack"                 "$LOG"
+# A SimpleJsonResourceReloadListener names EVERY element it rejects, so assert the SET rather than the absence:
+# two are expected, and a third must turn this gate red. Both are mods (or a carrier) shipping data for a
+# contract that moved, and a genuine NeoForge 26.2 instance rejects each of them the same way:
+#   *:global_loot_modifiers  — the legacy Forge list file (replace/entries). NeoForge's LootModifierManager runs
+#     IGlobalLootModifier.DIRECT_CODEC over every file in loot_modifiers/ and has no list-file concept; its own
+#     GlobalLootModifierProvider stopped writing one. The MODIFIERS are fine — usefulfood:glow_squid and
+#     earthmobsmod:desert_in_ruby are not named here, and this loader names everything that fails.
+#   (earthmobsmod:entities/tropical_slime used to be the third. The mod left the pack when the carrier moved to
+#     NeoForge 26.2.0.88: its EntityFluidInteraction mixin calls isInFluid(TagKey) with its own earthmobsmod:mud
+#     tag, and from .88 that path goes through getFluidTypeByTag, which knows water and lava and throws on
+#     anything else — verified against the stock NeoForge-patched jar, so it is not a Forbric failure.)
+# I7: both managers' directory scans now run over a view that hides the legacy index, so NOTHING fails to parse
+# — a genuinely broken loot modifier is distinguishable again. RED with M9_EXTRA_JVM=-Dforbric.lootModifierIndex=off
+# (both ERROR lines return and the set is the two indexes again).
+UNPARSEABLE=$(grep -aoE "Couldn.t parse data file '[^']*'" "$LOG" | sed -E "s/.*'(.*)'/\1/" | sort -u | paste -sd, -)
+assert_eq "no data file fails to parse" "" "$UNPARSEABLE"
+check "loot-modifier scan ran and hid the two indexes" "loot-modifier directory scan: [1-9][0-9]* file\(s\) kept, 2 legacy index file\(s\) hidden \[(forge|neoforge):loot_modifiers/global_loot_modifiers.json, (forge|neoforge):loot_modifiers/global_loot_modifiers.json\]" "$LOG"
+# J8: every installed jar's Forge-family class references resolve against the carriers, the merged base and the
+# pack itself. 0 on this pack is the false-positive pin (CustomSkinLoader's fml/loading refs are out of scope by
+# rule); a mod compiled against another NeoForge/MinecraftForge would be named here and DEGRADED on its row.
+check "abi audit ran and found no dangling Forge-family reference" "AbiAudit\] scanned [1-9][0-9]* jar\(s\) in [0-9]+ ms: 0 with dangling" "$LOG"
+check_absent "join negotiation succeeded"   "Network Protocol Error"                           "$LOG"
+# Same treatment for "was loaded too early": pin the SET, because two are upstream behaviour and a third would be
+# ours. Mixin's select() runs selectConfigs -> Extensions.select -> prepareConfigs, so EVERY guest config plugin
+# is constructed before ANY config is prepared. A game class that a plugin's static initialiser loads therefore
+# misses every mixin — on any Mixin platform, genuine Fabric and NeoForge included. Measured here with
+# -Dforbric.traceClassDefine=net.minecraft.world.level.BlockGetter, which named the chain Mixin will not:
+#   PluginHandle.<init> -> IrisMixinPlugin.<clinit> -> IrisPlatformHelpers.<clinit> -> ServiceLoader.findFirst()
+#   -> defining IrisForgeHelpers -> loadClass(BlockGetter).
+# Cost is lithium's raycast optimisation and a duck interface nothing in this pack calls. The kernel could defer
+# plugin construction behind a lazy proxy and beat upstream here — deliberately not done: no real loader does
+# that, and fidelity to the genuine contract is worth more than two recovered mixins.
+TOO_EARLY=$(grep -aoE 'Critical problem: [^ ]+ from mod' "$LOG" | sed -E 's/Critical problem: (.*) from mod/\1/' | sort -u | paste -sd, -)
+assert_eq "only the known plugin-clinit casualties load too early" \
+  "lithium.mixins.json:world.raycast.BlockGetterMixin" \
+  "$TOO_EARLY"
+check_absent "no registry load failure"     "Failed to load registries due to errors"          "$LOG"
+check_absent "no crash report"              "Preparing crash report"                           "$LOG"
+# Raw-ASM bytecode patching, the kind CustomSkinLoader does instead of Mixin, fails SILENTLY at WARN and takes a
+# whole feature with it. Two ways it has happened here, both fixed and both invisible without this line: the
+# protocol version reading 0 so it picked a pre-1.20.2 patch variant (see run/game-metadata-jar.sh), and Shoulder
+# Surfing's @Redirect DELETING the call site the cape patch scans for (see MergedBaseMixinCompat). Any new one is
+# a mod losing a feature, so it must be a decision rather than a line nobody reads.
+check_absent "no bytecode patch failed"     "did not modify any bytecode"                      "$LOG"
+
+step "the pack is honestly provisioned (must PASS)"
+# A genuine NeoForge refuses to launch when a mod's versionRange on neoforge is not satisfied. The kernel parses
+# those ranges and used to evaluate none of them, so an under-provisioned mod loaded and failed later somewhere
+# that named neither it nor the version: JEI 30.14.0.87 wants [26.2.0.16-beta,), the carrier WAS 26.2.0.7-beta,
+# and what that actually looked like was NeoForgeGuiPlugin dying on NoClassDefFoundError for TooltipFlagExtension
+# — an interface .7 genuinely does not have, because those methods are inlined on TooltipFlag there instead.
+#
+# That audit is why the carrier is now 26.2.0.38-beta (see forbric-loader/run/assemble-neoforge-runtime.sh for
+# why .38 and not the newest .64): the bump is what closed the only entry this set ever had. So the expected
+# value is now "none" — and keeping the assertion, rather than deleting it with the finding, is the point. It
+# fails in both directions: a mod whose range outruns the carrier turns it red, and so does silently sliding
+# the carrier back. Anything appearing here must be a decision, not a surprise.
+check "ecosystem versions reported"   "Forbric/Versions\] this instance provides"                "$LOG"
+UNDERPROVISIONED=$(grep -aoE 'Forbric/Versions\] [a-z0-9_]+ requires' "$LOG" \
+  | sed -E 's/.*\] ([a-z0-9_]+) requires/\1/' | sort -u | paste -sd, -)
+assert_eq "no under-provisioned mod" "none" "${UNDERPROVISIONED:-none}"
+
+step "every mod's own assets are reachable once the reload has run (must PASS)"
+# EnhancedVisuals emits 21 `Could not find any resources for 'damaged'!` during startup, and they look exactly
+# like the kernel failing to serve a Forge-family mod's assets. They are not: the mod's EVClient probes its
+# textures EAGERLY, before the resource reload that selects the ecosystem packs (measured: the warnings land at
+# log line 1654-1674, `Reloading ResourceManager:` — which lists forbric/EnhancedVisuals_… — starts at 1706), and
+# the reload then loads all 21 silently. Every one of those 20 names ships in the mod's own jar at exactly the
+# path it asks for, `assets/enhancedvisuals/visuals/<category>/<name>/<name><n>.png`.
+#
+# So the assertion is not "no such warning" — that would pin startup noise and go red the day a mod probes early.
+# It is "none of them SURVIVES the reload", which is the property that actually matters and the one that breaks
+# if ecosystem asset packs ever stop being served or lose a namespace.
+RELOAD_LINE=$(grep -an 'Reloading ResourceManager' "$GAMELOG" 2>/dev/null | head -1 | cut -d: -f1)
+if [ -n "$RELOAD_LINE" ]; then
+  UNRESOLVED=$(grep -an "Could not find any resources for" "$GAMELOG" 2>/dev/null \
+    | cut -d: -f1 | awk -v r="$RELOAD_LINE" '$1 > r' | wc -l | tr -d ' ')
+  assert_eq "no mod resource still unresolved after the reload" "0" "$UNRESOLVED"
+else
+  echo "[kernel] FAIL never saw a resource reload"; FAIL=1
+fi
+
+step "the lost BlockGetter interface injection still has no consumer (must PASS)"
+# fabric-block-getter-api-v2's BlockGetterMixin is one of the two mixins lost to a plugin <clinit> loading its
+# target early (pinned in the set above). It is an EMPTY interface-injection mixin: its whole job is to make
+# net.minecraft.world.level.BlockGetter implement FabricBlockGetter (getBlockEntityRenderData, hasBiomes,
+# getBiomeFabric). Losing it costs nothing while nothing casts to that interface — and today nothing does. The
+# only jar in this pack that implements it is Fabric Sodium's LevelSliceMixin, and Fabric Sodium LOSES
+# arbitration: the pack runs sodium-neoforge, whose LevelSlice keeps its own blockEntityRenderDataArrays and
+# never names FabricBlockGetter at all.
+#
+# That is a coincidence of this pack, not a property of the kernel, and it would stop holding silently — flip one
+# line in forbric-mods.txt to `sodium = fabric`, or add a mod that uses the render-data API, and the cast starts
+# throwing with nothing in the log pointing back here. Both triggers are asserted.
+BG_CONSUMERS=$(python3 - "$RUNDIR/mods" <<'PYEOF'
+import os, sys, zipfile, io
+needle = b"net/fabricmc/fabric/api/blockgetter/v2/FabricBlockGetter"
+found = set()
+def walk(data, top, depth=0):
+    try: z = zipfile.ZipFile(io.BytesIO(data))
+    except Exception: return
+    for n in z.namelist():
+        if n.endswith(".class"):
+            try:
+                if needle in z.read(n): found.add(top)
+            except Exception: pass
+        elif n.endswith(".jar") and depth < 2:
+            try: walk(z.read(n), top, depth + 1)
+            except Exception: pass
+d = sys.argv[1]
+for f in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+    if f.endswith(".jar"):
+        with open(os.path.join(d, f), "rb") as fh: walk(fh.read(), f)
+# fabric-api ships the interface itself; only third parties count as consumers.
+print(",".join(sorted(j for j in found if not j.startswith("fabric-api-"))) or "none")
+PYEOF
+)
+assert_eq "only the known-inert consumer of FabricBlockGetter" "[钠] sodium-fabric-0.9.1+mc26.2.jar" "$BG_CONSUMERS"
+SODIUM_SIDE=$(grep -aoE '^# sodium = [a-z]+' "$RUNDIR/forbric-mods.txt" 2>/dev/null | awk '{print $4}')
+assert_eq "and it is still the side that lost arbitration" "neoforge" "${SODIUM_SIDE:-unknown}"
+
+step "the unified Mods screen opens and draws (must PASS)"
+# The only thing here no unit test can reach: a Screen's init and its draw run when a player clicks the button,
+# so a mistake in either is a crash mid-frame on someone else's machine. The smoke opens it the way the pause
+# menu does, holds it, and reads back the frame count the screen itself kept -- "no exception reached the caller"
+# would still be true of a screen the crash handler had replaced.
+# THE assertion, and the one that was missing: a player presses the pause menu's mods button. Everything else
+# here reaches the screen by NAME, which proves the screen and proves nothing about the button — and the button
+# is what a player has. The pause menu on a modded instance carries more than one "Mods" button (Mod Menu inserts
+# its own next to the Forge family's), so the label is asserted too: a redirect nobody can tell took effect reads
+# as "nothing happened", which is exactly how it was reported.
+# BOTH screens, because they do not share a button. The title screen's is not built in TitleScreen at all -- it
+# is neoforge.client.gui.widget.ModsButton, a widget whose own create() builds it and whose own lambda opens the
+# old list -- so the first version of this redirect reported a site re-pointed in TitleScreen (a dead one the
+# byte merge left) while the button a player can see went on opening NeoForge's list. Asserting only the pause
+# menu measured the wrong half and called the feature done.
+# The icon too. A button wearing NeoForge's logo while opening every ecosystem's mods is a picture that is wrong
+# about what the button does, and a GUI sprite that resolves to nothing renders as a magenta square rather than
+# failing — so the absence of an error proves nothing on its own. Assert the rewrite AND that the pack carrying
+# the texture reached the client repository.
+check "the widget's icon is the kernel's own" \
+  "ModsButton's mods button now opens the unified list and says so \\([0-9]+ construction site\\(s\\) re-pointed, [1-9][0-9]* label" "$LOG"
+check "the kernel's own assets reached the pack repository" "forbric/forbric-kernel-runtime" "$LOG"
+check_absent "and its sprite resolved"  "Missing sprite: forbric" "$LOG"
+check "the title screen's mods button is labelled as ours" \
+  "title-screen button #[0-9]+: net\.neoforged\..*ModsButton \"Mods \(Forbric\)\"" "$LOG"
+check "pressing it opens the unified list" \
+  "the title screen's mods button opened: net\.forbric\.kernel\.runtime\.KernelModListScreen" "$LOG"
+check_absent "and pressing it did not fail" "could not press the title screen's mods button" "$LOG"
+# Asserted on the LABEL, not on the widget class. NeoForge 26.2.0.88 moved the pause menu's mods button out of
+# PauseScreen into its own neoforge.client.gui.widget.ModsButton, so a pattern that also pinned
+# net.minecraft...SpriteIconButton went red while the button said exactly what it was supposed to say. The claim
+# here is what a player reads off the button; which class draws it is upstream's business.
+check "the Forge-family mods button is labelled as ours" \
+  "pause-menu button: [^ ]+ \"Mods \(Forbric\)\"" "$LOG"
+check "pressing it opens the unified list" \
+  "the mods button opened: net\.forbric\.kernel\.runtime\.KernelModListScreen"   "$LOG"
+check_absent "and pressing it did not fail" "could not press the pause menu's mods button" "$LOG"
+# The double-click shortcut, exercised through a row's own mouseClicked with doubled=true -- the same call the
+# widget makes on the second click. Calling the resolver by name proves the resolver and says nothing about
+# whether the flag is wired to it, which is the exact shape of the mods-button bug.
+# NOT "opened: <something>": the line prints either way, and when the shortcut is not wired what it names is the
+# mod list itself — which the obvious pattern matches. Mutation-testing this assertion is what caught that. What
+# has teeth is that the screen in front of the player is no longer the list.
+DBL=$(grep -oE "double-clicking [a-z0-9_]+ in the unified list opened: [A-Za-z0-9_.$]+" "$LOG" | head -1)
+case "${DBL:-}" in
+  "") echo "[kernel] FAIL double-clicking a row never reported a screen"; FAIL=1 ;;
+  *KernelModListScreen) echo "[kernel] FAIL double-clicking a row left the list up — the shortcut is not wired"; FAIL=1 ;;
+  *) echo "[kernel] PASS ${DBL#double-clicking }" ;;
+esac
+check_absent "and the double-click did not fail" "could not double-click a row" "$LOG"
+check "the screen opened"  "ClientSmoke\] opened the unified Mods screen" "$LOG"
+FRAMES=$(grep -oE 'unified Mods screen drew [0-9]+ frame' "$LOG" | grep -oE '[0-9]+' | head -1)
+ROWS=$(grep -oE 'frame\(s\) listing [0-9]+ mod' "$LOG" | grep -oE '[0-9]+' | head -1)
+[ "${FRAMES:-0}" -ge 1 ] && echo "[kernel] PASS it actually rendered ($FRAMES frames)" \
+  || { echo "[kernel] FAIL the Mods screen drew no frames (got ${FRAMES:-none}) — constructed is not rendered"; FAIL=1; }
+[ "${ROWS:-0}" -ge 1 ] && echo "[kernel] PASS and it listed mods ($ROWS rows)" \
+  || { echo "[kernel] FAIL the Mods screen listed nothing (got ${ROWS:-none})"; FAIL=1; }
+check_absent "the screen did not throw" "the unified Mods screen could not be opened" "$LOG"
+# The client connection lifecycle and client commands for MinecraftForge mods (KernelGameClientNetworkEvents): a
+# MinecraftForge listener hears the join and the leave, and a client command registered through each family's event is
+# in the tree the game runs.
+check "MinecraftForge hears the client join and leave" \
+  "ClientSmoke\] MinecraftForge connection events: LoggingIn [1-9][0-9]*, LoggingOut [1-9]" "$LOG"
+# Chat, fog, field of view and screen drawing, and the atlas and model reload, reach MinecraftForge listeners
+# (KernelGameClientEvents, KernelGameClientResourceEvents): each is produced by the smoke run itself.
+for heard in RenderFog FogColor FovModifier ScreenRenderPre ScreenRenderPost SystemMessage TextureStitched ModelsBaked; do
+  check "MinecraftForge hears $heard" "ClientSmoke\] MinecraftForge client events heard:.* $heard=[1-9]" "$LOG"
+done
+check "both families' client commands are in the game's command tree" \
+  "ClientSmoke\] client command tree after joining: forge=true neo=true" "$LOG"
+# NeoForge's ScreenEvent.Opening, judged by a NeoForge mod's own answer: Controlling swaps vanilla's key binds screen
+# for its own. The merged Gui.setScreen is MinecraftForge's and asked only MinecraftForge's (NeoScreenEventsInjector).
+check "a NeoForge mod's screen swap is obeyed (Controlling)" \
+  "ClientSmoke\] opened vanilla's KeyBindsScreen; the game shows com.blamejared.controlling.client.NewKeyBindsScreen" "$LOG"
+# fabric-screen-api's per-screen draw events (Jade's overlay on an open screen): NeoForge draws the screen from
+# ClientHooks.extractScreen, so Fabric's own wrap binds nothing and FabricClientMixinAnchors moves it onto that call.
+check "Fabric's screen draw events reach an open screen" \
+  "ClientSmoke\] Fabric ScreenEvents on the Mods screen: beforeExtract [1-9][0-9]*, afterExtract [1-9]" "$LOG"
+
+step "a mod's assets are applied but are not resource packs the player has to see (must PASS)"
+# Pack.isHidden gates LISTING, never application: getAvailableIds/getSelectedIds filter on it, openAllSelected
+# and getSelectedPacks do not, and rebuildSelected re-inserts every required pack regardless. The byte merge kept
+# NeoForge's Pack (so the flag exists) and vanilla's TransferableSelectionList (so nothing read it), which put
+# every ecosystem's asset pack in the player's list as a row they did not add and cannot remove.
+#
+# Counted from the SCREEN's own rows and not from the repository: the repository's id accessors already filter
+# hidden packs and would report success whether or not the screen does.
+# A8 (overlays half): the kernel SYNTHESISED each pack's metadata with an empty overlay list, so a mod declaring
+# overlays — the mechanism for shipping one set of assets per game version — had them dropped without a word.
+# The packs are now read through the loader's own reader, which fills them in. The count is the evidence: under
+# the old code it was zero however many mods declared them.
+check "mod packs carry the overlays they declare" \
+  "ClientPacks\] served [0-9]+ ecosystem asset pack\(s\).*, [1-9][0-9]* of them declaring overlays" "$LOG"
+check_absent "and no pack fell back to synthesised metadata" \
+  "could not read a pack's own metadata" "$LOG"
+
+check "the filter is back on the screen" \
+  "PackScreen\] restored the hidden-pack filter" "$LOG"
+# EXACTLY ONE row, and it is the parent. Seventy-odd rows would be the old "every mod is a row the player did
+# not add" problem; zero would mean the player has no way to put their own pack above a mod's textures, which is
+# what required+fixed+TOP on every mod pack used to guarantee.
+#
+# The count itself was measuring nothing until now: it read each row's NARRATION, which is the pack's title, and
+# matched it against "forbric/". That only worked while the kernel titled each pack after its own id, so the
+# moment a pack got a real title the count answered "none" whatever the screen held. It reads the row's pack id
+# now.
+PACKROWS=$(grep -oE 'resource-pack screen lists [0-9]+ pack row\(s\), [0-9]+ of them' "$LOG" | grep -oE '[0-9]+' | tail -1)
+if [ -n "$PACKROWS" ] && [ "$PACKROWS" -eq 1 ]; then
+  echo "[kernel] PASS the kernel's assets are one movable row, not one per mod"
+else
+  echo "[kernel] FAIL the resource-pack screen lists ${PACKROWS:-?} of the kernel's packs, expected exactly 1"; FAIL=1
+fi
+check "and that row is the parent pack" "rows: \[.*forbric/mod_resources" "$LOG"
+# …and they are still APPLIED. A screen with nothing in it would pass the check above and cost every mod its
+# textures, which is the failure this assertion exists to tell apart from success.
+check "and they are still selected in the repository" \
+  "repository holds [1-9][0-9]* selected" "$LOG"
+check_absent "the screen opened at all" "could not open the resource-pack screen" "$LOG"
+
+step "a config registered too late for the early pass is still opened (must PASS)"
+# The early config pass runs once, before mod content registration. A mod registering a config from a Fabric
+# client entrypoint is past it, and nothing else opens a non-STARTUP config -- the carrier eagerly opens STARTUP
+# only. The mod then reads a config that was registered and never loaded, and what it gets is not a default but
+# "Cannot get config value before config is loaded", thrown wherever it first asked. ShoulderSurfing asks from a
+# mixin in Minecraft.<init>, so the whole client dies.
+# This used to assert that the LATE pass opened 18 configs. It did -- and then loadEarlyConfigs, which runs after
+# it used to, opened all 18 again through ConfigTracker.loadConfigs (a sweep of the whole type that does not skip
+# a config with a loaded one). So the assertion pinned the double open: 36 "Opening a config that was already
+# loaded" warnings per boot on the main thread, ModConfigEvent.Loading delivered twice to every one of those mods,
+# each file re-read and a second watcher installed. The early pass now runs first and covers them, so the late
+# pass correctly finds nothing left -- which is why the count assertion had to go rather than be retargeted.
+#
+# What is asserted instead is the OUTCOME: the early pass ran over both types, the config that used to crash the
+# client is loaded, and no config is opened twice during boot. The Server-thread double open at world join (16 per
+# run, the per-world SERVER configs) is a SEPARATE defect and is deliberately not covered here yet.
+check "the early pass loads both boot-time config types" \
+  "Forbric/Lifecycle\] loaded NeoForge configs \(COMMON\+CLIENT\)" "$LOG"
+check_absent "and no config is opened twice during boot" \
+  "\[main/WARN\]: Opening a config that was already loaded" "$LOG"
