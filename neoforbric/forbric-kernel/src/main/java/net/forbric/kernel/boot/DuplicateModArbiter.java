@@ -598,3 +598,303 @@ public final class DuplicateModArbiter {
 		}
 		if (contested == 0) {
 			ForbricLog.debug("[Forbric/DupeId] nested pass: %d nested jar(s), no mod id claimed by more than one "
+					+ "ecosystem — nothing to arbitrate", nestedClaims.size());
+			return phase1;
+		}
+		ForbricLog.info("[Forbric/DupeId] nested pass: %d nested jar(s), %d mod id(s) claimed across ecosystems, "
+				+ "%d nested jar(s) suppressed", nestedClaims.size(), contested,
+				suppressed.size() - phase1.suppressedJars().size());
+		// What phase one kept out of the rescue set stays out: a switched-off jar does not become a class source
+		// because a nested contest happened to rebuild the decision.
+		Set<Path> rescue = new LinkedHashSet<>(suppressed);
+		for (Path jar : phase1.suppressedJars()) if (!phase1.rescueJars().contains(jar)) rescue.remove(jar);
+		return new Decision(Set.copyOf(suppressed), Map.copyOf(owners), List.copyOf(aliases), Set.copyOf(rescue));
+	}
+
+	/** The pure half: decide from claims alone. Package-visible so tests can drive it without a filesystem. */
+	static Decision arbitrate(List<Claim> claims) {
+		return arbitrate(claims, List.of());
+	}
+
+	/**
+	 * The pure half, plus the aliases a universal jar's losing manifests need.
+	 *
+	 * <p>Those aliases must survive the no-contest early return below: an instance can have universal jars and no
+	 * duplicate ids at all, and that is the common case.
+	 */
+	static Decision arbitrate(List<Claim> claims, List<Alias> universalAliases) {
+		return arbitrate(claims, universalAliases, "top-level");
+	}
+
+	/**
+	 * @param pass which walk these claims came from, so the two passes' log lines cannot be mistaken for each
+	 *             other. A gate reading "cross-jar arbitration: 0 duplicate mod id(s)" has to know WHICH walk
+	 *             found none — the top-level one finding none says nothing about the nested one.
+	 */
+	static Decision arbitrate(List<Claim> claims, List<Alias> universalAliases, String pass) {
+		return chooseJoint(claims, universalAliases, pass, List.of());
+	}
+
+	/** Metadata and bytecode clauses are read only for a real contest; ordinary single-jar boots keep their path. */
+	static Decision arbitrateJoint(List<Claim> claims, List<Alias> aliases, EnvType side) {
+		Map<String, Integer> counts = new HashMap<>();
+		for (Claim claim : claims) for (String id : claim.modIds()) counts.merge(JointCandidateSelector.key(id), 1, Integer::sum);
+		List<JointCandidateSelector.Rule> rules = counts.values().stream().anyMatch(n -> n > 1)
+				? CandidateContractScanner.scan(claims, side) : List.of();
+		return chooseJoint(claims, aliases, "top-level", rules);
+	}
+
+	private static Decision chooseJoint(List<Claim> claims, List<Alias> universalAliases, String pass,
+			List<JointCandidateSelector.Rule> rules) {
+		Map<String, List<Claim>> byId = new java.util.TreeMap<>();
+		Map<String, Ecosystem> overrides = new LinkedHashMap<>();
+		for (Claim claim : claims) for (String id : claim.modIds()) {
+			byId.computeIfAbsent(JointCandidateSelector.key(id), ignored -> new ArrayList<>()).add(claim);
+			Ecosystem forced = overrideFor(id); if (forced != null) overrides.put(id, forced);
+		}
+		long contested = byId.values().stream().filter(list -> list.size() > 1).count();
+		if (contested == 0) {
+			logUniversalAliases(universalAliases);
+			return new Decision(Set.of(), Map.of(), List.copyOf(universalAliases));
+		}
+		int limit = Math.max(1, Math.min(1_000_000, Integer.getInteger("forbric.arbitrationMaxNodes", 100_000)));
+		JointCandidateSelector.Result result = JointCandidateSelector.solve(claims, rules, preference(), overrides, limit);
+		reportSelection(claims, result, overrides);
+		return decisionFromSelection(claims, universalAliases, pass, result);
+	}
+
+	private static Decision decisionFromSelection(List<Claim> claims, List<Alias> universalAliases, String pass,
+			JointCandidateSelector.Result result) {
+		Map<String, List<Claim>> byId = new java.util.TreeMap<>();
+		for (Claim claim : claims) for (String id : claim.modIds()) byId.computeIfAbsent(JointCandidateSelector.key(id), ignored -> new ArrayList<>()).add(claim);
+		long contested = byId.values().stream().filter(list -> list.size() > 1).count();
+		Set<Path> suppressed = new LinkedHashSet<>(); Map<String, Path> owners = new LinkedHashMap<>();
+		for (Claim claim : claims) if (!result.selected().contains(JointCandidateSelector.path(claim))) suppressed.add(claim.jar().toAbsolutePath());
+		List<Alias> aliases = new ArrayList<>(universalAliases);
+		for (var entry : byId.entrySet()) {
+			if (entry.getValue().size() < 2) continue;
+			Claim winner = entry.getValue().stream().filter(c -> result.selected().contains(JointCandidateSelector.path(c))).findFirst().orElse(null);
+			if (winner == null) continue;
+			Set<Ecosystem> lost = new LinkedHashSet<>();
+			for (Claim claim : entry.getValue()) {
+				for (String id : claim.modIds()) if (JointCandidateSelector.key(id).equals(entry.getKey())) owners.put(id, winner.jar().toAbsolutePath());
+				if (suppressed.contains(claim.jar().toAbsolutePath()) && claim.ecosystem() != winner.ecosystem()) lost.add(claim.ecosystem());
+			}
+			String winningId = winner.modIds().stream().filter(id -> JointCandidateSelector.key(id).equals(entry.getKey())).findFirst().orElse(entry.getKey());
+			for (Claim claim : entry.getValue()) {
+				if (!suppressed.contains(claim.jar().toAbsolutePath()) || claim.ecosystem() == winner.ecosystem()) continue;
+				for (String id : claim.modIds()) {
+					if (!JointCandidateSelector.key(id).equals(entry.getKey())) continue;
+					Alias alias = new Alias(id, claim.ecosystem(), winner.versionOf(winningId));
+					if (!aliases.contains(alias)) aliases.add(alias);
+				}
+			}
+			ForbricLog.info("[Forbric/DupeId] mod id '%s' claimed by %d jars — loading %s (%s)%s", winningId,
+					entry.getValue().size(), winner.jar().getFileName(), winner.ecosystem(), lost.isEmpty() ? "" : ", aliased into " + lost);
+		}
+		logUniversalAliases(universalAliases);
+		ForbricLog.info("[Forbric/DupeId] cross-jar arbitration (%s): %d duplicate mod id(s), %d jar(s) suppressed, %d presence alias(es)",
+				pass, contested, suppressed.size(), aliases.size());
+		return new Decision(Set.copyOf(suppressed), Map.copyOf(owners), List.copyOf(aliases));
+	}
+
+	private static void reportSelection(List<Claim> claims, JointCandidateSelector.Result result, Map<String, Ecosystem> overrides) {
+		Map<Path, Claim> byPath = new HashMap<>();
+		for (Claim claim : claims) byPath.put(JointCandidateSelector.path(claim), claim);
+		// A bounded search's selection is its best model so far, not a proof that the rest is impossible: what it
+		// leaves unmet stays visible but cannot be confirmed (the same pack must not stop on a slower machine).
+		boolean bounded = result.status() == JointCandidateSelector.Status.SEARCH_LIMIT;
+		for (var rule : result.unsatisfied()) recordRule(byPath.get(rule.consumer()), rule, !bounded);
+		// A soft closure rule only says the scan could not follow a path that may not run; it steers nothing and
+		// names no member, so it stays in the count below instead of becoming one of hundreds of player notes.
+		for (var rule : result.uncertain()) if (rule.hard() || !rule.id().startsWith("entry-closure:")) recordRule(byPath.get(rule.consumer()), rule, false);
+		// No installed combination meets these, so no choice made here caused them: reported, never a launch stop.
+		for (var rule : result.unavoidable()) recordRule(byPath.get(rule.consumer()), rule, false);
+		recordOverrides(result.refusedOverrides(), overrides, true);
+		recordOverrides(result.impossibleOverrides(), overrides, false);
+		if (result.status() != JointCandidateSelector.Status.SOLVED) {
+			boolean confirmed = result.status() == JointCandidateSelector.Status.UNSATISFIABLE;
+			// The aggregate row is the arbitration's own verdict. Filing it under the first selected jar marked
+			// whichever mod sorted first in mods/ DEGRADED and named it in the prompt; the mods actually involved
+			// already carry their own rows (recordRule / recordOverrides) and are listed here as evidence.
+			Set<String> involved = new LinkedHashSet<>();
+			for (var rule : confirmed ? result.unsatisfied() : result.uncertain()) {
+				Claim owner = byPath.get(rule.consumer());
+				if (owner != null && !owner.modIds().isEmpty()) involved.add(owner.modIds().getFirst());
+			}
+			for (String pinned : result.refusedOverrides().keySet()) {
+				involved.add(overrides.keySet().stream().filter(raw -> JointCandidateSelector.key(raw).equals(pinned)).findFirst().orElse(pinned));
+			}
+			net.forbric.api.CompatibilityFindings.record(new net.forbric.api.CompatibilityFinding(
+					"arbitration:selection", "forbric", "Mod dependency combination", "arbitration",
+					confirmed ? net.forbric.api.CompatibilityFinding.Confidence.CONFIRMED : net.forbric.api.CompatibilityFinding.Confidence.SUSPECTED,
+					confirmed, confirmed ? "No installed candidate combination satisfies all modeled required contracts and explicit overrides"
+							: result.status() == JointCandidateSelector.Status.SEARCH_LIMIT
+									? "Candidate search reached its bound; this selection has not been proved compatible"
+									: "Some required candidate contracts could not be verified; this selection remains unproved",
+					List.of("status=" + result.status(), "visited=" + result.visited(), "overrides=" + overrides, "involved=" + involved)));
+		}
+		ForbricLog.info("[Forbric/Arbitration] status=%s; nodes=%d; confirmed violations=%d; unproved contracts=%d%s",
+				result.status(), result.visited(), bounded ? 0 : result.unsatisfied().size(), result.uncertain().size(),
+				result.unavoidable().isEmpty() ? "" : "; unmeetable by any installed build=" + result.unavoidable().size());
+	}
+
+	/**
+	 * A pin that was not honoured, filed under the pinned mod. {@code conflicting}: it clashes with another pin or
+	 * with what a bundling parent requires, which the player has to resolve. Otherwise the named ecosystem has no
+	 * usable build of the mod at all; like the old per-id pick, that is a warning and the automatic choice stands.
+	 */
+	private static void recordOverrides(Map<String, Ecosystem> pins, Map<String, Ecosystem> requested, boolean conflicting) {
+		for (var pin : pins.entrySet()) {
+			String id = requested.keySet().stream().filter(raw -> JointCandidateSelector.key(raw).equals(pin.getKey())).findFirst().orElse(pin.getKey());
+			if (!conflicting) ForbricLog.warn("[Forbric/DupeId] %s asks for '%s' from %s, but no usable jar of that ecosystem claims it — "
+					+ "keeping the automatic choice", OVERRIDE_FILE + " / -D" + OWNER_OVERRIDE, id, pin.getValue());
+			net.forbric.api.CompatibilityFindings.record(new net.forbric.api.CompatibilityFinding(
+					"arbitration:override:" + id, id, "Chosen mod build", "arbitration:override",
+					conflicting ? net.forbric.api.CompatibilityFinding.Confidence.CONFIRMED : net.forbric.api.CompatibilityFinding.Confidence.SUSPECTED,
+					conflicting, conflicting ? "The requested " + pin.getValue() + " build cannot be combined with the other explicit choices or its bundling mods"
+							: "No usable " + pin.getValue() + " build of this mod is installed; the automatic choice was kept",
+					List.of("override=" + id + "=" + pin.getValue())));
+		}
+	}
+
+	private static void recordRule(Claim owner, JointCandidateSelector.Rule rule, boolean confirmed) {
+		String mod = owner == null || owner.modIds().isEmpty() ? "forbric" : owner.modIds().getFirst();
+		net.forbric.api.CompatibilityFindings.record(new net.forbric.api.CompatibilityFinding(
+				"arbitration:" + rule.id(), mod, "Mod dependency integration", "arbitration:" + rule.consumer().getFileName(),
+				confirmed ? net.forbric.api.CompatibilityFinding.Confidence.CONFIRMED : net.forbric.api.CompatibilityFinding.Confidence.SUSPECTED,
+				confirmed && rule.hard(), rule.detail(), List.of("candidate=" + rule.consumer(), "providers=" + rule.providers(), "unresolved=" + rule.uncertainProviders())));
+	}
+
+	private static void logUniversalAliases(List<Alias> universalAliases) {
+		if (universalAliases.isEmpty()) return;
+		Map<Ecosystem, List<String>> byEcosystem = new LinkedHashMap<>();
+		for (Alias alias : universalAliases) {
+			byEcosystem.computeIfAbsent(alias.ecosystem(), k -> new ArrayList<>()).add(alias.modId());
+		}
+		ForbricLog.info("[Forbric/DupeId] %d universal jar identit(ies) handed back to the side that did not load "
+				+ "them, so isModLoaded still answers: %s", universalAliases.size(), byEcosystem);
+	}
+
+	private static List<String> contestedOf(Claim claim, Map<String, Claim> winners) {
+		List<String> lost = new ArrayList<>();
+		for (String id : claim.modIds()) {
+			if (winners.get(id) != null && winners.get(id) != claim) lost.add(id);
+		}
+		return lost;
+	}
+
+	/** Per-mod override first, then the global ecosystem preference, then first-by-path. */
+	private static Claim pick(String modId, List<Claim> claimants) {
+		return pick(modId, claimants, preference());
+	}
+
+	private static Claim pick(String modId, List<Claim> claimants, List<Ecosystem> order) {
+		Ecosystem forced = overrideFor(modId);
+		if (forced != null) {
+			for (Claim claim : claimants) {
+				if (claim.ecosystem() == forced) return claim;
+			}
+			// A typo, or an ecosystem that has no claim on this id, must never unload the mod entirely.
+			ForbricLog.warn("[Forbric/DupeId] -D%s asks for '%s' from %s, but no such jar claims it — falling back "
+					+ "to the preference order", OWNER_OVERRIDE, modId, forced);
+		}
+		for (Ecosystem candidate : order) {
+			for (Claim claim : claimants) {
+				if (claim.ecosystem() == candidate) return claim;
+			}
+		}
+		// Same ecosystem twice (two versions of one jar in mods/), or an ecosystem the preference does not list:
+		// keep the first by path, matching KernelFabricLoader's "keeping the first".
+		return claimants.get(0);
+	}
+
+	/**
+	 * {@code -Dforbric.dupeIdPreference}, falling back to the shared {@code -Dforbric.multiLoaderPreference}.
+	 *
+	 * <p>These started as ONE knob, on the reasoning that "prefer Fabric on this instance" should mean one thing.
+	 * Merging the two real packs disproved it: the two arbitrations answer different questions. Per-jar asks "this
+	 * jar ships both manifests — which of ITS OWN implementations do we run?", and the right answer is the one the
+	 * pack it came from was built around. Cross-jar asks "two different FILES claim this id — which project do we
+	 * keep?". Setting the shared knob to Fabric-first to resolve the second flipped the first as well, and every
+	 * universal jar in the NeoForge pack (CreativeCore, EnhancedVisuals, AmbientSounds — all shipping a
+	 * fabric.mod.json despite {@code _NEOFORGE_} filenames) started running its Fabric path instead of the tested
+	 * NeoForge one. EnhancedVisuals' entrypoint then failed and its renderer took the client down.
+	 *
+	 * <p>So they default to the same value and can be separated when an instance needs it.
+	 */
+	static List<Ecosystem> preference() {
+		String csv = System.getProperty("forbric.dupeIdPreference");
+		if (csv == null || csv.isBlank()) return MultiLoaderArbiter.preference();
+
+		List<Ecosystem> order = new ArrayList<>();
+		for (String raw : csv.split(",")) {
+			Ecosystem parsed = Ecosystem.parse(raw);
+			if (parsed != null) {
+				order.add(parsed);
+			} else {
+				ForbricLog.warn("[Forbric/DupeId] ignoring unknown ecosystem '%s' in -Dforbric.dupeIdPreference",
+						raw.trim());
+			}
+		}
+		return order.isEmpty() ? MultiLoaderArbiter.preference() : order;
+	}
+
+	/**
+	 * {@code -Dforbric.nestedDupePreference}, defaulting to NEOFORGE, then FABRIC, then traditional FORGE.
+	 *
+	 * <p>Deliberately not the top-level order. A duplicate there is two builds of a mod the USER chose, and the
+	 * pack they built around it is the one whose glue is most likely intact. A nested jar is chosen by nobody: it
+	 * is a library its parents happened to bundle, both families' parents call it, and only one copy of a class
+	 * can exist. So the question is not "which build was this pack tested with" but "which build, when it is the
+	 * only one, leaves the fewest callers talking to a method that does nothing".
+	 *
+	 * <p>That last clause is the whole difficulty, because a multi-loader library ships one build per loader and
+	 * each build STUBS OUT the phases its own loader does not have. The stub is an empty method, not an error:
+	 * the caller registers nothing, hears nothing, and dies much later somewhere else. Both defects below are
+	 * that same shape, and between them they fix the order:
+	 *
+	 * <p><b>FORGE loses to FABRIC.</b> Xaero's {@code xaerolib} is nested by a Fabric minimap and a
+	 * MinecraftForge world map. Its Fabric bootstrap sets {@code XaeroLib.client} from {@code onInitializeClient},
+	 * which the kernel runs inside {@code Minecraft.<init>} — before any tick. Its MinecraftForge bootstrap sets
+	 * the same field from {@code FMLClientSetupEvent}. Letting MinecraftForge win left the Fabric minimap's
+	 * first-tick hook calling {@code XaeroLib.getClient()} on a null: "Cannot invoke
+	 * XaeroLibClient.getBufferProvider() because the return value of XaeroLib.getClient() is null", at
+	 * {@code CustomRenderTypes.applyFixedOrder}. Letting Fabric win produced a clean boot with BOTH mods up — the
+	 * world map is a traditional-Forge {@code @Mod} and did not mind at all.
+	 *
+	 * <p><b>FABRIC loses to NEOFORGE.</b> tr7zw's {@code transition} is nested by EntityCulling (Fabric, the
+	 * {@code -fabric-} build) and NotEnoughAnimations (NeoForge, the {@code -neoforge-} build) — same id, same
+	 * version 1.0.25, one host each, so nothing about the contest itself separates them. The two builds differ in
+	 * exactly two of their 5,800 methods, and the Fabric one is
+	 * {@code ModLoaderEventUtil.registerClientSetupListener(Runnable)}, whose entire Fabric body is {@code return}
+	 * — Fabric has no client-setup phase. NotEnoughAnimations does ALL of its initialisation from that listener.
+	 * With the Fabric copy loaded its {@code @Mod} constructor handed the runnable to an empty method, nothing
+	 * was registered, nothing was logged, {@code NEABaseMod.config} stayed null, and twenty seconds later the
+	 * first player tick threw "Cannot read field maxBlockingAngle" out of its own mixin and took the client with
+	 * it. The other direction costs {@code ModLoaderUtil.disableDisplayTest}, stubbed in the NeoForge build and
+	 * called by both hosts — a server-list version marker, cosmetic, and nothing waits on it.
+	 *
+	 * <p>So the loss is real either way and this is a default, not a law: {@code -Dforbric.modOwner=<id>=<ecosystem>}
+	 * overrides it per mod and this knob replaces the order wholesale. What the order buys is that when a nested
+	 * library is contested, the family that loses is the one whose callers lose the least.
+	 */
+	static List<Ecosystem> nestedPreference() {
+		String csv = System.getProperty("forbric.nestedDupePreference");
+		if (csv == null || csv.isBlank()) return NESTED_DEFAULT;
+
+		List<Ecosystem> order = new ArrayList<>();
+		for (String raw : csv.split(",")) {
+			Ecosystem parsed = Ecosystem.parse(raw);
+			if (parsed != null) {
+				order.add(parsed);
+			} else {
+				ForbricLog.warn("[Forbric/DupeId] ignoring unknown ecosystem '%s' in -Dforbric.nestedDupePreference",
+						raw.trim());
+			}
+		}
+		return order.isEmpty() ? NESTED_DEFAULT : order;
+	}
+
+	/** See {@link #nestedPreference()} — both halves of this order are a measured defect, one each way. */
+	private static final List<Ecosystem> NESTED_DEFAULT =
