@@ -298,3 +298,17 @@ class KernelModLoaderWithdrawalTest {
 		assertEquals(2, calls(construct, "recordNeoOutcome"), "the other-side branch and the catch both record");
 		assertEquals(1, calls(construct, "settleNeo"));
 		assertEquals(1, calls(construct, "markPartlyConstructed"));
+		assertEquals(1, calls(construct, "constructorThrew"), "the withdrawn row names the class that threw");
+	}
+
+	private static int calls(MethodNode method, String name) {
+		int n = 0;
+		for (AbstractInsnNode insn : method.instructions) {
+			if (insn.getOpcode() == Opcodes.INVOKESTATIC && insn instanceof MethodInsnNode call
+					&& call.owner.equals("net/forbric/kernel/boot/KernelModLoader") && call.name.equals(name)) {
+				n++;
+			}
+		}
+		return n;
+	}
+}
