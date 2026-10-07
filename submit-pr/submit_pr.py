@@ -13,6 +13,9 @@ submit_pr.py — 自动向 any-pr 上游仓库提交 PR（保证每个 PR 都能
     # 只预演，不真正提交
     python submit-pr/submit_pr.py some_dir --dest music-api --dry-run
 
+    # 删除仓库内文件（超大文本自动渐进截断后删除）
+    python submit-pr/submit_pr.py --delete some/path.txt
+
 工作原理（详见 rules.py / gitops.py）:
     上游 any-pr/any-pr 的 .github/workflows/auto-merge.yml 会在 PR 打开时自动
     检查并合并满足规则的 PR。本脚本在本地完整复刻其全部规则（rules.py），把
@@ -39,12 +42,12 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from files import build_chunk_chain, collect_sources, file_exists_on_base
-from gitops import (gh, latest_main_sha, probe_changes, run as git_run,
-                    run_retry, submit_batch)
+from files import (base_content, build_delete_chain, build_step_text,
+                   collect_sources, plan_file_ops)
+from gitops import (gh, latest_main_sha, run as git_run, run_retry,
+                    submit_batch)
 from rules import MAX_CHANGED_FILES, MAX_CHANGED_LINES, MAX_FILE_LINES
-from rules import EXCLUDED_RE, counted_lines, gate_path_problems, is_binary
-from rules import make_batches
+from rules import counted_lines, gate_path_problems, is_binary, make_batches
 
 
 def main() -> None:
@@ -53,7 +56,10 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    ap.add_argument("sources", nargs="+", help="要提交的源文件或目录（可多个）")
+    ap.add_argument("sources", nargs="*", help="要提交的源文件或目录（可多个）")
+    ap.add_argument("--delete", nargs="+", metavar="REPO_PATH", default=None,
+                    help="删除仓库内文件（相对仓库根的路径，可多个；"
+                         "超大文本自动渐进截断后删除，与提交模式二选一）")
     ap.add_argument("--dest", default=".", help="仓库内目标目录（默认仓库根）")
     ap.add_argument("--repo", default=None, help="上游仓库（默认自动探测 fork 的父仓库）")
     ap.add_argument("--fork", default=None, help="分支所在的 fork（默认当前仓库）")
@@ -95,9 +101,11 @@ def main() -> None:
     target = args.repo or parent or fork
     print(f"上游仓库: {target}   分支推送目标: {fork}")
 
-    files = collect_sources(args.sources)
-    if not files:
-        sys.exit("错误: 没有找到任何要提交的文件。")
+    if args.delete and args.sources:
+        sys.exit("错误: --delete 模式下不要同时传源文件/目录。")
+    files = collect_sources(args.sources or [])
+    if not files and not args.delete:
+        sys.exit("错误: 请提供要提交的源文件/目录，或用 --delete 指定要删除的仓库内文件。")
 
     base = latest_main_sha(target, repo_root)
     print(f"基于上游 main: {base[:10]}")
@@ -115,30 +123,29 @@ def main() -> None:
         else:
             accepted.append(f)
 
-    # 第二步: 用临时 worktree 拿到与机器人一致的每个文件变更行数
+    # 第二步: 分类与链规划（普通文件留 accepted，超限文件进 chains）
     ts = time.strftime("%Y%m%d-%H%M%S")
     tmp_dir = Path(repo_root) / ".git" / "submit-pr-tmp" / ts
-    chains: dict[str, list[dict]] = {}
+    chains: dict[str, dict] = {}
     cap = min(max_file_lines, max_lines)
-    if accepted:
-        ns = probe_changes(repo_root, base, dest, accepted)
-        for f in accepted:
-            f["adds"], f["dels"] = ns.get(f["path"], (0, 0))
-            diff = f["adds"] + f["dels"]
-            if EXCLUDED_RE.search(f["path"]):
-                continue  # 豁免文件不计行数，无需上限检查
-            if diff > max_file_lines:
-                if file_exists_on_base(base, f["path"], repo_root):
-                    skipped.append((f["path"],
-                                    f"已存在文件的变更 {diff} 行 > 上限 "
-                                    f"{max_file_lines}，暂不支持拆分修改，请手动处理"))
-                else:  # 新建超大文件 → 渐进分块创建
-                    chains[f["path"]] = build_chunk_chain(f, cap, str(tmp_dir))
-            elif diff == 0:
-                skipped.append((f["path"], "与上游 main 内容完全相同，无需提交"))
-        accepted = [f for f in accepted
-                    if f["path"] not in chains
-                    and not any(p == f["path"] for p, _ in skipped)]
+    if args.delete:
+        for p in args.delete:
+            p = p.replace("\\", "/").strip("/")
+            probs = gate_path_problems(p)
+            if probs:
+                skipped.append((p, "；".join(probs)))
+                continue
+            old = base_content(base, p, repo_root)
+            if old is None:
+                skipped.append((p, "上游 main 上不存在，无需删除"))
+                continue
+            chains[p] = {"kind": "delete", "steps": build_delete_chain(
+                {"src": None, "rel": p, "path": p},  # rel 必须是仓库根相对路径
+                old, cap, str(tmp_dir))}
+    else:
+        accepted, sk, chains = plan_file_ops(
+            accepted, base, dest, repo_root, cap, max_file_lines, str(tmp_dir))
+        skipped += sk
 
     for path, why in skipped:
         print(f"  [跳过] {path} — {why}")
@@ -156,9 +163,11 @@ def main() -> None:
         lines = sum(counted_lines(it) for it in b)
         names = ", ".join(it["path"] for it in b)
         print(f"  PR {i}/{len(batches)}: {len(b)} 个文件, {lines} 行 — {names}")
+    kind_name = {"create": "分块链", "modify": "改写链", "delete": "删除链"}
     for path, ch in chains.items():
-        print(f"  分块链 {path}: 共 {sum(c['adds'] for c in ch)} 行 → "
-              f"{len(ch)} 个渐进 PR（同链串行合并，链间并发）")
+        total = sum(s["adds"] + s["dels"] for s in ch["steps"])
+        print(f"  {kind_name[ch['kind']]} {path}: 共 {total} 行变更 → "
+              f"{len(ch['steps'])} 个渐进 PR（同链串行合并，链间并发）")
     if args.dry_run:
         print("\n[dry-run] 未真正提交。")
         return
@@ -192,20 +201,15 @@ def main() -> None:
                       [(f"{args.branch_prefix}-{ts}-{i}", title, body, b)], b))
     for path, ch in chains.items():
         j = len(units) + 1  # 链内步骤的分支名带单元序号，保证全局唯一
-        n, total_lines = len(ch), sum(c["adds"] for c in ch)
-        steps = []
-        for k, c in enumerate(ch, 1):
-            done = sum(x["adds"] for x in ch[:k])
-            title = (f"{args.title} ({Path(path).name} chunk {k}/{n})"
-                     if args.title else f"{dest_label}: add {c['rel']} (chunk {k}/{n})")
-            body = args.body or (
-                f"## Summary\n\nProgressively creates `{path}` ({total_lines} "
-                f"lines) in {n} chunks (≤{cap} lines each) to satisfy the "
-                f"per-file limit of the auto-merge regulations. Chunk {k}/{n}: "
-                f"the file now holds its first {done} lines.\n\n"
-                "Pre-validated locally by `submit-pr/submit_pr.py`.\n")
+        n = len(ch["steps"])
+        steps, done = [], 0
+        for k, c in enumerate(ch["steps"], 1):
+            title, body = build_step_text(ch["kind"], c, k, n, cap,
+                                          dest_label, args.title, args.body, done)
+            done += c["adds"]
             steps.append((f"{args.branch_prefix}-{ts}-{j}x{k}", title, body, [c]))
-        units.append((f"分块链 {path}（{n} 块）", steps, [ch[-1]]))
+        units.append((f"{kind_name[ch['kind']]} {path}（{n} 块）", steps,
+                      [ch["steps"][-1]]))
 
     workers = max(1, min(args.workers or len(units), len(units), 10))
     print(f"\n并发提交 {len(units)} 个任务（{workers} 路并行）…")
@@ -259,9 +263,14 @@ def main() -> None:
     # 验证最终状态: 普通批验证全部条目，分块链只看末块（src=原文件）
     submitted = [it for j, (_, _, items) in enumerate(units, 1)
                  if j not in errors for it in items]
-    missing = [it["path"] for it in submitted if it["path"] not in sha_by_path]
+    missing = [it["path"] for it in submitted
+               if not it.get("delete") and it["path"] not in sha_by_path]
     changed = []
     for it in submitted:
+        if it.get("delete"):  # 删除链: 验证文件确实不在 main 上
+            if it["path"] in sha_by_path:
+                changed.append(f"{it['path']}（应已删除却仍存在）")
+            continue
         if it["path"] in sha_by_path:  # 比对内容而非仅路径——修改型提交必须查
             local = git_run(["git", "hash-object", it["src"]],
                             cwd=repo_root).strip()

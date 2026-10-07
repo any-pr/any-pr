@@ -84,6 +84,10 @@ def drop_worktree(repo_root: str, wt: str) -> None:
 
 def copy_into(wt: str, dest: str, batch: list[dict]) -> None:
     for item in batch:
+        if item.get("delete"):  # 删除步骤: 移除工作树文件,后续 git add 会暂存删除
+            p = Path(wt) / dest / item["rel"] if dest else Path(wt) / item["rel"]
+            p.unlink(missing_ok=True)
+            continue
         t = Path(wt) / dest / item["rel"] if dest else Path(wt) / item["rel"]
         t.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(item["src"], t)
