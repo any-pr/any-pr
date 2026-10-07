@@ -298,3 +298,238 @@ public final class ForbricRegistryBridge {
 					continue;
 				}
 
+				Object liveRegistry = getRegistry.invoke(registryOfRegistries, registryName);
+				Method registryKey = liveRegistry.getClass().getMethod("key");
+				Method getHolder = findMethod(liveRegistry.getClass(), "get", resourceKeyCls);
+				registryKey.setAccessible(true);
+				if (getHolder == null) {
+					broken.add(String.valueOf(registryName) + " (missing holder lookup)");
+					continue;
+				}
+				getHolder.setAccessible(true);
+				Object rootKey = registryKey.invoke(liveRegistry);
+				for (Object value : idMap.values()) {
+					Object elementKey = createResourceKey.invoke(null, rootKey, value);
+					Object holder = getHolder.invoke(liveRegistry, elementKey);
+					if (holder instanceof Optional<?> optional && optional.isPresent()) continue;
+					broken.add(String.valueOf(registryName) + " -> " + value);
+					if (broken.size() >= 16) break;
+				}
+				if (broken.size() >= 16) break;
+			}
+
+			if (!broken.isEmpty()) {
+				ForbricLog.error("[Forbric/RegistryBridge] NeoForge frozen snapshot is inconsistent with the live registries; "
+						+ "the frozen snapshot restore would later crash. Sample broken entries: " + broken);
+			}
+			return broken.size();
+		} catch (ClassNotFoundException | LinkageError ignored) {
+			return 0;
+		} catch (Throwable t) {
+			ForbricLog.warn("[Forbric/RegistryBridge] could not validate NeoForge frozen registry snapshot", unwrap(t));
+			return 0;
+		}
+	}
+
+	/**
+	 * Removes frozen-snapshot id entries that NeoForge would otherwise feed into
+	 * {@code BaseMappedRegistry.registerIdMapping} with a null live holder during disconnect. Missing entries are
+	 * still left for NeoForge's own missing-entry reporting path; only holder-inconsistent mappings are pruned.
+	 */
+	public static int pruneNeoFrozenSnapshotHolderGaps(ClassLoader cl) {
+		if (!isMergedForgeNeoBase(cl)) return 0;
+		try {
+			Class<?> registryManager = Class.forName("net.neoforged.neoforge.registries.RegistryManager", false, cl);
+			Field frozenSnapshotField = findField(registryManager, "frozenSnapshot");
+			if (frozenSnapshotField == null) return 0;
+			frozenSnapshotField.setAccessible(true);
+			Object frozenSnapshot = frozenSnapshotField.get(null);
+			if (!(frozenSnapshot instanceof Map<?, ?> snapshots) || snapshots.isEmpty()) return 0;
+
+			Class<?> identifierCls = Class.forName("net.minecraft.resources.Identifier", false, cl);
+			Class<?> resourceKeyCls = Class.forName("net.minecraft.resources.ResourceKey", false, cl);
+			Class<?> builtinsCls = Class.forName("net.minecraft.core.registries.BuiltInRegistries", false, cl);
+			Object registryOfRegistries = builtinsCls.getField("REGISTRY").get(null);
+			Method containsRegistry = findMethod(registryOfRegistries.getClass(), "containsKey", identifierCls);
+			Method getRegistry = findMethod(registryOfRegistries.getClass(), "getValue", identifierCls);
+			Method createResourceKey = resourceKeyCls.getMethod("create", resourceKeyCls, identifierCls);
+			if (containsRegistry == null || getRegistry == null) return 0;
+			containsRegistry.setAccessible(true);
+			getRegistry.setAccessible(true);
+			createResourceKey.setAccessible(true);
+
+			Class<?> snapshotCls = Class.forName("net.neoforged.neoforge.registries.RegistrySnapshot", false, cl);
+			Field idsField = findField(snapshotCls, "ids");
+			Field binaryField = findField(snapshotCls, "binary");
+			if (idsField == null) return 0;
+			idsField.setAccessible(true);
+			if (binaryField != null) binaryField.setAccessible(true);
+
+			int pruned = 0;
+			List<String> sample = new ArrayList<>();
+			for (Map.Entry<?, ?> snapshotEntry : snapshots.entrySet()) {
+				Object registryName = snapshotEntry.getKey();
+				if (!Boolean.TRUE.equals(containsRegistry.invoke(registryOfRegistries, registryName))) continue;
+				Object liveRegistry = getRegistry.invoke(registryOfRegistries, registryName);
+				Method registryKey = liveRegistry.getClass().getMethod("key");
+				Method containsKey = findMethod(liveRegistry.getClass(), "containsKey", resourceKeyCls);
+				Method getHolder = findMethod(liveRegistry.getClass(), "get", resourceKeyCls);
+				Field vanillaByKey = findField(liveRegistry.getClass(), "byKey");
+				if (containsKey == null || (getHolder == null && vanillaByKey == null)) continue;
+				registryKey.setAccessible(true);
+				containsKey.setAccessible(true);
+				if (getHolder != null) getHolder.setAccessible(true);
+				if (vanillaByKey != null) vanillaByKey.setAccessible(true);
+				Object rootKey = registryKey.invoke(liveRegistry);
+
+				Object idsObj = idsField.get(snapshotEntry.getValue());
+				if (!(idsObj instanceof Map<?, ?> ids) || ids.isEmpty()) continue;
+				Map<Object, Object> copy = new HashMap<>();
+				for (Map.Entry<?, ?> idEntry : ids.entrySet()) {
+					copy.put(idEntry.getKey(), idEntry.getValue());
+				}
+
+				int removedFromRegistry = 0;
+				for (Map.Entry<Object, Object> idEntry : copy.entrySet()) {
+					Object elementKey = createResourceKey.invoke(null, rootKey, idEntry.getValue());
+					if (!Boolean.TRUE.equals(containsKey.invoke(liveRegistry, elementKey))) continue;
+					if (hasRegisterIdMappingHolder(liveRegistry, elementKey, getHolder, vanillaByKey)) continue;
+
+					@SuppressWarnings("unchecked")
+					Map<Object, Object> mutableIds = (Map<Object, Object>) idsObj;
+					mutableIds.remove(idEntry.getKey());
+					pruned++;
+					removedFromRegistry++;
+					if (sample.size() < 16) sample.add(String.valueOf(registryName) + " -> " + idEntry.getValue());
+				}
+				if (removedFromRegistry > 0 && binaryField != null) {
+					binaryField.set(snapshotEntry.getValue(), null);
+				}
+			}
+
+			if (pruned > 0) {
+				ForbricLog.warn("[Forbric/RegistryBridge] pruned " + pruned
+						+ " holder-inconsistent NeoForge frozen snapshot mapping(s) before frozen snapshot restore; sample: "
+						+ sample);
+			}
+			return pruned;
+		} catch (ClassNotFoundException | LinkageError ignored) {
+			return 0;
+		} catch (Throwable t) {
+			ForbricLog.warn("[Forbric/RegistryBridge] could not sanitize NeoForge frozen registry snapshot", unwrap(t));
+			return 0;
+		}
+	}
+
+	private record BlockStateIdCounts(int total, int mapped, int missing) {
+	}
+
+	private record BlockStateIdView(Object idMap, Method getId, Method add, Object blockRegistry,
+			Method getStateDefinition, Method getPossibleStates) {
+	}
+
+	private static BlockStateIdView reflectBlockStateIdView(ClassLoader cl) throws ReflectiveOperationException {
+		Class<?> gameData = Class.forName("net.neoforged.neoforge.registries.GameData", false, cl);
+		Object idMap = gameData.getMethod("getBlockStateIDMap").invoke(null);
+		Class<?> idMapperClass = Class.forName("net.minecraft.core.IdMapper", false, cl);
+		Method getId = idMapperClass.getMethod("getId", Object.class);
+		Method add = idMapperClass.getMethod("add", Object.class);
+
+		Class<?> builtin = Class.forName("net.minecraft.core.registries.BuiltInRegistries", false, cl);
+		Object blockRegistry = builtin.getField("BLOCK").get(null);
+		Method getStateDefinition = Class.forName("net.minecraft.world.level.block.Block", false, cl)
+				.getMethod("getStateDefinition");
+		Method getPossibleStates = Class.forName("net.minecraft.world.level.block.state.StateDefinition", false, cl)
+				.getMethod("getPossibleStates");
+		return new BlockStateIdView(idMap, getId, add, blockRegistry, getStateDefinition, getPossibleStates);
+	}
+
+	private static BlockStateIdCounts countBlockStateIds(Object blockRegistry, Object idMap, Method getId,
+			Method getStateDefinition, Method getPossibleStates) throws ReflectiveOperationException {
+		int total = 0;
+		int mapped = 0;
+		int missing = 0;
+		for (Object block : iterable(blockRegistry)) {
+			Object stateDefinition = getStateDefinition.invoke(block);
+			Object states = getPossibleStates.invoke(stateDefinition);
+			for (Object state : iterable(states)) {
+				total++;
+				int id = (Integer) getId.invoke(idMap, state);
+				if (id == -1) {
+					missing++;
+				} else {
+					mapped++;
+				}
+			}
+		}
+		return new BlockStateIdCounts(total, mapped, missing);
+	}
+
+	private static boolean hasRegisterIdMappingHolder(Object registry, Object elementKey, Method getHolder,
+			Field vanillaByKey) throws ReflectiveOperationException {
+		if (vanillaByKey != null) {
+			Object byKeyObj = vanillaByKey.get(registry);
+			if (byKeyObj instanceof Map<?, ?> byKey) {
+				return byKey.get(elementKey) != null;
+			}
+		}
+		if (getHolder == null) return false;
+		Object holder = getHolder.invoke(registry, elementKey);
+		return holder instanceof Optional<?> optional && optional.isPresent();
+	}
+
+	private static Iterable<?> iterable(Object value) {
+		if (value instanceof Iterable<?> iterable) return iterable;
+		throw new IllegalArgumentException("Expected Iterable, got " + (value == null ? "null" : value.getClass()));
+	}
+
+	private static void refreezeWrapper(Object reg, Method unfreeze, Method freezeMethod, Field frozenTagsField,
+			Method isBound) throws Throwable {
+		unfreeze.invoke(reg);
+		freezeMethod.invoke(reg);
+		if (!isTagSetBound(isBound, frozenTagsField.get(reg))) {
+			throw new IllegalStateException("NamespacedWrapper.freeze() returned with unbound tags");
+		}
+	}
+
+	private static boolean isTagSetBound(Method isBound, Object tagSet) throws ReflectiveOperationException {
+		return tagSet != null && Boolean.TRUE.equals(isBound.invoke(tagSet));
+	}
+
+	private static String registryName(Field field, Object reg) {
+		try {
+			return String.valueOf(reg.getClass().getMethod("key").invoke(reg));
+		} catch (Throwable ignored) {
+			return field.getName();
+		}
+	}
+
+	private static Throwable unwrap(Throwable t) {
+		while (t instanceof InvocationTargetException invocation && invocation.getCause() != null) {
+			t = invocation.getCause();
+		}
+		return t;
+	}
+
+	private static Field findField(Class<?> c, String name) {
+		for (; c != null; c = c.getSuperclass()) {
+			try {
+				return c.getDeclaredField(name);
+			} catch (NoSuchFieldException ignore) {
+				// try superclass
+			}
+		}
+		return null;
+	}
+
+	private static Method findMethod(Class<?> c, String name, Class<?>... parameterTypes) {
+		for (; c != null; c = c.getSuperclass()) {
+			try {
+				return c.getDeclaredMethod(name, parameterTypes);
+			} catch (NoSuchMethodException ignore) {
+				// try superclass
+			}
+		}
+		return null;
+	}
+}
