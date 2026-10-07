@@ -1,0 +1,32 @@
+package com.zurrtum.create.client.mixin;
+
+import fixture.createkeyboard.Trail;
+import net.minecraft.client.KeyboardHandler;
+import net.minecraft.client.input.KeyEvent;
+import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Unique;
+import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+
+/**
+ * Shaped like Create Fly's KeyboardHandlerMixin, written against vanilla's keyPress: the release reaches the mod at
+ * vanilla's sixth return, the press and the repeat at the method's TAIL, both through one helper told which it was.
+ */
+@Mixin(KeyboardHandler.class)
+public class KeyboardHandlerMixin {
+	@Inject(method = "keyPress(JILnet/minecraft/client/input/KeyEvent;)V", at = @At(value = "RETURN", ordinal = 5))
+	private void onKeyReleased(long handle, int action, KeyEvent event, CallbackInfo ci) {
+		onKey(event, false);
+	}
+
+	@Inject(method = "keyPress(JILnet/minecraft/client/input/KeyEvent;)V", at = @At("TAIL"))
+	private void onKey(long handle, int action, KeyEvent event, CallbackInfo ci) {
+		onKey(event, true);
+	}
+
+	@Unique
+	private void onKey(KeyEvent input, boolean pressed) {
+		Trail.add("create " + (pressed ? "press " : "release ") + input.key());
+	}
+}
