@@ -298,3 +298,303 @@ public final class ForbricBootstrap {
 				// invalidated, and (2) a Forge/NeoForge mod built for a DIFFERENT MC version (e.g. a 1.21.11 build
 				// on the 26.2 base) whose @Shadow/@Inject targets a member that no longer exists. Both degrade the
 				// same way. Two coordinated defenses, computed from the guest configs ACTUALLY present — NOT gated
+				// on an umbrella "fabric-api" id, which the individually resolved / JiJ-nested Fabric API modules
+				// (fabric-lifecycle-events-v1, …) do not carry:
+				//   - forbric.relaxMixinOverwrites (substrate patch 0008 + the ForbricMixinErrorHandler registered
+				//     in patch 0007): patch 0008 rewrites a matched config's defaultRequire -> 0 (and
+				//     requireAnnotations -> false) so a DEFAULT-group injector whose anchor moved soft-skips; the
+				//     error handler additionally WARN-skips a single mixin that hard-fails to apply (e.g. an
+				//     @Shadow field the version-mismatched target lacks) while the rest of that config still applies.
+				//   - forbric.downgradeInjectionErrors (ForbricMixinDowngrade, via substrate patch 0004): the
+				//     backstop for EXPLICIT-require injectors that patch 0008 cannot relax — the target class is
+				//     loaded WITHOUT that config's mixins instead of crashing.
+				// Scoped to GUEST configs of ANY ecosystem: only the forge/neoforge runtime, forbric*, and minecraft
+				// are excluded, so a real failure in the loader/runtime itself still crashes loudly.
+				java.util.LinkedHashSet<String> guestConfigs = new java.util.LinkedHashSet<>();
+				// Fabric API is usually one top-level jar with many JiJ module jars; Knot registers those nested
+				// module mixin configs by name, but unified discovery only sees the umbrella source jar here.
+				// Match the Fabric API config namespace generically instead of naming individual modules.
+				guestConfigs.add("fabric-*");
+				for (DiscoveredMod mod : all) {
+					// Any guest mod, ANY ecosystem — a version-mismatched Forge/NeoForge mod (xaerominimap et al.)
+					// hits the same unpatchable-anchor failure as a Fabric guest. Exclude only infrastructure so a
+					// genuine failure in the loader/runtime still crashes loudly.
+					String id = mod.getId();
+					if (id.startsWith("forbric") || "neoforge".equals(id) || "minecraft".equals(id)) continue;
+					if (versionSuppressedModIds.contains(id)) continue; // whole-config suppressed above; don't also relax it
+					guestConfigs.addAll(mod.getMixinConfigs()); // exact config names of each discovered guest mod (any ecosystem)
+				}
+				java.util.LinkedHashSet<String> ownedMixins =
+						forgeOwnedPipelineGuestMixins(all, versionSuppressedModIds);
+				if (!ownedMixins.isEmpty()) {
+					String csv = String.join(",", ownedMixins);
+					String suppressMixinExisting = System.getProperty("forbric.suppressMixins", "");
+					System.setProperty("forbric.suppressMixins",
+							suppressMixinExisting.isEmpty() ? csv : suppressMixinExisting + "," + csv);
+					ForbricLog.warn("[Forbric] NeoForge base detected - suppressing guest mixins that target "
+							+ "Forge/NeoForge-owned renderer/model/registry-sync pipeline entries: " + csv);
+				}
+				if (!guestConfigs.isEmpty()) {
+					String guestCsv = String.join(",", guestConfigs);
+					String relaxExisting = System.getProperty("forbric.relaxMixinOverwrites", "");
+					System.setProperty("forbric.relaxMixinOverwrites",
+							relaxExisting.isEmpty() ? guestCsv : relaxExisting + "," + guestCsv);
+					String downgradeExisting = System.getProperty("forbric.downgradeInjectionErrors", "");
+					System.setProperty("forbric.downgradeInjectionErrors",
+							downgradeExisting.isEmpty() ? guestCsv : downgradeExisting + "," + guestCsv);
+					ForbricLog.warn("[Forbric] NeoForge base detected - discovered guest mixin configs will soft-skip "
+							+ "failing injectors/mixins instead of crashing (relax + downgrade set: " + guestCsv + ")");
+				}
+			}
+
+			ForbricLog.info("[Forbric] unified discovery in %s: %d mod(s) — %d Fabric, %d Forge%n",
+					mods, all.size(), fabric, forge.size());
+			for (DiscoveredMod mod : all) {
+				ForbricLog.info("[Forbric]   - %-6s %s @ %s%n", mod.getEcosystem(), mod.getId(), mod.getVersion());
+			}
+
+			// Canonical runtime namespace: intermediary (1.21.x) by default, or "named" (Mojmap) for the
+			// Mojmap-canonical path (MC 26.2+, where the game itself is Mojmap-named and no remap is needed).
+			String runtimeNamespace = System.getProperty("forbric.runtimeNamespace", ForbricMappings.INTERMEDIARY);
+			TransformChain chain = new TransformChain();
+			chain.register(TransformPhase.RAW_PATCH, new ForbricMergedBaseCompatTransformer(), -1000);
+			ForbricTransformBridge.install(chain, new TransformContext(envType, false, runtimeNamespace));
+
+			if (!forge.isEmpty()) {
+					// Mod ids present this boot (both raw and sanitized forms), so a Forge mod's mandatory dependency
+					// on a mod that IS installed resolves, while a dependency with no provider is softened rather than
+					// aborting the whole launch (see ForgeModRemapper.wrapAsFabricMod).
+					java.util.Set<String> presentIds = new java.util.HashSet<>();
+					for (DiscoveredMod pm : all) {
+						if (pm.getId() == null) continue;
+						// Wrong-family entries were skipped above and will NOT load — they are not providers.
+						if (pm.getEcosystem().isForgeFamily() && !forge.contains(pm)) continue;
+						String lc = pm.getId().toLowerCase();
+						presentIds.add(lc);
+						presentIds.add(lc.replaceAll("[^a-z0-9_]", "_"));
+					}
+					setupForgeSupport(forge, gameDir, chain, envType, presentIds, family);
+			}
+		} catch (IOException e) {
+			ForbricLog.error("[Forbric] unified discovery failed", e);
+		}
+	}
+
+	/**
+	 * Forbric: {@code true} iff {@code mod} DECLARES a {@code minecraft} dependency whose version constraint the
+	 * running MC version does not satisfy — i.e. the mod itself states it targets a different Minecraft. Used to
+	 * suppress a version-incompatible guest's mixin configs whole (a per-mixin skip would poison co-located
+	 * load-bearing mixins on shared targets). Fail-open: returns {@code false} on a missing constraint or any
+	 * parse trouble, so a compatible mod is never suppressed by mistake.
+	 */
+	private static boolean declaresMcIncompatibility(DiscoveredMod mod, String runningMc) {
+		for (UnifiedDependency dep : mod.getDependencies()) {
+			if (!"minecraft".equals(dep.getModId())) continue;
+			String constraint = dep.getVersionConstraint();
+			if (constraint == null || constraint.isEmpty() || "*".equals(constraint)) return false;
+			try {
+				return !VersionPredicate.parse(constraint).test(Version.parse(runningMc));
+			} catch (Exception e) {
+				return false; // unparseable constraint or MC version — keep the mod (never a false positive)
+			}
+		}
+		return false; // no declared minecraft constraint — nothing to judge
+	}
+
+	/**
+	 * Finds guest mixins that target vanilla classes whose runtime shape or lifecycle is owned by the Forge/NeoForge
+	 * base. These mixins can apply cleanly yet still break later by feeding Fabric-typed state into NeoForge-typed
+	 * constructors, model registries or registry/tag sync tasks, so they must be removed before Mixin registers them.
+	 */
+	private static LinkedHashSet<String> forgeOwnedPipelineGuestMixins(List<DiscoveredMod> all,
+			java.util.Set<String> versionSuppressedModIds) {
+		LinkedHashMap<String, LinkedHashSet<String>> configsBySource = new LinkedHashMap<>();
+		for (DiscoveredMod mod : all) {
+			String id = mod.getId();
+			if (id == null || id.startsWith("forbric") || "neoforge".equals(id)
+					|| "minecraft".equals(id)) {
+				continue;
+			}
+			if (versionSuppressedModIds.contains(id)) continue;
+			String source = mod.getSource();
+			if (source == null || source.isEmpty()) continue;
+			configsBySource.computeIfAbsent(source, ignored -> new LinkedHashSet<>()).addAll(mod.getMixinConfigs());
+		}
+
+		LinkedHashSet<String> suppressions = new LinkedHashSet<>();
+		for (Map.Entry<String, LinkedHashSet<String>> entry : configsBySource.entrySet()) {
+			try {
+				scanGuestMixinSource(Paths.get(entry.getKey()), entry.getValue(), suppressions);
+			} catch (IOException | RuntimeException e) {
+				ForbricLog.warn("[Forbric] could not scan guest mixin targets in " + sourceFileName(entry.getKey()), e);
+			}
+		}
+		return suppressions;
+	}
+
+	private static void scanGuestMixinSource(Path source, java.util.Set<String> rootConfigs,
+			LinkedHashSet<String> suppressions) throws IOException {
+		if (!Files.isRegularFile(source)) return;
+		try (ZipFile zip = new ZipFile(source.toFile())) {
+			Map<String, byte[]> entries = relevantZipEntries(zip);
+			collectForgeOwnedMixinSuppressions(entries, rootConfigs, suppressions);
+			collectNestedForgeOwnedMixinSuppressions(entries, suppressions, 0);
+		}
+	}
+
+	private static Map<String, byte[]> relevantZipEntries(ZipFile zip) throws IOException {
+		LinkedHashMap<String, byte[]> entries = new LinkedHashMap<>();
+		java.util.Enumeration<? extends ZipEntry> it = zip.entries();
+		while (it.hasMoreElements()) {
+			ZipEntry entry = it.nextElement();
+			if (entry.isDirectory()) continue;
+			String name = entry.getName();
+			if (!isRelevantMixinScanEntry(name)) continue;
+			try (java.io.InputStream in = zip.getInputStream(entry)) {
+				entries.put(name, in.readAllBytes());
+			}
+		}
+		return entries;
+	}
+
+	private static Map<String, byte[]> relevantZipEntries(byte[] jarBytes) throws IOException {
+		LinkedHashMap<String, byte[]> entries = new LinkedHashMap<>();
+		try (ZipInputStream in = new ZipInputStream(new ByteArrayInputStream(jarBytes))) {
+			ZipEntry entry;
+			while ((entry = in.getNextEntry()) != null) {
+				if (entry.isDirectory()) continue;
+				String name = entry.getName();
+				if (!isRelevantMixinScanEntry(name)) continue;
+				entries.put(name, in.readAllBytes());
+			}
+		}
+		return entries;
+	}
+
+	private static boolean isRelevantMixinScanEntry(String name) {
+		return isMixinConfigEntryName(name)
+				|| name.endsWith(".class")
+				|| name.equals("fabric.mod.json")
+				|| name.equals("META-INF/MANIFEST.MF")
+				|| isNestedFabricLoaderJar(name);
+	}
+
+	private static boolean isMixinConfigEntryName(String name) {
+		int slash = name.lastIndexOf('/');
+		String file = slash >= 0 ? name.substring(slash + 1) : name;
+		return file.endsWith(".mixins.json")
+				|| file.endsWith(".mixin.json")
+				|| (file.startsWith("mixins.") && file.endsWith(".json"));
+	}
+
+	private static boolean isNestedFabricLoaderJar(String name) {
+		return name.endsWith(".jar") && (name.startsWith("META-INF/jars/") || name.startsWith("META-INF/jij/"));
+	}
+
+	private static void collectNestedForgeOwnedMixinSuppressions(Map<String, byte[]> entries,
+			LinkedHashSet<String> suppressions, int depth) throws IOException {
+		if (depth >= 2) return;
+		for (Map.Entry<String, byte[]> entry : entries.entrySet()) {
+			if (!isNestedFabricLoaderJar(entry.getKey())) continue;
+			Map<String, byte[]> nested = relevantZipEntries(entry.getValue());
+			java.util.Set<String> configs = nestedMixinConfigs(nested);
+			collectForgeOwnedMixinSuppressions(nested, configs, suppressions);
+			collectNestedForgeOwnedMixinSuppressions(nested, suppressions, depth + 1);
+		}
+	}
+
+	private static java.util.Set<String> nestedMixinConfigs(Map<String, byte[]> entries) {
+		LinkedHashSet<String> configs = new LinkedHashSet<>();
+		byte[] fabric = entries.get("fabric.mod.json");
+		if (fabric != null) {
+			try (Reader reader = new InputStreamReader(new ByteArrayInputStream(fabric), StandardCharsets.UTF_8)) {
+				UnmodifiableConfig json = JsonFormat.fancyInstance().createParser().parse(reader);
+				Object value = json.get(Collections.singletonList("mixins"));
+				if (value instanceof List<?>) {
+					for (Object element : (List<?>) value) {
+						if (element instanceof String) {
+							configs.add((String) element);
+						} else if (element instanceof UnmodifiableConfig) {
+							Object config = ((UnmodifiableConfig) element).get(Collections.singletonList("config"));
+							if (config != null) configs.add(config.toString());
+						} else if (element instanceof Map<?, ?>) {
+							Object config = ((Map<?, ?>) element).get("config");
+							if (config != null) configs.add(config.toString());
+						}
+					}
+				}
+			} catch (RuntimeException | IOException ignored) {
+				// Fall through to manifest and best-effort config scanning.
+			}
+		}
+
+		byte[] manifest = entries.get("META-INF/MANIFEST.MF");
+		if (manifest != null) {
+			try {
+				java.util.jar.Manifest mf = new java.util.jar.Manifest(new ByteArrayInputStream(manifest));
+				String attr = mf.getMainAttributes().getValue("MixinConfigs");
+				if (attr != null) {
+					for (String config : attr.split(",")) {
+						if (!config.strip().isEmpty()) configs.add(config.strip());
+					}
+				}
+			} catch (IOException ignored) {
+				// Keep whatever fabric.mod.json supplied.
+			}
+		}
+		return configs;
+	}
+
+	private static void collectForgeOwnedMixinSuppressions(Map<String, byte[]> entries, java.util.Set<String> configs,
+			LinkedHashSet<String> suppressions) {
+		for (String configName : configs) {
+			byte[] configBytes = entries.get(configName);
+			if (configBytes == null) continue;
+			UnmodifiableConfig config;
+			try (Reader reader = new InputStreamReader(new ByteArrayInputStream(configBytes), StandardCharsets.UTF_8)) {
+				config = JsonFormat.fancyInstance().createParser().parse(reader);
+			} catch (RuntimeException | IOException e) {
+				continue;
+			}
+
+			String pkg = configString(config, "package");
+			List<String> mixins = new ArrayList<>();
+			addMixinEntries(config, "mixins", mixins);
+			addMixinEntries(config, "client", mixins);
+			addMixinEntries(config, "server", mixins);
+			for (String mixin : mixins) {
+				String classPath = mixinClassPath(pkg, mixin);
+				byte[] classBytes = entries.get(classPath);
+				if (classBytes == null) continue;
+				String ownedTarget = forgeOwnedPipelineTarget(classBytes);
+				if (ownedTarget == null) continue;
+				if (isPureAccessorMixin(classBytes)) {
+					ForbricLog.debug("[Forbric] keeping guest accessor/invoker mixin %s registered even though it targets "
+							+ "Forge/NeoForge-owned pipeline class %s", configName + ":" + mixin, ownedTarget.replace('/', '.'));
+					continue;
+				}
+				String suppression = configName + ":" + mixin;
+				if (suppressions.add(suppression)) {
+					ForbricLog.warn("[Forbric] suppressing guest mixin %s because it targets Forge/NeoForge-owned "
+							+ "pipeline class %s", suppression, ownedTarget.replace('/', '.'));
+				}
+			}
+		}
+	}
+
+	private static String configString(UnmodifiableConfig config, String key) {
+		Object value = config.get(Collections.singletonList(key));
+		return value == null ? null : value.toString();
+	}
+
+	private static void addMixinEntries(UnmodifiableConfig config, String key, List<String> out) {
+		Object value = config.get(Collections.singletonList(key));
+		if (!(value instanceof List<?> list)) return;
+		for (Object element : list) {
+			if (element != null) out.add(element.toString());
+		}
+	}
+
+	private static String mixinClassPath(String pkg, String mixin) {
+		String className = mixin;
+		if (pkg != null && !pkg.isBlank() && !mixin.startsWith(pkg + ".")) {
