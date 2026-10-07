@@ -298,3 +298,84 @@ class FabricFuelValuesInjectorTest {
 		stub.instructions.add(new TypeInsnNode(Opcodes.CHECKCAST, FUEL_VALUES));
 		stub.instructions.add(new InsnNode(Opcodes.ARETURN));
 		ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_MAXS);
+		node.accept(writer);
+		return writer.toByteArray();
+	}
+
+	private static byte[] returnHookClass() {
+		ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_MAXS);
+		cw.visit(Opcodes.V21, Opcodes.ACC_PUBLIC, RETURN_HOOK, null, "java/lang/Object", null);
+		cw.visitField(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "seen", "Ljava/lang/Object;", null, null).visitEnd();
+		cw.visitField(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "replacement", "Ljava/lang/Object;", null, null).visitEnd();
+		cw.visitField(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "seenOuter", "Ljava/lang/Object;", null, null).visitEnd();
+		for (String counter : new String[] { "calls", "inner", "outer" }) {
+			cw.visitField(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, counter, "I", null, null).visitEnd();
+		}
+		MethodVisitor cancel = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "cancel", "()Ljava/lang/Object;", null, null);
+		cancel.visitCode();
+		cancel.visitFieldInsn(Opcodes.GETSTATIC, RETURN_HOOK, "replacement", "Ljava/lang/Object;");
+		cancel.visitInsn(Opcodes.ARETURN);
+		cancel.visitMaxs(0, 0);
+		cancel.visitEnd();
+		// modify / modifyOuter: remember the table they saw and at which call they ran, and hand it back unchanged.
+		for (String[] hook : new String[][] { { "modify", "seen", "inner" }, { "modifyOuter", "seenOuter", "outer" } }) {
+			MethodVisitor modify = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, hook[0], "(Ljava/lang/Object;)Ljava/lang/Object;", null, null);
+			modify.visitCode();
+			modify.visitVarInsn(Opcodes.ALOAD, 0);
+			modify.visitFieldInsn(Opcodes.PUTSTATIC, RETURN_HOOK, hook[1], "Ljava/lang/Object;");
+			modify.visitFieldInsn(Opcodes.GETSTATIC, RETURN_HOOK, "calls", "I");
+			modify.visitInsn(Opcodes.ICONST_1);
+			modify.visitInsn(Opcodes.IADD);
+			modify.visitInsn(Opcodes.DUP);
+			modify.visitFieldInsn(Opcodes.PUTSTATIC, RETURN_HOOK, "calls", "I");
+			modify.visitFieldInsn(Opcodes.PUTSTATIC, RETURN_HOOK, hook[2], "I");
+			modify.visitVarInsn(Opcodes.ALOAD, 0);
+			modify.visitInsn(Opcodes.ARETURN);
+			modify.visitMaxs(0, 0);
+			modify.visitEnd();
+		}
+		cw.visitEnd();
+		return cw.toByteArray();
+	}
+
+	/** Minecraft 26.2's own library set, from the launcher's version JSON. */
+	private static List<URL> libraries() throws Exception {
+		Path libraries = TestFixtures.minecraftDir().resolve("libraries");
+		Path versionJson = libraries.getParent().resolve("versions/26.2/26.2.json");
+		TestFixtures.require(Fixture.MC_LIBRARIES, Files.isRegularFile(versionJson), "no 26.2 version JSON beside the local Minecraft libraries");
+		List<URL> urls = new ArrayList<>();
+		java.util.regex.Matcher path = java.util.regex.Pattern.compile("\"path\"\\s*:\\s*\"([^\"]+\\.jar)\"")
+				.matcher(Files.readString(versionJson, StandardCharsets.UTF_8));
+		while (path.find()) {
+			Path library = libraries.resolve(path.group(1));
+			if (Files.isRegularFile(library)) urls.add(library.toUri().toURL());
+		}
+		return urls;
+	}
+
+	private static MethodNode populate(byte[] bytes) {
+		return node(bytes).methods.stream().filter(m -> m.name.equals("populateFuelValues")).findFirst().orElseThrow();
+	}
+
+	private static MethodNode method(ClassNode node, String desc) {
+		return node.methods.stream().filter(m -> m.name.equals("vanillaBurnTimes") && m.desc.equals(desc)).findFirst().orElseThrow();
+	}
+
+	private static List<String> calls(MethodNode method) {
+		List<String> calls = new ArrayList<>();
+		for (AbstractInsnNode insn : method.instructions) if (insn instanceof MethodInsnNode call) calls.add(call.name);
+		return calls;
+	}
+
+	private static List<Integer> opcodes(MethodNode method) {
+		List<Integer> out = new ArrayList<>();
+		for (AbstractInsnNode insn : method.instructions) if (insn.getOpcode() >= 0) out.add(insn.getOpcode());
+		return out;
+	}
+
+	private static ClassNode node(byte[] bytes) {
+		ClassNode node = new ClassNode();
+		new ClassReader(bytes).accept(node, 0);
+		return node;
+	}
+}
