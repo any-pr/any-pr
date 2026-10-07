@@ -298,3 +298,234 @@ public final class CrashAttribution {
 		for (String line : trace.split("\n")) {
 			depth++;
 			// The handler form FIRST: such a frame carries the vanilla jar, so reading its bracket would
+			// blame Minecraft for a mod's mixin.
+			Matcher handler = MIXIN_HANDLER.matcher(line);
+			while (handler.find()) {
+				remember(byId, handler.group(1), "its mixin was running", depth);
+			}
+			Matcher fromMod = FROM_MOD.matcher(line);
+			while (fromMod.find()) {
+				remember(byId, fromMod.group(1), "Mixin named it", depth);
+			}
+			if (!line.startsWith("\tat ")) {
+				Matcher clashing = CLASHING.matcher(line);
+				while (clashing.find()) {
+					for (String id : clashing.group(1).split(", and |, ?| and ")) remember(byId, id.strip(), CLASH, depth);
+				}
+			} else {
+				Matcher frame = FRAME_METHOD.matcher(line);
+				if (frame.find()) {
+					for (MixinOverlapLint.Overlap o : MixinOverlapLint.conflictsIn(frame.group(1), frame.group(2))) {
+						String first = o.first().modId();
+						String second = o.second().modId();
+						String where = o.where().replace('$', '.');
+						remember(byId, first, OVERLAP, depth, new Collision(displayName(second), where));
+						remember(byId, second, OVERLAP, depth, new Collision(displayName(first), where));
+					}
+				}
+			}
+			Matcher jar = FRAME_JAR.matcher(line);
+			while (jar.find()) {
+				for (ModCatalog.Entry entry : ModCatalog.everything()) {
+					if (entry.jar().equals(jar.group(1))) {
+						remember(byId, entry.modId(), "its code is in the crash", depth);
+					}
+				}
+			}
+		}
+		List<Suspect> found = new ArrayList<>(byId.values());
+		found.sort(Comparator.comparingInt(Suspect::depth));
+		return found.size() > MOST ? found.subList(0, MOST) : found;
+	}
+
+	/**
+	 * Records a suspect, if the catalogue has it and nothing shallower already did.
+	 *
+	 * <p>The id has to be one a row carries. A jar file name is not a mod id, the token in a mixin handler's
+	 * name is a convention rather than a guarantee, and a name nothing recognises is a guess — which is the one
+	 * thing an answer like this cannot afford to be.
+	 */
+	private static void remember(Map<String, Suspect> byId, String modId, String reason, int depth) {
+		remember(byId, modId, reason, depth, null);
+	}
+
+	private static void remember(Map<String, Suspect> byId, String modId, String reason, int depth, Collision collision) {
+		if (modId == null || modId.isBlank() || byId.containsKey(modId)) return;
+		for (ModCatalog.Entry entry : ModCatalog.everything()) {
+			if (entry.modId().equalsIgnoreCase(modId)) {
+				byId.put(entry.modId(), new Suspect(entry.modId(), entry.name(), entry.version(), reason, depth,
+						installedJar(entry), collision));
+				return;
+			}
+		}
+	}
+
+	private static String displayName(String modId) {
+		for (ModCatalog.Entry entry : ModCatalog.everything()) {
+			if (entry.modId().equalsIgnoreCase(modId)) return entry.name();
+		}
+		return modId;
+	}
+
+	/**
+	 * The jar a player put in {@code mods/} that brings {@code entry}: its own when it was installed, else the
+	 * nearest installed mod that carries it. A bundled library has no line of its own in
+	 * {@code forbric-disabled.txt} — its file is extracted, not installed — so switching it off means switching
+	 * off what carries it. Empty when the carrier is unknown.
+	 */
+	static String installedJar(ModCatalog.Entry entry) {
+		ModCatalog.Entry current = entry;
+		for (int hops = 0; current != null && hops < 16; hops++) {
+			if (current.installed()) return current.jar();
+			String parent = current.bundledBy();
+			current = null;
+			for (ModCatalog.Entry candidate : ModCatalog.everything()) {
+				if (candidate.modId().equals(parent)) { current = candidate; break; }
+			}
+		}
+		return "";
+	}
+
+	/**
+	 * The exception and its causes, which is everything above Minecraft's walkthrough divider.
+	 *
+	 * <p>The divider is a run of hyphens the report writes once, before the per-section detail. Absent — a
+	 * truncated file, a format that moved — the whole text is read, which over-reports rather than under-reports
+	 * and is the safer direction for a file whose only job is to point somewhere.
+	 */
+	static String exceptionChain(String crashReport) {
+		int divider = crashReport.indexOf("\n------------");
+		return divider < 0 ? crashReport : crashReport.substring(0, divider);
+	}
+
+	private static boolean chinese() {
+		return "zh".equalsIgnoreCase(Locale.getDefault().getLanguage());
+	}
+
+	/** Package-private so both renderings can be asserted without a locale dance. */
+	static String render(boolean zh, String reportName, List<Suspect> suspects) {
+		StringBuilder sb = new StringBuilder();
+		if (zh) {
+			sb.append("Forbric 崩溃分析\n");
+			sb.append("=================\n\n");
+			if (suspects.isEmpty()) {
+				sb.append("这次崩溃里没有出现任何一个你装的 mod，所以说不准是哪个 mod 的问题 —— 也可能不是 mod 的问题。\n");
+				sb.append("完整的报错在 crash-reports/").append(reportName).append(" 里。\n");
+				return sb.toString();
+			}
+			if (clashing(suspects) >= 2) {
+				sb.append("这几个 mod 互相冲突 —— 报错里把它们点名放在了一起：\n\n");
+			} else {
+				sb.append(suspects.size() == 1 ? "可能是这个 mod 的问题：\n\n" : "可能是这几个 mod 的问题，越靠前越可能：\n\n");
+			}
+			for (Suspect s : suspects) {
+				sb.append("  ").append(s.name());
+				if (!s.version().isEmpty()) sb.append(' ').append(s.version());
+				sb.append("  (").append(s.modId()).append(")\n");
+				sb.append("    ").append(s.collision() == null ? zhReason(s.reason())
+						: "它和 " + s.collision().other() + " 的 mixin 都改了 " + s.collision().method()
+								+ "，两边不能同时生效，而这次崩溃正好经过这个方法").append("\n\n");
+			}
+			sb.append("怎么办\n");
+			sb.append("------\n");
+			if (clashing(suspects) >= 2) {
+				sb.append(clashNames(suspects, "、")).append(" 不能装在一起：只留其中一个，把其余的从 mods 文件夹里拿出来再开一次。\n");
+			} else {
+				sb.append("先把最上面那个 mod 从 mods 文件夹里拿出来再开一次。还是崩就换下一个。\n");
+			}
+			for (String pair : collisions(suspects, true)) {
+				sb.append(pair).append("：先只留其中一个再开一次。\n");
+			}
+			List<String> lines = startWithout(suspects);
+			if (!lines.isEmpty()) {
+				sb.append("也可以不挪文件：把下面几行加进 mods 文件夹旁边的 ").append(DisabledMods.FILE)
+						.append("，游戏就会不加载它们启动（删掉一行就能重新启用）：\n");
+				for (String line : lines) sb.append("    ").append(line).append('\n');
+			}
+			sb.append("这只是个猜测：它说的是这些 mod 出现在了报错里，不是说它们一定有毛病。\n");
+			sb.append("完整的报错在 crash-reports/").append(reportName).append(" 里。\n");
+			return sb.toString();
+		}
+		sb.append("Forbric crash analysis\n");
+		sb.append("======================\n\n");
+		if (suspects.isEmpty()) {
+			sb.append("No mod you installed appears in this crash, so there is nothing to point at — it may not\n");
+			sb.append("be a mod at all. The full error is in crash-reports/").append(reportName).append(".\n");
+			return sb.toString();
+		}
+		if (clashing(suspects) >= 2) {
+			sb.append("These mods clash with each other — the error names them together:\n\n");
+		} else {
+			sb.append(suspects.size() == 1 ? "This mod might be the one:\n\n"
+					: "It might be one of these, likeliest first:\n\n");
+		}
+		for (Suspect s : suspects) {
+			sb.append("  ").append(s.name());
+			if (!s.version().isEmpty()) sb.append(' ').append(s.version());
+			sb.append("  (").append(s.modId()).append(")\n");
+			sb.append("    ").append(s.collision() == null ? s.reason()
+					: "its mixin and one from " + s.collision().other() + " both change " + s.collision().method()
+							+ " in ways that cannot both take effect, and the crash went through it").append("\n\n");
+		}
+		sb.append("What to do\n");
+		sb.append("----------\n");
+		if (clashing(suspects) >= 2) {
+			sb.append(clashNames(suspects, ", ")).append(" cannot be installed together: keep one of them, take the\n");
+			sb.append("other").append(clashing(suspects) > 2 ? "s" : "").append(" out of your mods folder and start again.\n");
+		} else {
+			sb.append("Take the first one out of your mods folder and start again. If it still crashes, try the next.\n");
+		}
+		for (String pair : collisions(suspects, false)) {
+			sb.append(pair).append(": try the game with only one of them.\n");
+		}
+		List<String> lines = startWithout(suspects);
+		if (!lines.isEmpty()) {
+			sb.append("Or leave the files where they are: with these lines in ").append(DisabledMods.FILE)
+					.append(", next to your mods\nfolder, the game starts without them (delete a line to turn that mod back on):\n");
+			for (String line : lines) sb.append("    ").append(line).append('\n');
+		}
+		sb.append("This is a guess: it says these mods were in the error, not that they are at fault.\n");
+		sb.append("The full error is in crash-reports/").append(reportName).append(".\n");
+		return sb.toString();
+	}
+
+	/**
+	 * One line per pair of {@link #OVERLAP} suspects, {@code "A and B both change Foo.tick"}: the pair is the finding,
+	 * and either one alone reads like the generic advice.
+	 */
+	private static List<String> collisions(List<Suspect> suspects, boolean zh) {
+		List<String> out = new ArrayList<>();
+		java.util.Set<String> seen = new java.util.HashSet<>();
+		for (Suspect s : suspects) {
+			if (s.collision() == null) continue;
+			String a = s.name();
+			String b = s.collision().other();
+			String key = (a.compareTo(b) < 0 ? a + "|" + b : b + "|" + a) + "|" + s.collision().method();
+			if (!seen.add(key)) continue;
+			out.add(zh ? a + " 和 " + b + " 都改了 " + s.collision().method()
+					: a + " and " + b + " both change " + s.collision().method());
+		}
+		return out;
+	}
+
+	/** The display names of the mods the error named as clashing, joined by {@code separator}. */
+	private static String clashNames(List<Suspect> suspects, String separator) {
+		List<String> names = new ArrayList<>();
+		for (Suspect s : suspects) if (CLASH.equals(s.reason())) names.add(s.name());
+		return String.join(separator, names);
+	}
+
+	/** How many suspects the error named as sides of one clash. */
+	private static long clashing(List<Suspect> suspects) {
+		return suspects.stream().filter(s -> CLASH.equals(s.reason())).count();
+	}
+
+	private static String zhReason(String reason) {
+		return switch (reason) {
+			case CLASH -> "报错里把它和另一个 mod 列为冲突的双方";
+			case "its mixin was running" -> "它改过的代码正在运行";
+			case "Mixin named it" -> "报错里直接点了它的名字";
+			default -> "报错里有它的代码";
+		};
+	}
+}
