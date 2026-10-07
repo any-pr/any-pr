@@ -22,8 +22,9 @@ submit_pr.py — 自动向 any-pr 上游仓库提交 PR（保证每个 PR 都能
     `git diff --cached --numstat` 得到每个文件的真实 additions+deletions。
 
     流程: fetch 上游 main 最新 commit → 在临时 worktree 里基于它建分支并提交
-    → push 到自己 fork → 向上游开 PR → 轮询等待合并 → 若因冲突被关，自动换
-    新基底重建分支强推重试。全程不直接 push 任何 main 分支。
+    → push 到自己 fork → 所有批次并发向上游开 PR（默认全部同时，--workers 可限）
+    → 轮询等待合并 → 若因冲突被关，自动换新基底重建分支强推重试。各批文件路径
+    不相交，因此无论机器人以何种顺序合并都不会冲突。全程不直接 push 任何 main 分支。
 """
 
 from __future__ import annotations
@@ -32,11 +33,11 @@ import argparse
 import json
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from gitops import (build_worktree_commit, create_pr, drop_worktree, gh,
-                    get_open_pr, last_comment, latest_main_sha, pr_state,
-                    probe_changes, push_branch, run as git_run, wait_for_branch)
+from gitops import (gh, latest_main_sha, probe_changes, run as git_run,
+                    submit_batch)
 from rules import MAX_CHANGED_FILES, MAX_CHANGED_LINES, MAX_FILE_LINES
 from rules import EXCLUDED_RE, counted_lines, gate_path_problems, is_binary
 from rules import make_batches
@@ -67,52 +68,6 @@ def collect_sources(sources: list[str]) -> list[dict]:
     return files
 
 
-def submit_batch(repo_root: str, target: str, fork: str, base_sha: str, branch: str,
-                 batch: list[dict], dest: str, title: str, body: str,
-                 max_lines: int, max_files: int, max_file_lines: int,
-                 poll_timeout: int, poll_interval: int, max_retries: int) -> dict:
-    """提交一批文件并等待合并。冲突被关时换新基底重建分支强推重试。"""
-    pr: int | None = None
-    base = base_sha
-    for attempt in range(1, max_retries + 1):
-        wt = build_worktree_commit(repo_root, base, dest, batch, max_lines,
-                                   max_files, max_file_lines, title)
-        try:
-            push_branch(fork, branch, wt, force=pr is not None)
-        finally:
-            drop_worktree(repo_root, wt)
-
-        if pr is None:
-            pr = get_open_pr(target, fork, branch)
-            if pr is None:
-                wait_for_branch(fork, branch)
-                url = create_pr(target, fork, branch, title, body)
-                pr = int(url.rstrip("/").split("/")[-1])
-                print(f"  PR #{pr}: {url}")
-
-        deadline = time.time() + poll_timeout
-        status = "timeout"
-        while time.time() < deadline:
-            st = pr_state(target, pr)
-            if st == "MERGED":
-                return {"pr": pr, "result": "merged",
-                        "url": f"https://github.com/{target}/pull/{pr}"}
-            if st == "CLOSED":
-                comment = last_comment(target, pr)
-                if "conflict" in comment.lower() and attempt < max_retries:
-                    print(f"  与 main 冲突，换新基底重试 ({attempt}/{max_retries})…")
-                    base = latest_main_sha(target, repo_root)
-                    status = "conflict"
-                    break
-                raise RuntimeError(f"PR #{pr} 被机器人关闭:\n{comment or '(无评论)'}")
-            time.sleep(poll_interval)
-        if status == "conflict":
-            continue
-        return {"pr": pr, "result": "timeout",
-                "url": f"https://github.com/{target}/pull/{pr}"}
-    raise RuntimeError(f"PR #{pr} 重试 {max_retries} 次仍未合并")
-
-
 def main() -> None:
     ap = argparse.ArgumentParser(
         description="自动向 any-pr 上游提交能被 auto-merge 机器人顺利合并的 PR",
@@ -135,6 +90,9 @@ def main() -> None:
     ap.add_argument("--poll-timeout", type=int, default=300, help="等待合并的超时秒数")
     ap.add_argument("--poll-interval", type=int, default=15, help="轮询间隔秒数")
     ap.add_argument("--max-retries", type=int, default=3, help="冲突重试次数")
+    ap.add_argument("--workers", type=int, default=0,
+                    help="并发提交的 PR 数上限（默认 0 = 所有批次同时提交，"
+                         "路径不相交所以合并顺序无关；--workers 1 即串行）")
     ap.add_argument("--strict", action="store_true",
                     help="有文件因规则被跳过时直接中止，而不是跳过继续")
     ap.add_argument("--dry-run", action="store_true", help="只打印计划，不真正提交")
@@ -214,35 +172,46 @@ def main() -> None:
         print("\n[dry-run] 未真正提交。")
         return
 
-    # 第三步: 逐批提交并等待合并
+    # 第三步: 并发提交所有批次并等待合并（各批文件路径不相交，互不干扰）
     ts = time.strftime("%Y%m%d-%H%M%S")
-    results = []
     dest_label = dest or "root"
+    workers = max(1, min(args.workers or len(batches), len(batches), 10))
+    print(f"\n并发提交 {len(batches)} 个 PR（{workers} 路并行）…")
+
+    results: dict[int, dict] = {}
+    errors: dict[int, str] = {}
+
+    def job(i: int, batch: list[dict]) -> None:
+        branch = f"{args.branch_prefix}-{ts}-{i}"
+        title = args.title or f"{dest_label}: add {len(batch)} file(s)"
+        if len(batches) > 1:
+            title = f"{title} (part {i}/{len(batches)})"
+        rows = "\n".join(
+            f"| `{it['path']}` | {it['adds'] + it['dels']} |" for it in batch)
+        total = sum(counted_lines(it) for it in batch)
+        body = args.body or (
+            f"## Summary\n\nAdds {len(batch)} file(s) into `{dest_label}/`"
+            + (f" — batch {i}/{len(batches)}, auto-split to respect the "
+               f"{MAX_CHANGED_LINES}-line / {MAX_CHANGED_FILES}-file limits of the "
+               f"auto-merge regulations." if len(batches) > 1 else ".")
+            + f"\n\n| file | changed lines |\n|---|---|\n{rows}\n\n"
+            f"**{total} counted lines** total. "
+            "Pre-validated locally by `submit-pr/submit_pr.py` against every "
+            "gate rule.\n"
+        )
+        results[i] = submit_batch(
+            repo_root, target, fork, base, branch, batch, dest, title, body,
+            args.poll_timeout, args.poll_interval, args.max_retries,
+        )
+
     try:
-        for i, batch in enumerate(batches, 1):
-            title = args.title or f"{dest_label}: add {len(batch)} file(s)"
-            if len(batches) > 1:
-                title = f"{title} (part {i}/{len(batches)})"
-            rows = "\n".join(
-                f"| `{it['path']}` | {it['adds'] + it['dels']} |" for it in batch)
-            total = sum(counted_lines(it) for it in batch)
-            body = args.body or (
-                f"## Summary\n\nAdds {len(batch)} file(s) into `{dest_label}/`"
-                + (f" — batch {i}/{len(batches)}, auto-split to respect the "
-                   f"{max_lines}-line / {max_files}-file limits of the auto-merge "
-                   f"regulations." if len(batches) > 1 else ".")
-                + f"\n\n| file | changed lines |\n|---|---|\n{rows}\n\n"
-                f"**{total} counted lines** total. "
-                "Pre-validated locally by `submit-pr/submit_pr.py` against every "
-                "gate rule.\n"
-            )
-            branch = f"{args.branch_prefix}-{ts}-{i}"
-            print(f"\n== PR {i}/{len(batches)} → 分支 {branch}")
-            results.append(submit_batch(
-                repo_root, target, fork, base, branch, batch, dest, title, body,
-                max_lines, max_files, max_file_lines,
-                args.poll_timeout, args.poll_interval, args.max_retries,
-            ))
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = [ex.submit(job, i, b) for i, b in enumerate(batches, 1)]
+            for fut in futs:
+                try:
+                    fut.result()
+                except Exception as e:  # 单批失败不影响其他批，最后统一报告
+                    errors[futs.index(fut) + 1] = str(e)
     except KeyboardInterrupt:
         print("\n已中断。")
         sys.exit(130)
@@ -250,20 +219,27 @@ def main() -> None:
     # 第四步: 汇总并验证上游 main 上的最终内容
     print("\n== 结果")
     ok = True
-    for r in results:
-        print(f"  PR #{r['pr']}: {r['result']}  {r['url']}")
-        if r["result"] != "merged":
+    for i in range(1, len(batches) + 1):
+        if i in errors:
             ok = False
+            print(f"  PR {i}/{len(batches)}: 失败 — {errors[i]}")
+        else:
+            r = results[i]
+            print(f"  PR #{r['pr']}: {r['result']}  {r['url']}")
+            if r["result"] != "merged":
+                ok = False
 
     git_run(["git", "fetch", f"https://github.com/{target}.git", "main"], cwd=repo_root)
     tree = git_run(["git", "ls-tree", "-r", "--name-only", "FETCH_HEAD"], cwd=repo_root)
     on_main = set(tree.splitlines())
-    missing = [it["path"] for it in accepted if it["path"] not in on_main]
+    merged_paths = [it["path"] for i, b in enumerate(batches, 1)
+                    if i not in errors for it in b]
+    missing = [p for p in merged_paths if p not in on_main]
     if missing:
         ok = False
         print(f"  [!] 以下文件未出现在上游 main 上: {', '.join(missing)}")
     else:
-        print(f"  已验证: 全部 {len(accepted)} 个文件都在上游 main 上。")
+        print(f"  已验证: 已合并批次的 {len(merged_paths)} 个文件都在上游 main 上。")
 
     sys.exit(0 if ok else 1)
 
