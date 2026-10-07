@@ -95,3 +95,8 @@ def make_batches(items: list[dict], max_lines: int,
     if cur:
         batches.append(cur)
     return batches
+
+
+def chunk_bounds(total: int, cap: int) -> list[tuple[int, int]]:
+    """把 total 行按每块最多 cap 行切块，返回 [(start, end) …]（0 起，不含 end）。"""
+    return [(s, min(s + cap, total)) for s in range(0, total, cap)] if total else []

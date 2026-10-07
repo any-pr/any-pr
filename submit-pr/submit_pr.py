@@ -23,49 +23,28 @@ submit_pr.py — 自动向 any-pr 上游仓库提交 PR（保证每个 PR 都能
 
     流程: fetch 上游 main 最新 commit → 在临时 worktree 里基于它建分支并提交
     → push 到自己 fork → 所有批次并发向上游开 PR（默认全部同时，--workers 可限）
-    → 轮询等待合并 → 若因冲突被关，自动换新基底重建分支强推重试。各批文件路径
-    不相交，因此无论机器人以何种顺序合并都不会冲突。全程不直接 push 任何 main 分支。
+    → 轮询等待合并 → 若因冲突/竞态停滞，自动换新基底重建分支强推重试。各批文件
+    路径不相交，因此无论机器人以何种顺序合并都不会冲突。新建超大文件（超过单
+    文件行数上限）自动拆成"渐进前缀"分块链串行合并，链间仍并发。全程不直接
+    push 任何 main 分支。
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from files import build_chunk_chain, collect_sources, file_exists_on_base
 from gitops import (gh, latest_main_sha, probe_changes, run as git_run,
                     run_retry, submit_batch)
 from rules import MAX_CHANGED_FILES, MAX_CHANGED_LINES, MAX_FILE_LINES
 from rules import EXCLUDED_RE, counted_lines, gate_path_problems, is_binary
 from rules import make_batches
-
-
-def collect_sources(sources: list[str]) -> list[dict]:
-    """收集要提交的文件 → [{src, rel}]，rel 为相对各自源根目录的目标相对路径。"""
-    files: list[dict] = []
-    seen: dict[str, str] = {}
-    for s in sources:
-        sp = Path(s)
-        if not sp.exists():
-            sys.exit(f"错误: 源不存在: {s}")
-        if sp.is_file():
-            entries = [(sp, sp.name)]
-        else:
-            entries = []
-            for f in sorted(sp.rglob("*")):
-                if f.is_symlink():
-                    print(f"  [跳过] {f} 是符号链接，仓库不允许（已跳过）")
-                elif f.is_file():
-                    entries.append((f, f.relative_to(sp).as_posix()))
-        for src, rel in entries:
-            if rel in seen:
-                sys.exit(f"错误: 目标相对路径冲突: {rel}（{src} 与 {seen[rel]}）")
-            seen[rel] = str(src)
-            files.append({"src": str(src), "rel": rel})
-    return files
 
 
 def main() -> None:
@@ -137,94 +116,135 @@ def main() -> None:
             accepted.append(f)
 
     # 第二步: 用临时 worktree 拿到与机器人一致的每个文件变更行数
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    tmp_dir = Path(repo_root) / ".git" / "submit-pr-tmp" / ts
+    chains: dict[str, list[dict]] = {}
+    cap = min(max_file_lines, max_lines)
     if accepted:
         ns = probe_changes(repo_root, base, dest, accepted)
         for f in accepted:
             f["adds"], f["dels"] = ns.get(f["path"], (0, 0))
-            if not EXCLUDED_RE.search(f["path"]) \
-                    and f["adds"] + f["dels"] > max_file_lines:
-                skipped.append(
-                    (f["path"],
-                     f"单文件变更 {f['adds'] + f['dels']} 行 > 上限 {max_file_lines}，"
-                     f"无法通过拆分解决")
-                )
-            elif f["adds"] + f["dels"] == 0:
+            diff = f["adds"] + f["dels"]
+            if EXCLUDED_RE.search(f["path"]):
+                continue  # 豁免文件不计行数，无需上限检查
+            if diff > max_file_lines:
+                if file_exists_on_base(base, f["path"], repo_root):
+                    skipped.append((f["path"],
+                                    f"已存在文件的变更 {diff} 行 > 上限 "
+                                    f"{max_file_lines}，暂不支持拆分修改，请手动处理"))
+                else:  # 新建超大文件 → 渐进分块创建
+                    chains[f["path"]] = build_chunk_chain(f, cap, str(tmp_dir))
+            elif diff == 0:
                 skipped.append((f["path"], "与上游 main 内容完全相同，无需提交"))
         accepted = [f for f in accepted
-                    if not any(p == f["path"] for p, _ in skipped)]
+                    if f["path"] not in chains
+                    and not any(p == f["path"] for p, _ in skipped)]
 
     for path, why in skipped:
         print(f"  [跳过] {path} — {why}")
     if skipped and args.strict:
         sys.exit("错误: --strict 模式下存在被跳过的文件，已中止。")
-    if not accepted:
+    if not accepted and not chains:
         print("没有需要提交的内容（可能全部与上游一致）。")
         return
 
     batches = make_batches(accepted, max_lines, max_files)
-    print(f"\n计划: {len(accepted)} 个文件 → {len(batches)} 个 PR"
-          f"（单 PR ≤ {max_lines} 行 / {max_files} 文件）")
+    print(f"\n计划: {len(accepted)} 个普通文件 → {len(batches)} 个 PR，"
+          f"{len(chains)} 个大文件分块链（单 PR ≤ {max_lines} 行 / {max_files} 文件，"
+          f"分块 ≤ {cap} 行）")
     for i, b in enumerate(batches, 1):
         lines = sum(counted_lines(it) for it in b)
         names = ", ".join(it["path"] for it in b)
         print(f"  PR {i}/{len(batches)}: {len(b)} 个文件, {lines} 行 — {names}")
+    for path, ch in chains.items():
+        print(f"  分块链 {path}: 共 {sum(c['adds'] for c in ch)} 行 → "
+              f"{len(ch)} 个渐进 PR（同链串行合并，链间并发）")
     if args.dry_run:
         print("\n[dry-run] 未真正提交。")
         return
 
-    # 第三步: 并发提交所有批次并等待合并（各批文件路径不相交，互不干扰）
-    ts = time.strftime("%Y%m%d-%H%M%S")
+    # 第三步: 并发提交。任务单元 = 普通批（单步）或分块链（多步、串行换新基底），
+    # 各单元文件路径不相交，单元之间并发互不干扰。
     dest_label = dest or "root"
-    workers = max(1, min(args.workers or len(batches), len(batches), 10))
-    print(f"\n并发提交 {len(batches)} 个 PR（{workers} 路并行）…")
+    units: list[tuple[str, list, list[dict]]] = []  # (名称, 步骤, 涉及文件)
 
-    results: dict[int, dict] = {}
-    errors: dict[int, str] = {}
-
-    def job(i: int, batch: list[dict]) -> None:
-        branch = f"{args.branch_prefix}-{ts}-{i}"
+    def pr_text(batch: list[dict], i: int, n: int) -> tuple[str, str]:
         title = args.title or f"{dest_label}: add {len(batch)} file(s)"
-        if len(batches) > 1:
-            title = f"{title} (part {i}/{len(batches)})"
+        if n > 1:
+            title = f"{title} (part {i}/{n})"
         rows = "\n".join(
             f"| `{it['path']}` | {it['adds'] + it['dels']} |" for it in batch)
         total = sum(counted_lines(it) for it in batch)
         body = args.body or (
             f"## Summary\n\nAdds {len(batch)} file(s) into `{dest_label}/`"
-            + (f" — batch {i}/{len(batches)}, auto-split to respect the "
+            + (f" — batch {i}/{n}, auto-split to respect the "
                f"{MAX_CHANGED_LINES}-line / {MAX_CHANGED_FILES}-file limits of the "
-               f"auto-merge regulations." if len(batches) > 1 else ".")
+               f"auto-merge regulations." if n > 1 else ".")
             + f"\n\n| file | changed lines |\n|---|---|\n{rows}\n\n"
             f"**{total} counted lines** total. "
             "Pre-validated locally by `submit-pr/submit_pr.py` against every "
-            "gate rule.\n"
-        )
-        results[i] = submit_batch(
-            repo_root, target, fork, base, branch, batch, dest, title, body,
-            args.poll_timeout, args.poll_interval, args.max_retries,
-        )
+            "gate rule.\n")
+        return title, body
+
+    for i, b in enumerate(batches, 1):
+        title, body = pr_text(b, i, len(batches))
+        units.append((f"PR {i}/{len(batches)}",
+                      [(f"{args.branch_prefix}-{ts}-{i}", title, body, b)], b))
+    for path, ch in chains.items():
+        j = len(units) + 1  # 链内步骤的分支名带单元序号，保证全局唯一
+        n, total_lines = len(ch), sum(c["adds"] for c in ch)
+        steps = []
+        for k, c in enumerate(ch, 1):
+            done = sum(x["adds"] for x in ch[:k])
+            title = (f"{args.title} ({Path(path).name} chunk {k}/{n})"
+                     if args.title else f"{dest_label}: add {c['rel']} (chunk {k}/{n})")
+            body = args.body or (
+                f"## Summary\n\nProgressively creates `{path}` ({total_lines} "
+                f"lines) in {n} chunks (≤{cap} lines each) to satisfy the "
+                f"per-file limit of the auto-merge regulations. Chunk {k}/{n}: "
+                f"the file now holds its first {done} lines.\n\n"
+                "Pre-validated locally by `submit-pr/submit_pr.py`.\n")
+            steps.append((f"{args.branch_prefix}-{ts}-{j}x{k}", title, body, [c]))
+        units.append((f"分块链 {path}（{n} 块）", steps, ch))
+
+    workers = max(1, min(args.workers or len(units), len(units), 10))
+    print(f"\n并发提交 {len(units)} 个任务（{workers} 路并行）…")
+    results: dict[int, list] = {}
+    errors: dict[int, str] = {}
+
+    def run_unit(steps: list) -> list:
+        out = []
+        for branch, title, body, batch in steps:
+            # 分块链的每一步都必须基于包含前一块的最新 main
+            b2 = latest_main_sha(target, repo_root) if len(steps) > 1 else base
+            out.append(submit_batch(repo_root, target, fork, b2, branch, batch,
+                                    dest, title, body, args.poll_timeout,
+                                    args.poll_interval, args.max_retries))
+        return out
 
     try:
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            futs = [ex.submit(job, i, b) for i, b in enumerate(batches, 1)]
-            for fut in futs:
+            futs = [ex.submit(run_unit, steps) for _, steps, _ in units]
+            for j, fut in enumerate(futs, 1):
                 try:
-                    fut.result()
-                except Exception as e:  # 单批失败不影响其他批，最后统一报告
-                    errors[futs.index(fut) + 1] = str(e)
+                    results[j] = fut.result()
+                except Exception as e:  # 单个任务失败不影响其他任务，最后统一报告
+                    errors[j] = str(e)
     except KeyboardInterrupt:
         print("\n已中断。")
         sys.exit(130)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
     # 第四步: 汇总并验证上游 main 上的最终内容
     print("\n== 结果")
     ok = True
-    for i in range(1, len(batches) + 1):
-        if i in errors:
+    for j, (label, _, items) in enumerate(units, 1):
+        if j in errors:
             ok = False
-            print(f"  PR {i}/{len(batches)}: 失败 — {errors[i]}")
-        else:
-            r = results[i]
+            print(f"  {label}: 失败 — {errors[j]}")
+            continue
+        for r in results[j]:
             print(f"  PR #{r['pr']}: {r['result']}  {r['url']}")
             if r["result"] != "merged":
                 ok = False
@@ -236,8 +256,9 @@ def main() -> None:
     for line in tree.splitlines():
         meta, path = line.split("\t", 1)
         sha_by_path[path] = meta.split()[2]
-    submitted = [it for i, b in enumerate(batches, 1)
-                 if i not in errors for it in b]
+    # 验证每个路径的最终状态: 分块链只看末块（src=原文件），普通批看唯一条目
+    submitted = [items[-1] for j, (_, _, items) in enumerate(units, 1)
+                 if j not in errors]
     missing = [it["path"] for it in submitted if it["path"] not in sha_by_path]
     changed = []
     for it in submitted:
