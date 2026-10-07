@@ -298,3 +298,214 @@ class CacheTest(Fixture):
     def test_a_cache_from_another_kernel_is_refused(self):
         pack = self.simple()
         self.minimise(pack, clash)
+        with self.assertRaisesRegex(SystemExit, 'holds sessions of kernel k+, but the installed kernel is other'):
+            self.minimise(pack, clash, fingerprint=lambda: 'other')
+
+    def test_a_kernel_that_changes_while_it_runs_is_refused(self):
+        # Read at the start, then before and after every launch.
+        between = iter(['k1', 'k1', 'k1', 'k2'])
+        with self.assertRaisesRegex(SystemExit, 'kernel changed since this minimisation started'):
+            self.minimise(self.simple(), clash, fingerprint=lambda: next(between))
+        during = iter(['k1', 'k1', 'k1', 'k1', 'k2'])
+        with self.assertRaisesRegex(SystemExit, 'kernel changed during session 002-'):
+            self.minimise(self.simple(), clash, out='during', fingerprint=lambda: next(during))
+
+    def test_the_key_is_the_kernel_the_jar_bytes_the_flags_and_the_ticks(self):
+        pack = self.simple()
+
+        def key(jars, jvm=(), kernel=self.kernel, digests=pack.digests, ticks=200):
+            sessions = ddmin.Sessions(self.root / 'keys', None, lambda: kernel, digests, ticks, 10, self.data / 'mods')
+            return sessions.key(jars, jvm)
+        base = key([CWB, CHLORIDE])
+        self.assertEqual(base, key([CHLORIDE, CWB]))
+        self.assertNotEqual(base, key([CHLORIDE, CWB], ['-Dforbric.suppressMixins=a:B']))
+        self.assertNotEqual(base, key([CWB, CHLORIDE], ticks=6000))
+        self.assertNotEqual(base, key([CWB, CHLORIDE], kernel='k2'))
+        self.assertNotEqual(base, key([CWB, CHLORIDE], digests=dict(pack.digests, **{CWB: '0' * 64})))
+
+    def test_a_jar_that_changes_during_the_minimisation_is_refused(self):
+        pack = self.simple()
+
+        def failure(loaded, flags):
+            (self.data / 'mods' / CWB).write_bytes(b'rebuilt')
+            return clash(loaded, flags)
+        with self.assertRaisesRegex(SystemExit, 'Test input changed during session 001-[0-9a-f]+: ' + CWB.replace('+', r'\+')):
+            self.minimise(pack, failure)
+        self.assertFalse((self.root / 'out' / 'cache.jsonl').exists())
+
+    def test_a_jar_outside_the_later_sessions_is_checked_before_the_result(self):
+        pack = self.simple()
+        calls = []
+
+        def failure(loaded, flags):
+            calls.append(set(loaded))
+            if len(calls) == 2:
+                # After the reference, and in no later configuration: only the final check sees it.
+                (self.data / 'mods' / 'mod0-1.0.jar').write_bytes(b'rebuilt')
+            return clash(loaded, flags)
+        with self.assertRaisesRegex(SystemExit, 'Test input changed during the minimisation: mod0-1.0.jar'):
+            self.minimise(pack, failure)
+        self.assertFalse((self.root / 'out' / 'ddmin-result.json').exists())
+
+    def test_a_passing_pack_has_nothing_to_minimise(self):
+        result = self.minimise(self.simple(), lambda loaded, flags: None)
+        self.assertEqual('PASSED', result['status'])
+        self.assertEqual(1, result['launches'])
+
+
+class IterateTest(Fixture):
+    def test_each_round_takes_the_previous_culprits_out(self):
+        rows = [row(f'mod{i}-1.0.jar', 'fabric') for i in range(10)]
+        a1, a2, b = 'mod1-1.0.jar', 'mod6-1.0.jar', 'mod3-1.0.jar'
+        pack = self.pack(rows, {entry['filename']: [] for entry in rows})
+
+        def failure(loaded, flags):
+            if {'mod1', 'mod6'} <= loaded.keys():
+                return 'java.lang.IllegalStateException: first failure'
+            if 'mod3' in loaded:
+                return 'java.lang.NullPointerException: second failure'
+            return None
+        result = self.minimise(pack, failure, iterate=True)
+        self.assertEqual(['MINIMISED', 'MINIMISED', 'PASSED'], [record['status'] for record in result['rounds']])
+        self.assertEqual([a1, a2], sorted(result['rounds'][0]['minimal']))
+        self.assertEqual([b], result['rounds'][1]['minimal'])
+        self.assertEqual('java.lang.NullPointerException: second failure', result['rounds'][1]['reference']['signature'])
+        self.assertEqual(8, result['rounds'][1]['candidates'])
+        self.assertEqual('PASSED', result['status'])
+        without = self.minimise(pack, failure, out='single')
+        self.assertEqual(['MINIMISED'], [record['status'] for record in without['rounds']])
+
+
+class NarrowTest(Fixture):
+    def jars(self):
+        server_only = {'config': 'alpha.server.mixins.json', 'environment': 'server'}
+        alpha = zipped({'fabric.mod.json': {'id': 'alpha', 'mixins': ['alpha.mixins.json', server_only]},
+                        'alpha.mixins.json': {'package': 'a', 'mixins': ['One', 'Two'], 'client': ['Three'],
+                                              'server': ['Four']},
+                        'alpha.server.mixins.json': {'package': 'a', 'mixins': ['Five']}})
+        toml = 'modLoader = "javafml"\n[[mods]]\nmodId = "beta"\n\n[[mixins]]\nconfig = "beta.mixins.json"\n'
+        beta = zipped({'META-INF/neoforge.mods.toml': toml,
+                       'beta.mixins.json': {'package': 'b', 'mixins': ['BOne']}})
+        inner = zipped({'gamma.mixins.json': {'package': 'g', 'mixins': ['GOne'], 'client': ['GTwo']}})
+        gamma = zipped({'META-INF/MANIFEST.MF': 'Manifest-Version: 1.0\nMixinConfigs: gamma.mixins.json\n',
+                        'META-INF/jarjar/metadata.json': {'jars': [{'path': 'META-INF/jarjar/gamma-mod.jar'}]},
+                        'META-INF/jarjar/gamma-mod.jar': inner})
+        return {'alpha-1.0.jar': alpha, 'beta-1.0.jar': beta, 'gamma-1.0.jar': gamma}
+
+    def narrow_pack(self):
+        contents = self.jars()
+        rows = [row('alpha-1.0.jar', 'fabric'), row('filler-1.0.jar', 'fabric'), row('gamma-1.0.jar', 'forge'),
+                row('beta-1.0.jar', 'neoforge'), row('other-1.0.jar', 'fabric')]
+        contents['filler-1.0.jar'] = zipped({'fabric.mod.json': {'id': 'filler'}})
+        contents['other-1.0.jar'] = zipped({'fabric.mod.json': {'id': 'other'}})
+        return self.pack(rows, {entry['filename']: [] for entry in rows}, contents)
+
+    def test_configs_are_read_as_each_loader_declares_them(self):
+        configs = ddmin.mixin_configs(self.jars().values())
+        self.assertEqual({'alpha.mixins.json': ['One', 'Two', 'Three'], 'beta.mixins.json': ['BOne'],
+                          'gamma.mixins.json': ['GOne', 'GTwo']}, configs)
+
+    def test_the_failure_narrows_to_one_config_and_one_class(self):
+        def failure(loaded, flags):
+            disabled = flags.get('forbric.disableMixinConfigs', set())
+            suppressed = flags.get('forbric.suppressMixins', set())
+            if {'alpha', 'beta'} <= loaded.keys() and 'alpha.mixins.json' not in disabled \
+                    and 'alpha.mixins.json:Three' not in suppressed:
+                return 'java.lang.IllegalStateException: alpha meets beta'
+            return None
+        result = self.minimise(self.narrow_pack(), failure, narrowing=True)
+        first = result['rounds'][0]
+        self.assertEqual(['alpha-1.0.jar', 'beta-1.0.jar'], sorted(first['minimal']))
+        self.assertEqual(['alpha.mixins.json'], first['narrow']['configs'])
+        self.assertEqual(['alpha.mixins.json:Three'], first['narrow']['classes'])
+        last = first['narrow']['class_runs'][-1]['jvm']
+        self.assertIn('-Dforbric.disableMixinConfigs=beta.mixins.json', last)
+
+    def test_a_failure_with_every_config_off_needs_none(self):
+        def failure(loaded, flags):
+            return 'java.lang.IllegalStateException: alpha meets beta' if {'alpha', 'beta'} <= loaded.keys() else None
+        first = self.minimise(self.narrow_pack(), failure, narrowing=True)['rounds'][0]
+        self.assertEqual([], first['narrow']['configs'])
+        self.assertIn('disabled', first['narrow']['note'])
+        self.assertEqual(['-Dforbric.disableMixinConfigs=alpha.mixins.json,beta.mixins.json'],
+                         first['narrow']['config_runs'][0]['jvm'])
+
+    def test_narrowing_owns_its_two_flags(self):
+        with self.assertRaisesRegex(SystemExit, 'leave them out of --jvm'):
+            self.minimise(self.narrow_pack(), lambda loaded, flags: None, narrowing=True,
+                          jvm=['-Dforbric.suppressMixins=a.mixins.json:A'])
+
+
+class MainTest(Fixture):
+    def test_the_command_drives_mixed_against_the_installed_profile(self):
+        rows = [row(f'mod{i}-1.0.jar', 'fabric') for i in range(5)] + [row(CWB, 'forge', 'popular', 'cwb'),
+                                                                       row(CHLORIDE, 'neoforge', 'popular', 'chloride'),
+                                                                       row(SODIUM_NEO, 'neoforge', 'dep', 'sodium')]
+        closure = {entry['filename']: [] for entry in rows}
+        closure[CHLORIDE] = [SODIUM_NEO]
+        self.pack(rows, closure)
+        game = FakeGame(self.root, self.rows, clash)
+        self.addCleanup(setattr, mixed, '_permod', None)
+        mixed._permod = types.SimpleNamespace(INST=game.instance, prepare=game.prepare, kernel_fingerprint=lambda: self.kernel)
+        with mock.patch.dict(os.environ, {'PERMOD_DATA': str(self.data)}), mock.patch.object(mixed, 'drive', game.driver):
+            code = ddmin.main(['--manifest', str(self.data / 'manifest.json'), '--jvm=-Dforbric.example=1',
+                               '--out', str(self.root / 'evidence')])
+        self.assertEqual(0, code)
+        result = json.loads((self.root / 'evidence' / 'ddmin' / 'ddmin-result.json').read_text(encoding='utf-8'))
+        self.assertEqual([CHLORIDE, CWB], sorted(result['rounds'][0]['minimal']))
+        self.assertEqual(mixed.sha256(self.data / 'manifest.json'), result['manifest_sha256'])
+        self.assertEqual(mixed.sha256(self.data / 'closure.json'), result['closure_sha256'])
+        self.assertTrue(all('-Dforbric.example=1' in jvm for _, jvm in game.sessions))
+        self.assertIn('pauseOnLostFocus:false', (game.instance / 'options.txt').read_text(encoding='utf-8'))
+        label = result['rounds'][0]['reference']['label']
+        self.assertTrue((self.root / 'evidence' / 'ddmin' / 'runs' / label / 'crash-analysis.txt').is_file())
+
+
+class EvidenceTest(unittest.TestCase):
+    def test_the_game_exit_code_comes_from_the_driver_line(self):
+        self.assertEqual(78, ddmin.game_exit('client language en_us\nFAIL client exit=78 joined=False drew=False\n'))
+        self.assertIsNone(ddmin.game_exit('FAIL client remained alive after grace\n'))
+
+    def test_a_failure_no_exception_names_carries_the_session_outcome(self):
+        stall = dict(run='STALL', bad_mods=[], saved=False)
+        self.assertEqual('STALL EXIT:None', ddmin.outcome_signature('EXIT:None', stall))
+        degraded = dict(run='PASS', saved=True,
+                        bad_mods=[{'modId': 'zeta', 'status': 'DEGRADED'}, {'modId': 'alpha', 'status': 'FAILED'}])
+        self.assertEqual('PASS EXIT:0 bad:alpha=FAILED,zeta=DEGRADED', ddmin.outcome_signature('EXIT:0', degraded))
+        self.assertEqual('PASS EXIT:0 unsaved', ddmin.outcome_signature('EXIT:0', dict(run='PASS', saved=False)))
+        self.assertEqual(CLASH, ddmin.outcome_signature(CLASH, stall))
+
+    def test_a_policy_stop_is_judged_by_its_findings(self):
+        reference = dict(signature='POLICY_STOP:alpha:initialization:alpha', winners=dict(rows=None, picks=None))
+        self.assertEqual((FAIL, []), ddmin.judge(reference, dict(reference, strict=False)))
+        self.assertEqual((PASS, []), ddmin.judge(reference, dict(reference, strict=True, signature='PASS EXIT:0')))
+        self.assertEqual((UNRESOLVED, []), ddmin.judge(reference, dict(reference, strict=False, signature='POLICY_STOP:')))
+
+
+class PackTest(Fixture):
+    def test_candidates_are_the_subjects_and_any_jar_nobody_needs(self):
+        rows = [row('a-1.0.jar', 'fabric', 'popular'), row('lib-1.0.jar', 'fabric', 'dep'),
+                row('loose-1.0.jar', 'fabric', 'dep')]
+        pack = self.pack(rows, {'a-1.0.jar': ['lib-1.0.jar'], 'lib-1.0.jar': [], 'loose-1.0.jar': []})
+        self.assertEqual(['a-1.0.jar'], pack.subjects)
+        self.assertEqual(['a-1.0.jar', 'loose-1.0.jar'], pack.candidates)
+
+    def test_a_pack_that_cannot_close_or_whose_jars_changed_is_refused(self):
+        rows = [row('a-1.0.jar', 'fabric', 'popular')]
+        with self.assertRaisesRegex(SystemExit, 'does not hold: lib-1.0.jar'):
+            self.pack(rows, {'a-1.0.jar': ['lib-1.0.jar']})
+        with self.assertRaisesRegex(SystemExit, 'no entry for a-1.0.jar'):
+            self.pack([row('a-1.0.jar', 'fabric', 'popular')], {})
+        self.pack([row('a-1.0.jar', 'fabric', 'popular')], {'a-1.0.jar': []})
+        (self.data / 'mods' / 'a-1.0.jar').write_bytes(b'changed')
+        with self.assertRaisesRegex(SystemExit, 'a-1.0.jar: sha1 differs'):
+            ddmin.load_pack(self.data / 'manifest.json', self.data)
+
+    def test_the_command_needs_a_manifest(self):
+        with self.assertRaises(SystemExit) as refused, contextlib.redirect_stderr(io.StringIO()):
+            ddmin.main([])
+        self.assertEqual(2, refused.exception.code)
+
+
+if __name__ == '__main__':
+    unittest.main()
