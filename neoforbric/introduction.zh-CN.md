@@ -298,3 +298,303 @@ Mixin (via MixinWeaverSlot) → NativeCoremodParity → PostMixinFixups → Inte
 
 细化规则：纯 accessor/invoker mixin 永远保留；由另一个 mod 的 mixin 满足的锚点（`ForeignMixinTargets`、`MixinAddedMembers`）算作已解析；`@Group` 注入器按组整体判定；如果一个注入器只绑定在合并后的游戏里没有任何地方调用的合并基底方法上，它就**不算**已解析（活性检查，`MergedBaseUncalledMethods`，`-Dforbric.mixinFit.liveness=off`），除非某个已安装的 mod 调用了这个方法；只按名字写的 `@Inject` 选择器，如果它绑到的方法（Mixin 取目标类里第一个同名方法）不是 handler 写给的那个（该方法的全部参数再加上与返回类型对应的 callback，或者只有 callback），Mixin 会报 "Invalid descriptor" 拒绝，这种也**不算**已解析（`-Dforbric.mixinFit.handlerFit=off`）：合并基底可能在原版方法的位置上放了载体的重载，不管 mod 属于哪个生态。`MixinOverloadPin` 会钉住的选择器（见 7.4）按它落到的那个重载来判，所以钉住和这条规则不会同时作用在一个注入器上；`@Surrogate` 只按 Mixin 查找它的方式算数——handler 的名字、与绑到方法的 callback 描述符完全一致、注解是可见的。如果这个名字恰好只绑到一个方法、handler 也不抓局部变量，并且它的某个 `@At` 在那个方法里一定能找到注入点（`HEAD`；方法里有返回时的 `RETURN`/`TAIL`；成员确实在方法里、并且数量超过 `ordinal` 的 `INVOKE`、`INVOKE_ASSIGN`、`FIELD`、`NEW`；带 slice 的一律不算），这个缺失就是一次*拒绝*（`MixinFit.Rejection`）：Mixin 在找到的每个注入点上检查 handler，在第一个点上直接抛异常，不看 `require`，异常让这个 mixin 对该类的应用整体失败——排在它后面的注入器全部跟着丢，配置仍是 required 的话整个游戏也停。如果不能确定有注入点，Mixin 可能一个点也找不到，什么也不注入、也不抛异常，所以这种绑定仍按普通缺失处理，日志那一行会写明原因（`-Dforbric.mixinFit.rejectionPoint=off` 恢复旧做法，把这种绑定都当成拒绝）。所以带着拒绝的 mixin——不管是 `PARTIAL`、因为在另一个 mod 的类上有缺失而保留的，还是 `UNFIT` 但因为另一个 mod 的 mixin 也改这个类而保留的——都不会原样保留：如果 mixin 里没有别的代码调用它、它不在 `@Group` 里、也没有哪个目标按原写法绑上它，就在 Mixin 读到 mixin 之前把这一个注入器剪掉（`GuestInjectorPruner`，见 7.4，对 Mixin 实际收到的节点、带着目标类的代码再按同一条规则问一次），mixin 的其余部分照常应用，剪掉的注入器记一条 `CONFIRMED` 发现，作者自己给它定的次数（`require`，没有就看 `defaultRequire`）至少为一时算 required；剪不了就像 `UNFIT` 一样整个丢掉。被内核修复整个顶替的 mixin（`SupersededMixins`）总是整个丢掉，那一行不向玩家发问，看到修复生效后自动消解。按名字保留的 mixin（`MergedBaseMixinCompat.KEPT_MIXINS`、`-Dforbric.keepMixins`）不经判定，原样交给 Mixin。`-Dforbric.guestInjectorPruner.refused=off` 让这种 mixin 照旧交给 Mixin，`PARTIAL` 汇总里也会单独计数。`PARTIAL` 和 `UNFIT` 的 mixin 都会先交给 `MixinRetarget` 问一次，改写后缺的锚点更少、是适配器会保留的 mixin、而且没有多出拒绝，就采用这份计划——`UNFIT` 的改写不能留下任何拒绝（`MixinRetarget.adopt`）。内核按名字压掉的 mixin 根本不判定，既没有判定日志，也不计入 `PARTIAL` 数。`MixinFitReport` 离线执行同样的判定：`MixinFitReport <merged-base.jar> <mods-dir> [--verbose]`。
 
+只有 mod 自己的平台本来有这个成员，缺失才算合并造成的：Fabric mod 的平台是原版 26.2，MinecraftForge 或 NeoForge mod 的平台是各自打过补丁的 26.2（取声明这个配置的 mod 的生态，`MixinConfigOwners.ecosystemOf`；没有唯一一个 mod 认领的配置一律不问）。这两个打过补丁的游戏声明了原版没有的方法——`KeyMapping.getKeyModifier()`、`AxeItem.canPerformAction`、NeoForge 的 `EnderDragon.getParts()`——其中一些被合并丢掉或改了类型，所以对 MinecraftForge 或 NeoForge mod 来说，“原版也没有”什么也证明不了。如果一个注入器的 `method` 选择器全是普通名字，点名的方法这个平台也全都没有，并且没有任何东西要求它必须注入成功——没有 ≥ 1 的 `require`、配置原本的 `injectors.defaultRequire` 为 0、不在 `@Group` 里、没开 `mixin.debug.countInjections`——那么原生 Mixin 会一声不吭地跳过这个注入器，mixin 的其余部分照常应用（sponge-mixin 0.17.x 和上游 Mixin 0.8.7 都一样：`TargetSelectors.validate` 只在要求次数大于 0 时才抛错；配置的 `required` 只决定这种错误是否致命）。“普通名字”指一个方法名，可以带描述符，可以带目标类自己作为所有者；`@` 开头的动态选择器（MixinSquared 的 `@MixinSquared:Handler` 会解析到另一个 mixin 的处理方法）、`+` 或 `{n,}` 量词（其最小次数不管 `require` 是多少都会抛错）、带点号的所有者、正则和格式不对的描述符一律不回答。`NativeAbsentTargets` 把这样的注入器既不算已解析也不算缺失，只打一行 info 日志，于是 mixin 按其余锚点判定；其余都不缺时整个交给 Mixin —— 不产生发现，不触发策略停止。Not Enough Crashes 对 `BlockEntity.populateCrashReport` 的 `@Inject`（26.2 里叫 `fillCrashReportCategory`）就是这个情况。“平台也没有”由合并基底的原始字节加上随包分发的差异表 `native-only-methods.txt` 回答：每个平台各有一份，列出它的游戏在原版包里声明、而合并基底没有声明的方法（原版 565 个、MinecraftForge 424 个、NeoForge 14 个），以及只有合并基底才有、位于原版包里的类（分别 18、10、6 个）。原始类里仍然声明着的方法、`net/minecraft/`/`com/mojang/` 之外的类、别的 mod 的类，一律不会被判成“平台也没有”。这些行只对推导它们的那个基底成立，所以表里还记录了那个基底的成员摘要（原版包里每个类及其方法的名字和描述符，不含方法体）；由摘要不同的 jar 提供的类不回答，并打一条警告说明。`com/mojang/` 下 Minecraft 自己的库（brigadier、DataFixerUpper、authlib 等八个）按它们自己的字节回答：内核把它们放在合并基底旁边加载，每个平台加载的都是同样的 jar（原版 26.2 的版本 JSON 列出它们，MinecraftForge 65.0.1 和 NeoForge 26.2.0.88 的启动器配置继承这份清单，且不额外加任何 `com.mojang` 库），所以表里也记录了这些 jar 各自的成员摘要（`library` 行），恰好由其中之一提供的类按合并基底的类那样回答；别的版本的库 jar 不回答。这些行对每个平台只描述一个游戏——原版 26.2、MinecraftForge 65.0.1 打过补丁的 26.2、NeoForge 26.2.0.88 打过补丁的 26.2——表里的 `platform` 行记着这些版本。如果一个 mod 必需的 `minecraft` 范围，或对应平台的 `forge`/`neoforge` 范围，不包含这个版本，它就不是为这个游戏做的（它自己的加载器在这里会拒绝它，而它面向的更新的游戏可能就有那个方法），所以不回答，并打一行 info 说明是哪条要求；范围读不懂的、内核没有发布其清单（`ModPresence`）的 mod 也不回答。这些情况下缺失都照旧算合并造成的。`-Dforbric.mixinFit.nativeAbsent=off` 让这种注入器重新算作缺失。
+
+以前的规则是看出处，而那是错的：合并基底*本身就是* NeoForge 打过补丁的 Minecraft，再拼进了 Forge，所以“Forge 系的类”说的是这个 jar 的大部分。
+
+### 7.4 适配器 —— 把注入器挪到代码的新位置
+
+当合并把第三方注入器要找的东西挪了位置，内核会把注入器跟着挪过去，而不是丢弃它。每个适配器的适用面都很窄，靠表格或证明驱动：
+
+`MixinRetarget` 和 `MixinStubRebind`（委派存根 → 实际承载方法体的重载；先算出一个参数再转调的存根——`Player.doSweepAttack` 的判定框、`EntityFluidInteraction.update` 的谓词、`Entity.restituteMovementAfterCollisions` 的方块位置——只在承载方法体的重载的其他调用方全都是原版里调用存根签名的方法时才挪，所以 NeoForge 注册表快照直接调用的 `MappedRegistry.register(int, …)` 不会挂上 fabric-registry-sync 的新增条目回调）、`MixinOverloadPin`（只按名字写的 `@Inject`，Mixin 会绑到排在前面的另一生态的重载上时，钉到 handler 唯一对得上的那个重载——只在第一个重载接不住 handler 时才动；钉不了就说明原因）、`MixinMergedTwin`（以 `$forbricneo` 改名的匿名孪生类）、`MixinAnonymousRetarget` + `MergedBaseAnonymousDrift`（重新编号的 `Outer$N`）、`MixinAtWidenedCall` 和 `MixinWrapOperationShim`（载体加宽过或重排过的调用；`@Redirect` 只跟着复核过的 `REDIRECTABLE` 行里的加宽静态调用走，经一个丢掉追加参数的包装——creativecore 的 `RegistryFriendlyByteBuf.decorator`，此后它建的缓冲区带的是 `ConnectionType.OTHER`，NeoForge 那些看连接类型的 codec 在这些缓冲区上走原版线格式）、`MixinRelocatedCall`、`MixinSubtypeOwnerRetarget`（同一个调用换了 owner：子类型，或合并加宽过的字段的合并类型——`RangedBowAttackGoal.mob` 让 `Monster.lookAt` 变成了 `Mob.lookAt`；注入点拿到经由该字段那次调用的 ordinal，handler 外面加一道守卫，只在字段装的是原版类型时运行）、`MixinShearsRelay`、`MixinHandlerShim`、`MixinAtShape`（不同 Mixin 分支之间 `at=[…]` 与 `at=…` 的差异）、`MixinLocalsCapture`（`CAPTURE_FAILHARD → CAPTURE_FAILSOFT`）、`InsertedLambdaArgumentShim`、`MergedBaseCalleeSwaps`（其中的 `REPLACED` 行：载体在唯一调用点整个替换掉的原版私有方法，由 `MixinRetarget` 的 R7 跟随——`StructureTemplate.placeEntities` → NeoForge 的 `addEntitiesToWorld`，挪过去的 HEAD handler 从 settings 上读回原版的参数；这类选择器由上面那条 handler 匹配规则发现，这些行只负责挪）、`MergedBaseAbsorbedCalls`、`CarrierHelpers`（表 `carrier-helpers.txt`）、`CarrierRenames`（表 `carrier-renames.txt`：载体把原版方法体整个或分段搬进了它新加的、描述符相同的方法，每一行是随方法体一起搬过去的一个调用或字段访问，以及它在 mod 自己那套游戏的这个方法（参考方法）里出现了几次——Fabric mod 的参考方法是原版的，Forge 或 NeoForge mod 的是对应载体打过补丁的那个；次数不同时按生态分成几行。`MixinRetarget` 的 R3 只在 mod 自己那套游戏里方法体还在原处、注入器的每个锚点都是这些搬过去的调用之一而且绑定的次数不超过参考方法里的次数（写了 `ordinal` 的锚点要求次数完全一致）、并且合并后的类仍然调用这个改名方法时，才把选择器挪过去——唯一的例外是表里标成 `UNCALLED` 的那一行，挪过去只是为了让注入器绑上。这一行是 NeoForge 的 `ItemStack.addDetailsToTooltipComponents`：原版的 tooltip 方法体，NeoForge 把它留成私有方法、从来不调用（NeoForge 用自己的 appender 画 tooltip）；普查会排除所有不是私有的、或者同一 nest 里有任何代码调用它的改名方法。挪到这里的注入器永远不会运行，而且会如实报告：MixinFit 判它“永远不运行”，最终类检查把它记为一个永远不运行的注入器（CONFIRMED，但不是 required），只会在这个 mod 的那一行做标记，不会阻止启动。malilib 的最后一个 tooltip 钩子（`onGetTooltipComponentsLast`，required）会落到这里；trinkets 作为 Fabric mod 加载时（它是通用 jar，默认按 NeoForge 加载），它的属性行钩子也会落到这里；如果不挪，malilib 的钩子哪里都绑不上，成为一条 CONFIRMED 的 required 损失，严格策略下所有带 malilib（Litematica、MiniHUD、Tweakeroo）的客户端都会被拦下，默认策略下会弹出询问。让这类钩子在 NeoForge 真正生成 tooltip 行的地方运行，目前还没有做。改名方法包含参考方法的全部调用和字段访问、并且每个出现的次数都相同的行是 `RENAME`，否则是 `PIECE`（NeoForge 的 `addDetailsToTooltipTail`、`startSleepInBed` 的 lambda、四个 HUD 层）；挪进片段的只能是只依赖那个调用本身的 handler：不能共享变量、不能捕获局部变量、不能用 slice，要拿方法参数的 handler 只在方法把自己的参数原样交给这个片段、并且之前没有改写过这些参数时才挪。能取消方法的 handler（可取消的 `@Inject`、带 `@Cancellable` 的回调）只在合并后的方法会把片段返回的 `Either` left 原样返回时才挪进片段——表里标成 `LEFT` 的行，并且运行时再按实际字节码核对一遍：NeoForge 的 `startSleepInBed` 把 lambda 的结果交给 `EventHooks.canPlayerStartSleeping`，结果带问题就直接返回——而且这个 handler 所有可能的取消值都必须是 `Either.left(..)`，分析时会跟进它自己 mixin 里的 lambda 和私有辅助方法。apoli-legacy 的鸟类禁睡和 Fabric API 的睡觉朝向否决（`MODIFY_SLEEPING_DIRECTION`）都是这样在 lambda 里取消的，所以 NeoForge 的 `CanPlayerSleepEvent` 会像看到原版的问题一样看到它们的问题，`startSleepInBed` 也会把它返回；apoli 取消时用的是 `Either.left(null)`，NeoForge 的这个钩子读不了它，会在 `startSleepInBed` 里面直接抛异常。走原版 `BedBlock` 这条路径时两边都会失败（apoli 自己的游戏里是 `BedBlock` 对这个 null 调 `message()` 时抛异常），但在 Forbric 上，会判断 null 的其他调用方（别的 mod 的睡袋、自定义床）也会失败；这和加入这张表之前一样。在完整的 `RENAME` 上，共享变量的 handler 只在它所在 mixin 里同一方法上共享同一个变量的 handler 全部一起挪时才挪。只看字节码的时候，R3 曾把注入器挪进形状相同但毫不相干的方法（text_styles 的颜色钩子挪到了阴影颜色上，ViaFabricPlus 的物品使用和快捷栏按键钩子挪进了别的原版方法，goldenpotions 的标签页图标挪进了另一个标签页的 lambda），也挪进过那个没人调用的 tooltip 改名方法体，而且都被判为完全匹配。前四个现在 R3 不再挪：ViaFabricPlus 5.0.2 的那两个是 NeoForge 在原处换掉的调用上的重定向，改由 `ReplacedCallRedirects` 挪（见下）。`-Dforbric.mixinRetarget.renameCensus=off` 恢复只看字节码的做法，`-Dforbric.mixinRetarget.renameCensus.leftExit=off` 让所有能取消的 handler 都不进片段，`-Dforbric.mixinRetarget.renameCensus.uncalled=off` 让所有注入器都不进 `UNCALLED` 的方法体），以及按功能面划分的 Fabric 适配器（`FabricBlockBreakMixinAdapter`、`FabricEntityMixinAnchors`、`FabricClientMixinAnchors`——它还把任何 Fabric mod 挂在 `Gui.extractRenderState` 里屏幕绘制调用前后的 `@Inject` 挪到 NeoForge 的 `ClientHooks.extractScreen` 前后，合并后的方法体在那里画屏幕；LiquidBounce 的整个浏览器菜单就画在这里——`FabricEnchantmentMixinAdapter`、`FabricMiningMixinAdapter`、`FabricSoundMixinAdapter`、`FabricServerLanguageMixinAdapter`），以及 `ReplacedCallRedirects`：载体在原处把一个原版调用换成了自己的调用，而 mod 对原版调用的 `@Redirect` 只是在转发原版调用外面加一个条件时，这个重定向挪到载体的调用上、改为转发载体的调用。只沿着表里的行挪，每行写明两者在哪里互相对应、哪些操作数是同一个值以及理由（ViaFabricPlus 的快捷栏按键：`KeyMapping.matches` → `isActiveAndMatches`；物品持续使用：`ItemStack.isSameItem` → `CommonHooks.canContinueUsing`，handler 自己的逻辑仍按原版的参数顺序看两个物品堆；铲子压路：`FLATTENABLES.get` → 方块状态的 `SHOVEL_FLATTEN` 修改）；只对自己那套游戏里做的是原版调用的生态生效；`-Dforbric.replacedCallRedirects=off` 关闭。还有 `MixinTwinRebind`：合并基底保留了某个原版方法、但合并后的游戏里没有任何代码调用它，而载体在它的位置加了一个重载时，按原版签名写的注入器挪到这个重载上。只沿着 `carrier-twins.txt` 的行挪（`CarrierTwinCensusTest` 推导：原版方法对这个 mod 的生态来说没人调用、也不是载体存根；那个重载包含原版的每一个参数，按局部变量名和类型一一对应；该生态自己那套游戏里调用原版方法的每个方法，在合并基底里都改为调用这个重载）。handler 捕获的原版参数在重载里位置不同时会被包一层：外层接重载的参数，再按原版的参数交给原 handler。只在原版方法仍然没人调用（没有已安装的 mod 引用它）时挪；只挪捕获全部原版参数或不捕获参数的 `@Inject`，以及能确定自身参数约定的 `@At` 类注入器（`@ModifyVariable` 不挪）；每个 `INVOKE`/`FIELD` 注入点在两个方法体里出现的次数必须相同。NeoForge 给 `ModelBlockRenderer.shouldRenderFace` 加了方块自己的位置参数，并且排在原版那个前面，所以 LiquidBounce 的 X-Ray 面剔除钩子（按名字选择、接原版的四个参数）以前会绑到 NeoForge 的重载上、在那里被拒绝，连带整个方块渲染 mixin 一起失效；`-Dforbric.mixinTwinRebind=off` 关闭。还有 `ThinnedCallOrdinals`：载体把一个原版调用换掉了几处、保留了其余几处，使这个调用出现的次数比原版少时，按原版方法体数出来的 `@At(INVOKE)` ordinal 会改成合并后方法体里对应同一个调用的那一处。只沿着复核过的行改：每行写明原版的每一处对应保留下来的哪一处（或者已经没有），以及每个保留下来的调用后面紧跟的是哪个调用（在两个 jar 上核对过，运行时还会对实际的方法再核对一次）。ViaFabricPlus 的 1.12.2 放置钩子位于 `MultiPlayerGameMode.performUseItemOn` 第三个 `ItemStack.isEmpty()` 之前；NeoForge 和 MinecraftForge 把原版对两只手物品的 `isEmpty` 判断换成了 `doesSneakBypassUse`，所以合并后的方法体只剩下第三个。只对按原版次数编译的生态生效；`-Dforbric.thinnedCallOrdinals=off` 关闭。`GuestInjectorPruner`（COREMOD）在内核接管了某些注入器功能的地方，从第三方 mixin 类里剪掉这些单独的注入器；另外在字节码提供器的适配器全部跑完之后，剪掉判定认定 Mixin 会直接拒绝的注入器（见 7.3）——每个都要在 Mixin 即将拿到的节点上按同一条规则再确认一次，已经被某个适配器挪到合适位置的注入器会留下。有几个适配器会读取 `src/main/resources/net/forbric/kernel/mixin/` 下随包分发的表（`carrier-helpers.txt`、`carrier-renames.txt`、`carrier-stubs.txt`、`carrier-twins.txt`、`lambda-permutations.txt`、`uncalled-methods.txt`、`native-only-methods.txt`）；`CarrierHelperCensusTest`、`CarrierRenameCensusTest`、`CarrierTwinCensusTest`、`UncalledMethodCensusTest` 和 `NativeOnlyMethodsCensusTest` 根据暂存的 jar（`native-only-methods.txt` 读的是合并基底、两个打过补丁的游戏和原版自己的 jar）重新推导 `carrier-helpers.txt`、`carrier-renames.txt`、`carrier-twins.txt`、`uncalled-methods.txt` 和 `native-only-methods.txt`，并把它们锁定。把 handler 方法体改名挪到一边、原名换成包装的那几处（`MixinRetarget` 的守卫和 R7、`MixinAtWidenedCall` 的 redirect、`MixinSubtypeOwnerRetarget` 的守卫），改名时会带上 mixin 类的标记，免得同一目标上两个 mixin 的同名 handler 被合并成一个方法体。`MixinFitLivenessCensusStagedTest` 另有一份普查：Fabric mixin 点名的锚点里，在原版 26.2 上能解析、按内核的判定在合并基底上解析不了的那些。只有 fabric-api 的行有断言（多出一行构建就失败）；`FORBRIC_ANCHOR_PACKS` 指定的其他语料只出报告（`build/reports/vanilla-anchor-census.txt`）——第三方 mod 的行不会让任何东西失败，得有人去读报告。
+
+### 7.5 归因
+
+`MixinConfigOwners` 在注册前把每个配置映射到它所属的 mod，这样 Mixin 自己报出的失败就会点名那个 mod（`-Dforbric.mixinModIdDecoration` 还会把 mod id 写进生成的 handler 名）。`KernelMixinErrorHandler` 把准备/应用阶段的失败记到该 mod 的那一行上，但不改变 Mixin 的决定。`FinalMixinApplications` 在所有阶段结束后观察每个已定义的类——某个 handler 零引用，就证明它没有挂上。当某个具名的内核修复完成了那个 mixin 做的*全部*事情时，`SupersededMixins` 不让这次失败记到该 mod 的那一行上；当该 mod 自己的配置插件本来就会拒绝这个 mixin 时，`PluginDeclinedMixins` 也这样处理；`ForeignMixinBreaks` 记录那些专门写来挂到另一个 mod 上、结果没挂上的 mixin。`MixinCompatibility` 让一个 mixin 从预检到应用始终带着同一个身份。
+
+### 7.6 跨 mod 的重叠 —— `MixinOverlapLint`
+
+`MixinFit` 拿一个 mixin 对照基底来判；两个各自都合身的 mod 放在一起仍可能相撞。`MixinOverlapLint` 列出每个 handler 的占用（目标方法、`@At` 调用、ordinal），把不同 mod 的占用两两配对 —— 打包在一个 jar 里的模块算作装进来的那个 jar，同一 mod id 的两个 jar 算作同一个 mod：
+
+| 规则 | 组合 | 类别 |
+| --- | --- | --- |
+| R1 | 同一方法上的两个 `@Overwrite` —— 只留下一个方法体：优先级高的那个，优先级相同时留先应用的那个 | 冲突 |
+| R2 | 同一调用上的两个 `@Redirect`，ordinal 相同或未指定 —— Mixin 只保留一个 | 冲突 |
+| R3 | 一个 `@Overwrite`，加上另一个 mod 在该方法里的任意注入器 | 冲突 |
+| R4 | 同一调用上的 `@Redirect` 和另一个 mod 的 `@WrapOperation`/`@ModifyExpressionValue` | 提示 |
+
+通配符/正则选择器，或目标类读不到时的裸方法名，不产生占用；slice 不读。启动时（§3.2 第 18 步）它按 `ForbricMixinService` 实际交给 Mixin 的配置来读（内核删掉的 mixin 已不在里面），每个 mod 每条冲突记一条 `SUSPECTED` 发现，id 为 `mixin-overlap:<owner>.<name><desc>[@<at>]`，detail 里点名另一个 mod；日志里记各规则计数和耗时毫秒数（`-Dforbric.mixinOverlapLint=off` 关掉）。崩溃调用栈经过一个记录了冲突的方法时，`CrashAttribution` 会同时点名这两个 mod。离线：`MixinOverlapLint <merged-base.jar> <mods-dir> [--json out]`（递归查找 jar）。
+
+## 8. 事件桥
+
+在合并基底上，两个 Forge 系的钩子争夺同一批调用点，最后只有一方胜出；落败方的钩子成了死代码，于是这个系的监听器挂在一条没人发布事件的总线上。MinecraftForge mod 要的必须正是 `net.minecraftforge.…Event` 的实例，所以重新发出事件本来就无法避免。
+
+- **桥清单** —— `net.forbric.api.GameEventBridge` 列出 96 个桥，每个都标明对应的事件、所属的安装轮次，以及从玩家角度说的**代价**。安装轮次有：`GAME_BUS`（客户端与服务端）、`CLIENT_GAME_BUS`、`CLIENT_MOD_BUS`、`CLIENT_INIT`、`REGISTRATION`、`CLIENT_HUD`、`ON_DEMAND`。
+- **校验** —— `net.forbric.api.EventBridges.verify(pass)` 把实际装上的桥和声明的桥对照，缺了哪个就连同它的代价一起点名；桥装不上时会少掉一项功能，却不抛任何异常，所以这是它唯一能被看见的途径。
+- **实现** —— `boot.GameEventMultiplexer` 安装总线之间的桥；游戏侧的另一半是 `runtime.KernelGame*Events`（tick、服务端生命周期、玩家、level、世界、方块、实体、伤害、追踪，以及客户端的 tick/渲染/输入/网络/资源/界面鼠标事件），外加 `KernelGameResultBridges`，负责 MinecraftForge 一侧有返回值的那两个事件。可取消的事件会把取消结果传回去。不属于总线到总线的桥由转换器落地（`ForgeDamageSeamsInjector`、`ForgeCreativeTabsInjector`、`ForgeSpawnPlacementsInjector`、`ForgeClientConsumersInjector`、`ForgeBlockTintInjector`、`ForgeOverlayNeuterInjector`/`KernelForgeOverlayLayers`……）。
+- **其他方向** —— 合并后的方法体不再发布的 NeoForge 事件（`ItemTooltipEvent` 经由 `KernelItemTooltips`，`ScreenEvent.Opening/Closing` 经由 `NeoScreenEventsInjector`，转化事件的 `Post` 经由 `NeoConversionPostInjector`）；在 Fabric 的 mixin 套不上的地方，从 NeoForge 自己的调用点触发 Fabric API 事件（`LootTableEventBridgeInjector` + `LootTableEventDispatch` 负责 `LootTableEvents`，`KernelHudBridge` 负责 `HudElementRegistry`，`FabricFuelValuesInjector`，以及提示框和方块破坏的适配器）。
+- **审计** —— `HookCallSiteCensus`（合并基底还在调用 `ForgeEventFactory`/`ForgeEventFactoryClient`/NeoForge `ClientHooks` 中的哪些钩子），`DeadEventAudit` + `ForgeBusSubscriptions`（谁在监听死事件，包括注解扫描看不到的订阅），`DeadHookWorklist`（前两者交叉比对的结果，按会察觉到的已安装 jar 数量排序），`EventChainAudit`（每一次跨总线发布，都用同一套规则检查；gate-m41）。
+
+## 9. 数据包、资源与数据
+
+### 9.1 服务端数据
+
+真正的加载器会遍历 `ModList` 里的 mod 文件，把每个 mod jar 变成一个包。内核往 `ModList` 发布 mod 时 `modFiles` 是空的，所以这次遍历什么也找不到。由 `DataPackHookInjector` → `KernelLifecycle.onServerDataPacks` → `KernelDataPacks` / `runtime.KernelDataPackSource` 提供每个 Forge 系 jar 的 `data/`，两个载体的也一并提供（`c:` 约定标签、`neoforge:` 伤害类型和数据映射只存在于载体里）。元数据通过 NeoForge 的 `ResourcePackLoader.readWithOptionalMeta` 读取，保留根包的覆盖层。两个载体带了同一个文件时，标签会叠加，按“后者胜出”处理的文件则由 NeoForge 胜出。Fabric mod 的数据和在 Fabric 上一样，由 fabric-api 自己的资源加载器提供。`KernelPackFinders` 让 MinecraftForge mod 能添加自己的包查找器（`-Dforbric.modDataPacks=off` 会关闭 Forge 系的包）。
+
+### 9.2 客户端资源
+
+NeoForge 的 `mod_resources` 来源在合并基底上是孤立的。`ClientPackHookInjector` 把 `ClientModLoader.setupModResourcePacks(PackRepository)` 的方法体重定向到 `KernelLifecycle.onClientResourcePacks`，由 `KernelClientPacks` 在第一次资源重载之前为每个生态 jar 添加一个包（兼容性强制设为 `COMPATIBLE`，两个真正的加载器也是这么做的）。`PackScreenHiddenFilterInjector` 让这些包不出现在资源包界面里。内核自己的资源（Mods 按钮图标）放在 `forbric-kernel-runtime.jar` 里。
+
+### 9.3 同时写给三个加载器的包元数据
+
+多加载器的 `pack.mcmeta` 为每个加载器各带一节，而在 Forbric 上，三个解析器都会读它。`KernelPackMetadata` + `PackMetadataFailSoftInjector` 防止某个解析不了的外来小节导致整个包被丢弃；`PackOverlayMutabilityInjector`（修复）和 `NullPackGuardInjector`（兜底）处理 NeoForge 合并覆盖层时去修改 fabric-api 已冻结列表的问题（两者的说明都在 `KernelPackRepair` 里）。
+
+### 9.4 条件、注册表、数据映射、世界生成
+
+- **资源条件** —— 有三个求值器，因为合并后的 `RegistryLoadTask` 同时带着两个系的补丁：`runtime.KernelFabricConditions`（`fabric:load_conditions`；fabric-api 自己的那两个 mixin 套不上）、`KernelNeoConditions`、`KernelForgeConditions`——每个都防止一种方言让另一种方言的文件失败。
+- **注册表目录** —— `RegistryDirectoryOwnerInjector` / `KernelRegistryDirectories`：`registryDirPath` 的返回值与所属生态的做法一致。**别名** —— `RegistryAliasParityInjector` / `KernelRegistryAliases`。**反射** —— `RegistryWrapperAccessInjector` 在 MinecraftForge 的 `NamespacedWrapper` 和 `NamespacedDefaultedWrapper`（合并后的游戏里 block、item 等 27 个内建注册表，外加 MinecraftForge 自己的 3 个，就是它们）加载时把它们改成 public，与它们所替代的 `MappedRegistry` 一致，这样 mod 在 `registry.getClass()` 上查到的方法才能被调用（`-Dforbric.publicRegistryWrappers=off`）。`Class.getMethod` 还会解析它查找到的每一层类所声明的全部 public 方法的类型（从运行时类往上，查到第一个声明了匹配方法的类为止；`getMethods` 会查遍所有层），所以 `RegistrySyncParityInjector` 只在游戏类加载器里有这些类型时，才给 wrapper 加上 fabric-api 的 `remap(Object2IntMap, RemapMode)`（由 `RegistrySyncParityInjector.forGameLoader` 判断）。没有 fabric-api 时，这个方法引用的类不存在，`getMethods()` 以及所有查到 `NamespacedWrapper` 这一层的查找（`getOptional`、`keySet` 等）都会抛 `NoClassDefFoundError`。
+- **数据包注册表** —— `KernelLifecycle.registerDataPackRegistries` 发布 `DataPackRegistryEvent.NewRegistry`，声明 MinecraftForge 的生物群系/结构修改器注册表，并双向镜像 Fabric 的动态注册表。
+- **数据映射** —— 会加载 NeoForge 数据映射（`KernelNeoDataMapWatch`、`KernelNeoWorldgen`）。所有经由 holder 的数据映射查询最后都落在 `Holder.Reference.getData`，它会调 `key()`，而还没注册的值没有 key，于是抛 `Trying to access unbound value`；原版的氧化、打蜡、去皮表对任何方块都能回答。`UnboundHolderDataInjector` 让未绑定的 holder 回答“没有数据”（没有 key 的值不可能出现在任何数据映射里），NeoForge 的钩子因此回落到原版的表——Fabric mod 在初始化里调用它们时期望的就是这样（`-Dforbric.unboundHolderData=off` 可关闭）。这一点和原生 NeoForge 不同：原生在任何时候都会在这里抛错。值所属的注册表还开着时，这个回答是静默的；一旦该注册表的任一 `frozen` 标志被置上（它的 `freeze()` 已经跑过，而 `freeze()` 遇到这样的值会抛 "Some intrusive holders were not registered"），`util.KernelUnboundHolderData` 就对每个这样的值 WARN 一次（最多 64 条，之后再打一行汇总），写明值、注册表和发起查询的调用栈——原生 NeoForge 会抛的那个错仍然被报告出来，只是查询照样回答“没有数据”。这条 WARN 说的是“注册表关闭时它还没注册”，不是“它永远注册不进去”：注册表可以被 unfreeze，Forbric 也会为 Fabric 客户端 entrypoint 重新打开注册表。
+- **世界生成** —— MinecraftForge 的生物群系/结构修改器搭在 NeoForge 仅有的那一轮修改器处理里运行（`runtime.KernelForgeWorldgen`；`-Dforbric.forgeWorldgen=off` 可以关闭，此时 `ForgeWorldgenShippers` 会点名因此失去这部分功能的 mod）。`NativeCoremodParity`、`BiomeInfoRebaseInjector`、`BiomeLateWriteInjector` 让修改后的视图能被读到。gate-m31 要求零 mod 时的世界生成在相同种子下，生物群系和结构起点与原版一致。
+
+## 10. 统一 API —— `net.forbric.api`
+
+固定交给父加载器（每个 JVM 只有一份），是内核和全部三个兼容层共用的语言，免得两两互相翻译：
+
+| 类型 | 作用 |
+| --- | --- |
+| `Ecosystem`、`Side` | 唯一一套生态与端（side）词汇 |
+| `ForeignType` | 58 行，每行把一个 Forge 系概念映射到它在 MinecraftForge 和 NeoForge 中的类名——只有名字；各系之间的差异仍以数据表示 |
+| `DiscoveredMod`、`UnifiedDependency`、`VersionPredicate`、`ModIds` | mod 与依赖模型 |
+| `ModPresence`、`ModCatalog` | “X 是否在运行”，以及玩家看到的列表，状态为 `OK` / `DEGRADED` / `FAILED` |
+| `GameEventBridge`、`EventBridges` | 桥清单及其校验 |
+| `ForgeLoadingList` | MinecraftForge 的 `LoadingModList` 据以构建的数据 |
+| `CompatibilityFinding`、`CompatibilityFindings` | 每次启动的证据账本（§12） |
+
+它不是给 mod 用的稳定 API。
+
+## 11. Mods 界面
+
+`runtime.KernelModListScreen` 取代两个系各自的 mod 列表界面（`ModsButtonRedirector`），读取 `ModCatalog`；`ModCatalog` 由 `KernelModCatalog` 根据发现结果填充，并再读一遍每个 jar，取出描述、作者和 logo。每个 `ModCatalog.Entry` 都带有 `status` 和 `statusDetail`；如果它是以内嵌 jar 的形式带进来的，还会写明是哪个 mod 自带了它。
+`KernelModConfigScreens` 负责打开 mod 自己的配置界面。
+
+Fabric mod 的配置界面只在一个地方声明：一个实现 Mod Menu 的 `com.terraformersmc.modmenu.api.ModMenuApi` 的 `"modmenu"` 入口点。这个接口属于 Mod Menu 这个 mod，所以没装 Mod Menu 时，入口点类连链接都过不了。找到已安装的 Mod Menu 时照旧问它。否则由 `boot.ModMenuApiStandIn` 把这五个 API 类型及其默认值返回的 `util.NullScreenFactory` 的替身交给 `ForbricClassLoader.putGeneratedClass`（与 Mod Menu 20.0.3 的公开形状完全一致，从 `src/modmenuApi/java` 编译，以 `.class.bin` 资源的形式放在游戏侧 jar 里）。加载器只在所有自有 jar 都找不到这个类之后才定义这些字节，所以真正的 Mod Menu 仍然优先。只在客户端、只有 API 这一个包外加那一个类：`isModLoaded("modmenu")` 仍然是 false，Mod Menu 的其余内部类也仍然不存在。随后 `fabric.ModMenuConfigFactories` 按 Mod Menu 初始化时的方式读取这些入口点：先读每个 mod 自己的工厂：如果它是接口默认值所返回的那个类的实例就跳过（即 Mod Menu 的 `instanceof NullScreenFactory`，所以重写后又退回默认值的 mod 不会出现一个按了没反应的 Config 按钮，问"有没有"时也不需要构建界面）；再用 `putIfAbsent` 合并每个入口点的 `getProvidedConfigScreenFactories()`，和 Mod Menu 一样每次查询都重新合并。坏掉的入口点会被跳过。`-Dforbric.modMenuStandIn=off` 恢复旧行为：Fabric mod 只有装了 Mod Menu 才有 Config 按钮。
+
+## 12. 兼容性报告与策略
+
+### 12.1 证据
+
+`net.forbric.api.CompatibilityFinding(id, modId, feature, source, confidence, required, detail, evidence)`；`Confidence` 取值为 `SUSPECTED`、`CONFIRMED` 或 `RESOLVED`。只有 `CONFIRMED && required` 能阻止启动；`RESOLVED` 只作为证据保留，从不给 mod 打标记。`CompatibilityFindings` 是每次启动的账本，引导代码、游戏界面和发布检查共用它。写入方包括：依赖审计（`DependencyAudit`，跨生态——没有哪个解析器会处理合在一起的整个集合）、仲裁、Mixin 预检/应用、缺失的桥、延迟任务失败、§3.2 的静态审计、`KernelTransferInterop`，以及服务端/客户端的后期检出项。
+
+### 12.2 文件 —— 都在 `<gameDir>/.forbric-kernel/` 下
+
+| 文件 | 何时写入 |
+| --- | --- |
+| `load-report.txt` | 在进入游戏前的边界处作为证据写一次，初始化生命周期结束后再写一次，`ServerStartedEvent` 时（世界已就绪；内置服务器也会发布这个事件）以及后期检出项到来时还会再写（`-Dforbric.loadReportRewrite=off` 只保留第一次写入）；如果加载始终没有完成，由关闭钩子写入。使用系统语言 |
+| `compatibility-report.json` | 与它放在一起，机器可读的检出项 |
+| `merge-report.txt` | 两个 jar 声明同一个 mod id 时（§4.3） |
+| `crash-analysis.txt` | 生成崩溃报告之后：调用栈指向哪些 mod，调用栈经过的方法上有 mixin 重叠时同时点名双方（`CrashAttribution`，§7.6；`-Dforbric.crashAnalysis=off`）。Forge 的 `Suspected Mods:` 那一行依赖一个模块层，而内核不构建这个模块层 |
+| `crash-suspects.json` | 与它放在一起：`{schema:1, report, clash, suspects:[{modId,name,jar,reason,depth}]}`。下一次客户端启动时，在仲裁之前，`CrashSuspectOffer` 提出不加载这些 jar 启动（冲突时保留第一个被点名的一方），选“不加载启动”就把它们追加进 `<gameDir>/forbric-disabled.txt`；无论怎么回答，都把文件改名为 `crash-suspects.offered.json`。服务器、无显示环境和 `-Dforbric.dependencyDialog=off` 只在日志里写出这些行 |
+
+同一位置还有几个工作目录：`lib/`（解压出来的自带 jar）、`jij/`、`jarjar/`、`candidates/`。
+
+### 12.3 依赖对话框
+
+`ui.DependencyDialog` 向玩家显示未满足的硬依赖和跨 mod 的 mixin 失效。这个窗口是一个**独立的 JVM**（`DependencyDialogMain`，启动时 classpath 里只有内核 jar 这一项），因为在 macOS 上游戏带着 `-XstartOnFirstThread` 运行，AWT 无法和 GLFW 共用第一个线程。父子进程之间只共享 `DependencyReport` 里的制表符分隔文件格式；文案在 `DialogLang` 里（跟随系统语言，`-Dforbric.dialogLanguage=<code>` 可强制指定一种）。`-Dforbric.dependencyDialog=on`（默认）| `off` | `dryRun`（派生真正的子进程，但禁用 AWT——闸门断言的就是它）。子进程 10 分钟后超时。确认窗口的退出码：`0` 继续，`4` 退出或关掉窗口，其他任何值（`3` 画不出窗口、启动器自己的 `1`）表示窗口没能让人回答。同一个子进程还有第三种窗口 `--isolation`，即 §12.2 的崩溃嫌疑提示：退出码 `2` 表示不加载它们启动；除了那两个明确的按钮，其他任何情况都按加载全部 mod 启动处理。
+
+### 12.4 策略 —— `-Dforbric.compatibilityPolicy`
+
+`ui.CompatibilityDecision.policy()`：
+
+| 值 | 已确认的必要功能缺失…… |
+| --- | --- |
+| `ask`（默认） | 在对话框里询问玩家一次（依赖提示也并入其中）；只有明确选择“继续启动”才算批准，选“退出”或关掉窗口算拒绝。客户端上对话框弹不出来时——`java.home/bin/java` 不能执行（FCL 这类安卓启动器）、子进程起不来或画不出窗口、10 分钟没人回答——问题改到游戏里问：不批准任何东西，由 `KernelCompatibilityPrompts` 在标题界面用对话框同样的按钮询问，选“退出”就停止游戏。启动参数要求直接进世界（`--quickPlaySingleplayer`/`Multiplayer`/`Realms`：世界会在游戏能问之前就加载）或设了 `-Dforbric.dependencyDialog=off` 时，照旧不批准。专用服务器没人可问 → 不批准 |
+| `continue` | 接受并记录在案；提示仍可能显示 |
+| `strict` | 阻止启动；不显示任何窗口 |
+| 其他任何值 | 按 `strict` 处理（失败时按拒绝处理） |
+
+这个决定会在进入游戏前的边界处询问一次（§3.2 第 18 步），加载结束时再问一次（服务端在 §3.4 第 3b 步，客户端在 `fireClientSetupLifecycle`），专用服务器还会在 `ServerStartedEvent` 时再问一次（世界加载期间出现的必要功能失败会让服务器按正常流程停机）。拒绝时抛出 `CompatibilityDecision.LaunchStopped`；`CompatibilityLaunchBoundary` 把它转成退出码 **78** 并打印报告路径；在 `Minecraft.<init>` 内部则通过 `SilentInitException` 退出，因此不会作为崩溃上报。启动之后才出现的检出项从不派生 Swing 进程，也不会退出 JVM：在服务端，它们在一个 tick 完成后的边界处处理（`LateServerCompatibility`）；在客户端，则在渲染线程的某个 tick 上由一个原生 Minecraft 界面处理（`KernelCompatibilityPrompts`、`KernelCompatibilityScreen`）。安装好的版本配置不传任何 JVM 参数，所以玩家得到的是 `ask`；`run/launch-kernel-{client,server}.sh` 默认用 `strict`（客户端脚本还默认 `-Dforbric.dependencyDialog=off`）。
+
+## 13. 安装器 —— `forbric-kernel-installer/`
+
+纯 JDK 实现，没有依赖，字节码 release 17，版本 `0.3.1-beta2`。
+
+```
+java -jar forbric-kernel-installer.jar                     # window (InstallerGui)
+java -jar forbric-kernel-installer.jar --dir DIR [options] # headless install
+    --mc 26.2  --artifacts DIR  --jdk PATH  --remote  --release TAG  --mirror PREFIX  --offline
+java -jar forbric-kernel-installer.jar --doctor [--dir DIR] [--jdk PATH]
+```
+
+### 13.1 在玩家的机器上构建游戏产物
+
+`ArtifactBuilder.build` 在 `<mcDir>/.forbric-build/` 下运行，从第一个未完成的步骤接着做：
+
+```
+forge userdev ─┬→ forge-runtime ───────────────┬→ patched-mc-forge ─┐
+               └───────────────────────────────┘                    ├→ patched-mc-merged
+neoforge userdev ─┬→ neoforge-runtime ──────────────────────────────┤
+                  └→ NFRT → patched-mc-neoforge ────────────────────┘
+vanilla 26.2.jar ───────────────────────────────────────────────────┘
+forge-runtime ────────────────────────────────→ forge-runtime-interop   (what is staged)
+```
+
+- `ForgeRuntimeBuilder`、`PatchedMcBuilder`（Forge 的 `installertools`/`mergetool`/`binarypatcher` 作为子 JVM 运行，Forge 的 `AccessTransformerEngine` 在进程内运行）、`NeoForgeRuntimeBuilder`、`NfrtRunner`（NeoFormRuntime，取的结果是 `gameJarNoRecomp`：只打二进制补丁，不用反编译器，也不用 `javac`）。
+- `MergedBaseTool` 从安装器的资源里解出 `forbric-merge-tools.jar`，依次运行 `net.forbric.tools.MergedBaseBuilder`（`-Xmx4g`）、`RuntimeInteropPatcher`，然后对照打包在安装器里的已审核基线运行 `MergedLinkChecker`。**只要链接检查报告的不是 `new 0`，安装就会失败。**
+- `--artifacts DIR`（窗口里的 “Built artifacts (leave empty)”）只供开发者使用，用来跳过构建。`GameArtifacts` 只从这一个目录取这三个 jar，并在下载或写入任何东西之前逐个打开检查：合并基底必须是 Minecraft 26.2，且它 `net/minecraft/` 下的类同时引用 `net/minecraftforge/` 和 `net/neoforged/`；每个运行时都必须带着本生态的核心类和它的 mod 加载器（`FMLLoader`、`IModInfo`），并且清单主段的 `Implementation-Version` 必须是锁定的版本（`Pins.NEOFORGE`；MinecraftForge 则是 `Pins.FORGE` 的 FML 部分，即 `65.0.1`）；MinecraftForge 运行时还必须是打过互操作补丁的那个，即其中的 `NamespacedWrapper$3` 声明了 `contents()`。这之后才做链接检查——单靠链接检查，任何不引用自身以外任何东西的 jar 都能通过（issue #13）；提供的一组文件没通过链接检查时，报告为这些文件彼此对不上，并给出同样的出路。
+- `Pins`：`MINECRAFT = "26.2"`（唯一支持的版本）、`FORGE = "26.2-65.0.1"`、`NEOFORGE = "26.2.0.88"`、`NFRT = "2.0.18"`、`NFRT_RESULT = "gameJarNoRecomp"`，每一项的理由都写在源码里。`BuildStamp` 让每个缓存产物都以整组锁定版本为键，所以锁定版本一升级，就不可能沿用缓存里的旧产物。
+- `JdkLocator` 要求构建工具用 Java ≥ 21（NeoFormRuntime 的 class 文件版本是 65）；它依次尝试当前运行的 JVM、启动器的运行时、系统里的 Java，从不下载 JDK。游戏本身需要 Java 25。
+
+### 13.2 版本配置
+
+`Installer` 写出 `versions/26.2-forbric/26.2-forbric.json`：
+
+- `inheritsFrom: "26.2"`，`mainClass: net.forbric.kernel.boot.KernelClientLaunch`，没有 JVM 参数；
+- 游戏参数 `--gameJar <merged>`、`--runtimeJar <forge-runtime><sep><neoforge-runtime>`（两者合在一个参数里）、`--libraryPath <every vanilla library for this platform>`；
+- `libraries`：自带的 Forbric jar 和内核的第三方依赖（取自内核自己的 `printBootClasspath`），再加上三个游戏产物，分别暂存为 `net.forbric:patched-mc-merged`、`net.forbric:forge-runtime`、`net.forbric:neoforge-runtime`；
+- 一个 `forbric` 块，只是元数据，声明了 `net.fabricmc:fabric-loader:0.19.3`。有些启动器靠搜索 JSON 文本来识别加载器，这样它们就会把这个实例当作装了 mod 的实例（并给它单独的 mods 文件夹）。
+
+三个生态的 mod 都放进 `<mcDir>/mods`（启动器开了版本隔离的话，则放进 `versions/26.2-forbric/mods`）。
+
+### 13.3 Forbric 自己的 jar 从哪里来
+
+默认构建会自带这些 jar（`bundleForbric` 写出带 SHA-1 的 `forbric-kernel-libraries.json`）。`-Pslim` 构建一个都不带，安装时再通过 `RemoteSource` 获取：Forbric 的 jar 取自 GitHub 发布版，其他库优先从 Maven 获取。`-PreleasePin` 把 `forbric-release.properties`（tag、仓库、`manifestSha256`）编译进 jar。清单的摘要就是信任锚，所以发布要分两步（先 `releaseAssets`，再做锁定后的 slim 构建）。只有 `run/compat/evidence.py release-check` 确认内核 jar 和 merge-tools jar 与已验收的候选版本逐字节一致，`releaseAssets` 才肯写出发布资产。
+
+### 13.4 `--doctor`
+
+`Doctor.examine` 不写任何东西、不建任何东西、不下载任何东西，只报告：平台、找到的 JVM、基础版本是否已安装、锁定版本、哪些产物已经存在或将会构建、预计占用的磁盘空间，以及一行结论。
+
+## 14. `forbric-loader/` 还有什么用
+
+- **合并工具。** `forbric-loader/src/tools/java/net/forbric/tools/` 下的 `MergedBaseBuilder`、`MergedLinkChecker`、`RuntimeInteropPatcher`，以及 `AdditiveMethodMerger`、`MergeabilityCensus`、`LostHookAttribution`、`EffectiveHookEvidence`，由 `:mergeToolsJar` 构建成 `forbric-merge-tools-0.1.0.jar`，安装器自带并运行这个 jar。已审核的链接基线是 `forbric-loader/src/test/resources/merge/link-check-baseline.txt`。
+- **开发者流水线。** `run/build-patched-forge.sh`、`assemble-minecraftforge-runtime.sh`、`assemble-neoforge-runtime.sh`、`build-merged-base.sh`、`check-merged-links.sh` 在 `forbric-loader/run/{merged-base,forge-runtime,neoforge-runtime}/` 下生成暂存产物；内核的游戏侧对着它们编译，每个闸门也都在它们上面运行。`FORBRIC_OLD`（或 `-Pforbric.stagedRoot`）可以让另一个工作树指向这些产物。提交进仓库的 `run/merged-base/merge-conflicts.txt` 就是合并的报告。
+- **测试输入。** `run/livemod-src*`/`testmod-src` 里的金丝雀 mod 源码（`build-testmods.sh`），以及它各个运行目录里的 mod 集合，供 gate-m0 的发现对照基准读取。
+- **安装器载荷。** 安装器的打包清单里仍有 `net.forbric:forbric-loader` 和 `net.forbric:forbricruntime`，所以安装好的版本配置会把它们列为库。内核代码没有提到任何 `net.forbric.loader` 类，唯一的引用是 §6 里的重定向。
+
+`forbric-loader/` 自己的引导路径（Knot 宿主，加上 `bootstrap.sh` 打上的八个 fabric-loader 底座补丁）内核并不使用。焊接方案的设计记录在 `forbric-loader/README.md` 和 `forbric-loader/run/README.md` 里。`forbric-installer/` 是焊接方案的安装器，不是发布出去的那一个。
+
+## 15. 仓库结构
+
+```
+Forbric/
+├── README.md                      player-facing, describes the latest release
+├── introduction.md                this document, describes main
+├── LICENSE, NOTICE
+├── bootstrap.sh                   clones ./fabric-loader for forbric-loader (not needed by the kernel)
+├── MOD_TEST_FAILURES.md           per-mod compatibility results (Chinese)
+├── .github/workflows/build.yml    CI: job `build` (bootstrap + forbric-loader) and job `kernel`
+│
+├── forbric-kernel/                THE KERNEL — own Gradle build and wrapper
+│   ├── build.gradle               boot jar (release 21), runtimeJar, transferTest, staged-artifact wiring
+│   ├── gradle.properties          ASM, sponge-mixin, MixinExtras, SAT4J, NightConfig … versions
+│   ├── src/main/java/net/forbric/api/          the unified API (15 files)
+│   ├── src/main/java/net/forbric/kernel/       boot (73), transform (99), mixin (50), fabric (12),
+│   │                                           metadata (11), access (7), classloading (5), discovery (4),
+│   │                                           interop (5), ui (5), util (5), mapping (3), soak (2)
+│   ├── src/main/java/net/fabricmc/             vendored Fabric API surface (37 files)
+│   ├── src/main/resources/                     Mixin service registrations; mixin census tables
+│   ├── src/runtime/                            GAME side, net.forbric.kernel.runtime (+ soak/, transfer/)
+│   ├── src/test/, src/transferTest/            unit tests; transfer-engine tests
+│   ├── canary/                                 canary mods the gates build and load
+│   └── run/                                    gate-m*.sh, launch-kernel-{client,server}.sh, lib.sh,
+│                                               diff-oracle.sh, mixin-inventory.sh, merge-packs.sh,
+│                                               build-*-canary.sh, compat/ (sweep and evidence tooling)
+│
+├── forbric-kernel-installer/      THE INSTALLER — src/main/java/net/forbric/installer/kernel/, packaging/
+│
+├── forbric-loader/                first generation; merge tools + artifact pipeline (§14)
+├── forbric-installer/             the first generation's installer
+└── fabric-loader/                 gitignored upstream checkout for forbric-loader
+```
+
+## 16. 构建与测试
+
+目前的开发入口是 `python3 tools/dev.py client`（Windows 上用 `py tools/dev.py client`）。它借用安装器的产物流水线，在 `forbric-kernel/.dev/` 下准备一套隔离的游戏输入，解析库/资源和锁定的编译 API，然后构建并启动当前的内核。需要 JDK 25+ 和 Python 3.9+。Gradle 提供 `prepareDev`、`runClient`、`runServer` 和 `devDoctor`；准备和启动必须分成两次 Gradle 调用，因为游戏侧的接线在任务运行之前就已配置完毕。命令和配置见[开发指南](forbric-kernel/run/README.md)。
+
+`check` 还会运行开发/证据工具的自测，以及打包链接闸门的合成控制。`integrationTest` 要求暂存好的游戏和传输测试套件齐备，并且不允许任何测试被跳过；普通的 `test` 仍允许本地测试夹具缺失，并打印已执行/已跳过的数量。完整的集成测试套件除了基础游戏，还需要它指名的那些 mod 测试夹具；游戏准备好了，并不等于宣称每个兼容性包或真实实例闸门都已经跑过。
+
+```sh
+cd forbric-kernel
+./gradlew --offline jar        # boot jar; nests forbric-kernel-runtime.jar only when the staged artifacts exist
+./gradlew --offline test       # unit suite (depends on compileRuntimeJava)
+./gradlew --offline check      # + transferTest (real Fabric/NeoForge transaction engines)
+./run/gate-m0.sh               # build + suite from the JUnit XML + scan + link check + discovery oracle
+java -cp <boot-cp> net.forbric.kernel.boot.Main --scan --mods <dir> --report out.json
+```
+
+- **暂存产物。** 游戏侧编译时依赖 `forbric-loader/run/merged-base/patched-mc-merged-26.2.jar`、`…/forge-runtime/forge-runtime.jar`、`…/neoforge-runtime/neoforge-runtime.jar`，外加取自本地 Minecraft 安装的 brigadier、datafixerupper 和 gson，传输模块要用的一个 fabric-api jar（`-Pforbric.fabricApi`），以及按 SHA-256 锁定的 Team Reborn Energy 5.0.0（`run/energy-api/energy-5.0.0.jar` 或 `-Pforbric.rebornEnergy`）。没有暂存的 jar 时，`compileRuntimeJava` 会被跳过，`jar` 产出一个没有游戏侧的引导 jar——CI 构建的就是这种 jar。启动时负责发现这种 jar 的是 `KernelRuntimeClasses.verify`。
+- **单元测试。** 这些数字是数源码得到的，不是跑出来的：`src/test` 的 438 个 `*Test.java` 文件里有 2 624 个 `@Test` 方法和 2 个 `@ParameterizedTest` 方法（各有两个用例）；`src/transferTest` 的 4 个文件里有 61 个 `@Test` 方法（只数位于行首的注解，用 `grep` 扫已跟踪的文件）。很多测试会读取暂存的 jar；gate-m0 只要遇到*任何*一个被跳过的测试就失败，因为在那里跳过意味着测试没有看过真正的基底。
+- **闸门。** 共 58 个脚本（`forbric-kernel/run/gate-m*.sh`），每个都对真实实例的真实日志和文件做断言，大多带有指名的负控制（一个 `-D…=off`，或移除某项输入，必须恰好让指名的那几项检查变红）。`run/compat/gates-all.sh` 按 glob 发现它们；`gates-parallel.py` 依据每个闸门里的 `# GATE-PARALLEL: rundirs=… mem=…` 行让它们重叠运行（58 个里有 55 个带这一行；没有的闸门单独运行），并给每个槽位分配独立的端口段。
+
+| 闸门 | 断言内容 |
+| --- | --- |
+| m0 | 构建、整个测试套件、`--scan`、合并基底链接检查、发现对照基准、工具自测、传输测试套件 |
+| m1, m3 | 零 mod、不跑真正的生命周期时，合并基底能到达 `Done`；两个 Forge 系的基线 + 一个真实的 `@Mod` |
+| m2, m2b | 一个真实的 Fabric mod，然后是完整的 fabric-api，全程没有 Fabric Loader |
+| m4, m4-canary, m7-neo | 三个生态的真实 mod 同在一个服务端；纯 NeoForge jar |
+| m8, m10 | 多加载器的 `pack.mcmeta` 分段不会删掉或弄坏一个包 |
+| m9, m27 | 客户端带着 97 个 jar 的整合包进入世界并干净退出；新渲染出的一帧非黑画面 |
+| m11 | 专用服务器上一组由配置驱动的 mod |
+| m12–m16 | 客户端↔服务端走真实 socket；Paper 反作弊；纯 Fabric 服务端；MinecraftForge 的频道与握手 |
+| m17 | 安装器写出的版本配置，按启动器的方式启动 |
+| m18, m19, m20 | 跨生态在场；内嵌库只初始化一次；玩家能得知未满足的依赖 |
+| m21, m26, m28, m29 | MinecraftForge 初始化、客户端注册事件、配置 + 实时文件监视器、capability |
+| m22, m23 | 内核 jar 被替换后仍能正常退出；鞘翅飞行 |
+| m24, m24b, m30 | 一个失败的 mod、一个元数据读不出来的 mod、一个部分失败的 mod，在每个呈现面上都有归因 |
+| m24c | 写进 `forbric-disabled.txt` 的 jar 谁都不加载，并在加载报告里点名；服务器对崩溃嫌疑提示只写日志 |
+| m25, m31, m32 | 两条生物群系修改器流水线；零 mod 时世界生成与原版一致；移除一个 mod 后存档仍能打开 |
+| m33, m39, m40, m52 | 跨生态的物品/流体/能量传输；漏斗向 Fabric 存储输送 |
+| m34 | ≥ 7200 s 有玩家在线的模拟 soak 测试，带留存检查 |
+| m35–m38, m41–m51, m53 | 逐个功能面的行为：mixin 结果、实体回调、附魔、事件链、coremod 一致性、方块破坏与战利品、交互、日常操作、存根重新绑定、伤害/服务端/世界事件、加载谓词、提示框、加宽的 `NEW` 锚点 |
+| m54 | NeoForge mod 在游玩阶段发给服务端的包能送到：装着 fabric-api 的 Carry On 用真实的键盘和鼠标输入搬起并放下箱子和猪；同样的运行关掉修复后必须什么都搬不起来（第三方 jar：`M54_CARRYON`、`M54_FABRIC_API`） |
+| m55 | 一个 Fabric mod 用原版方法刷新搜索树之后，创造模式物品栏的搜索仍能搜到物品；以界面自己的物品网格为准，并带一个关掉修复的反向对照 |
+
+- **兼容性批量测试。** `run/compat/PROTOCOL.md` 是一套流程：在一台 Windows 机器上通过安装好的版本配置运行随机/热门的 Modrinth mod 组合（`push-and-run.sh`、`win/*.py`、`pick_mods.py`、`evidence.py`），另有静态工具（`abi-audit.py`、`field-drift.py`、`fapi-usage.py`、`hook-worklist.sh`、`repair-drift.sh`、`control-diff.sh`——同一批 Fabric mod 分别跑在原生 Fabric 和 Forbric 上做对比）。
+- **CI**（`.github/workflows/build.yml`）：`build` 作业先自举，再构建 `forbric-loader/`。`kernel` 作业（JDK 21，没有游戏文件）在 `forbric-kernel/` 中运行 `./gradlew build -Pforbric.skipBaseline=ci-unstaged`：编译启动侧，运行不需要游戏文件的单元测试。没有游戏文件时约三分之一的测试会跳过，跳过的集合必须与 `src/test/skip-baseline/ci-unstaged.tsv` 逐行一致（`skipRatchet`、`tools/junit_report.py`）：新开始跳过的测试会让作业失败，不再跳过的行必须删掉。运行页面会显示测试数 / 实际执行 / 跳过数和最常见的跳过原因，JUnit 报告作为 `kernel-test-results` 上传；基线可以用该产物里的 `skips-actual-ci-unstaged.tsv` 或 `-Pforbric.writeSkipBaseline` 重新生成。`kernel-prepared` 作业（JDK 25）先在 runner 上用 `tools/dev.py prepare --no-assets` 构建游戏文件（Minecraft 从 Mojang 下载，Forge 和 NeoForge 从它们自己的 maven 下载，合并基底和载体在 runner 上构建，单元测试要读的两个 canary mod 和合并报告也一并准备好；只缓存上游下载的文件，派生出的东西一律不上传），再用 `-Pforbric.requireFixtures=staged,game-side,mc-libraries,java-25` 运行同一套测试外加 `transferTest`：除第三方 mod 整合包以外的各类测试夹具在这里都齐全，所以任何其他类别的跳过、或者没有标注类别的跳过，都会在跳过的那个测试上让作业失败。仍然跳过的 136 个测试全都需要不在本仓库里的第三方 mod 整合包，同样由 `ci-prepared.tsv` 卡住。`development-tools` 作业在 Windows、Linux 和 macOS 上运行 `tools/dev.py tool-test` 和打包后的链接闸门。之后 kernel-prepared 还在同一批文件上运行四个真实专用服门禁：m1、m36、m46、m53，它们用的 mod 都是从本仓库源码构建的 canary。其余门禁（客户端、第三方整合包、长时间 soak）需要开发者的 Mac：`tools/nightly/` 每晚由 launchd 在那台 Mac 上运行它们（02:30 启动，soak 只在周日跑），把当晚的摘要提交到 `ci-results` 分支，并在被测提交上设置提交状态 `nightly/dev-mac`。
+
+## 17. 系统属性
+
+在 JVM 上用 `-D` 设置。安装好的版本配置一个也不设。`src/main` 和 `src/runtime` 中大约有 250 个不同的 `forbric.*` 属性名；几乎每项修复都有一个 `-Dforbric.<name>=off` 开关，关掉时会记一条 WARN，说明失去了什么。这些开关是给二分排查和闸门的负控制用的。开发者常用的有：
+
+**策略与报告**
+
+| 属性 | 作用 |
+| --- | --- |
+| `forbric.compatibilityPolicy` | `ask`（默认）、`continue`、`strict`；其他任何值都按 `strict` 处理 |
+| `forbric.dependencyDialog` | `on`（默认）、`off`、`dryRun` |
+| `forbric.dialogLanguage` | 强制指定对话框的语言（如 `ja`） |
+| `forbric.loadReportRewrite` | `off`：以第一次写入的 `load-report.txt` 为准 |
+| `forbric.crashAnalysis` | `off`：不生成 `crash-analysis.txt` |
+| `forbric.debug` | 启用 `ForbricLog.debug` 的日志行 |
+
+**仲裁与顺序**
+
+| 属性 | 作用 |
+| --- | --- |
+| `forbric.multiLoaderPreference` | 单个 jar 内的生态优先顺序，默认 `neoforge,minecraftforge,fabric` |
+| `forbric.dupeIdPreference`, `forbric.nestedDupePreference` | 顶层 / 内嵌重复项的跨 jar 优先顺序 |
+| `forbric.modOwner` | `id=loader,…` 形式的锁定；也可用 `<rundir>/forbric-mods.txt` |
+| `forbric.crossJarArbitration` | `off`：同一个 id 的两个 jar 都会加载 |
+| `forbric.nestedRequirements` | `off`：`minecraft`/`java` 范围不包含本游戏的内嵌 Fabric mod 照样加载；`off:<id>,…`：只有这几个照样加载 |
+| `forbric.arbitrationMaxNodes` | 选择器的工作量上限（默认 100 000，封顶 1 000 000） |
+| `forbric.modOrder` | `name`：按文件名决定构造顺序 |
+| `forbric.fabricOrder` | `off`：Fabric mod 按拓扑顺序，而不是按 mod id 顺序 |
+| `forbric.fabricMainInConstructor` | `off`：客户端的 Fabric `main` 入口点在 `Minecraft` 之前的窗口里运行 |
+| `forbric.loaderProbes`, `forbric.crossEcosystemPresence` | `off`：平台探测 / 在场查询按单一加载器的方式作答 |
+
+**Mixin**
+
+| 属性 | 作用 |
+| --- | --- |
+| `forbric.relaxGuestMixins` | `off`：不放宽第三方配置 |
+| `forbric.relaxMixinOverwrites` | 要放宽的配置，csv（支持 `*` 通配） |
+| `forbric.mixinDiagnostics` | 保持注入要求严格，让每一处不适配都暴露出来 |
+| `forbric.mixinFit` | `strict`：连 `PARTIAL` 的 mixin 也丢弃 |
+| `forbric.mixinFit.liveness` | `off`：位于无人调用的方法上的注入器也算已解析 |
+| `forbric.mixinFit.nativeAbsent` | `off`：mod 自己的平台也没有的注入目标重新算作缺失的锚点 |
+| `forbric.mixinFit.nativeAbsent.base` | `<摘要>`：让 `native-only-methods.txt` 改为信任这个合并基底成员摘要，而不是表里记录的那个（测试里的夹具游戏用） |
+| `forbric.mixinOverlapLint` | `off`：启动时不报告跨 mod 的 mixin 重叠（§7.6） |
+| `forbric.guestMixinAdapter` | `off`：不做推导出来的丢弃，只用手写清单 |
+| `forbric.mergedBaseCompat` | `off`：去掉内置的不兼容清单 |
+| `forbric.disableMixinConfigs`, `forbric.enableMixinConfigs` | 要禁用 / 强制启用的配置，csv |
+| `forbric.suppressMixins`, `forbric.keepMixins` | 要丢弃 / 保留的 `config:Mixin`，csv |
