@@ -298,3 +298,110 @@ def verified_run(root, artifacts, mods, output, command, release=False):
             code = subprocess.run(command, cwd=root, stdout=stream, stderr=subprocess.STDOUT).returncode
         except OSError as error:
             stream.write(str(error) + "\n")
+            code = 127
+    drift = None
+    try:
+        verify(output)
+    except (ValueError, OSError, KeyError, zipfile.BadZipFile, subprocess.CalledProcessError) as error:
+        drift = str(error)
+    # The exit code is the command's own verdict; for a release it is not the only one. A gate the aggregator
+    # reported as SKIP or EXPECTED_RED did not pass, whatever the aggregator's exit status said.
+    unpassed = [f"{name} {verdict}" for name, verdict in UNPASSED_GATE.findall(log.read_text(errors="replace"))]
+    result = {"schema": 1, "command": command, "exitCode": code, "inputsUnchanged": drift is None,
+              "inputFailure": drift, "elapsedSeconds": time.monotonic() - started, "unpassedGates": unpassed,
+              "commandPassed": code == 0 and drift is None and not (release and unpassed),
+              "log": str(log), "manifest": str(output)}
+    output.with_suffix(".result.json").write_text(json.dumps(result, indent=2) + "\n")
+    return result
+
+
+def release_check(manifests, publish):
+    """One acceptance, one candidate: every manifest passed, all agree, and the published files are those bytes."""
+    if not manifests:
+        raise ValueError("release-check needs at least one --manifest")
+    commits, roles, problems = set(), {}, []
+    for path in manifests:
+        path = Path(path).resolve(strict=True)
+        saved = verify(path)
+        if not saved.get("release"):
+            problems.append(f"{path.name}: not captured with --release")
+        result_path = path.with_suffix(".result.json")
+        result = json.loads(result_path.read_text()) if result_path.is_file() else None
+        if result is None or Path(result.get("manifest", "")).resolve() != path:
+            problems.append(f"{path.name}: no run result (a capture is provenance, not a passed acceptance)")
+        elif not result.get("commandPassed"):
+            problems.append(f"{path.name}: its acceptance command did not pass")
+        commits.add((saved["source"]["commit"], saved["source"]["sha256"]))
+        for role, record in saved["artifacts"].items():
+            roles.setdefault(role, set()).add(record["sha256"])
+    if len(commits) != 1:
+        problems.append(f"manifests bind {len(commits)} different sources")
+    problems += [f"role {role} has {len(hashes)} different hashes" for role, hashes in sorted(roles.items())
+                 if len(hashes) != 1]
+    for role, path in sorted(publish.items()):
+        if role not in roles:
+            problems.append(f"{role}: no accepted artifact to compare {path} with")
+        elif digest(path) not in roles[role]:
+            problems.append(f"{role}: {path} is not the accepted {role}")
+    if problems:
+        raise ValueError("release check failed: " + "; ".join(problems))
+    return {role: next(iter(hashes)) for role, hashes in roles.items()}
+
+
+def role_paths(values):
+    out = {}
+    for value in values:
+        role, separator, filename = value.partition("=")
+        if not separator or not role or role in out:
+            raise ValueError("artifact must have a unique ROLE=PATH: " + value)
+        out[role] = Path(filename)
+    return out
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    for name in ("capture", "run"):
+        create = commands.add_parser(name)
+        create.add_argument("--source", required=True, type=Path)
+        create.add_argument("--artifact", action="append", default=[], metavar="ROLE=PATH")
+        create.add_argument("--mods", action="append", default=[], type=Path)
+        create.add_argument("--output", required=True, type=Path)
+        create.add_argument("--release", action="store_true")
+        if name == "run":
+            create.add_argument("acceptance_command", nargs=argparse.REMAINDER)
+    check = commands.add_parser("verify")
+    check.add_argument("manifest", type=Path)
+    released = commands.add_parser("release-check")
+    released.add_argument("--manifest", action="append", default=[], type=Path)
+    released.add_argument("--publish", action="append", default=[], metavar="ROLE=PATH")
+    args = parser.parse_args()
+    try:
+        if args.command == "verify":
+            verify(args.manifest)
+            print("[evidence] source, artifacts and mod inventory unchanged")
+        elif args.command == "release-check":
+            accepted = release_check(args.manifest, role_paths(args.publish))
+            print(f"[evidence] release check passed: {len(args.manifest)} manifest(s), {len(accepted)} role(s),"
+                  f" {len(args.publish)} published file(s) match")
+        else:
+            artifacts = role_paths(args.artifact)
+            if args.command == "run":
+                command = args.acceptance_command
+                if command and command[0] == "--":
+                    command = command[1:]
+                result = verified_run(args.source, artifacts, args.mods, args.output, command, args.release)
+                print(f"[evidence] command exit={result['exitCode']}, inputs unchanged={result['inputsUnchanged']}"
+                      + (f", unpassed gates={result['unpassedGates']}" if result["unpassedGates"] else "")
+                      + f"; {result['log']}")
+                if not result["commandPassed"]:
+                    parser.exit(1)
+            else:
+                result = capture(args.source, artifacts, args.mods, args.output, args.release)
+                print(f"[evidence] captured {len(result['artifacts'])} artifacts at {result['source']['commit']}")
+    except (ValueError, OSError, KeyError, zipfile.BadZipFile, subprocess.CalledProcessError) as error:
+        parser.exit(1, f"[evidence] FAIL: {error}\n")
+
+
+if __name__ == "__main__":
+    main()
