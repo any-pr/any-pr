@@ -598,3 +598,303 @@ public final class ForbricCustomPayloadInterop {
 		Object entry = invoke(registry, "get", id);
 		return entry != null ? entry : mirrorNeoPayloadIntoFabricRegistry(loader, id, protocol, packetFlow);
 	}
+
+	private static String fabricRegistryField(Object protocol, Object packetFlow) {
+		String protocolName = enumName(protocol);
+		String flowName = enumName(packetFlow);
+		if ("CONFIGURATION".equals(protocolName) && "CLIENTBOUND".equals(flowName)) return "CLIENTBOUND_CONFIGURATION";
+		if ("CONFIGURATION".equals(protocolName) && "SERVERBOUND".equals(flowName)) return "SERVERBOUND_CONFIGURATION";
+		if ("PLAY".equals(protocolName) && "CLIENTBOUND".equals(flowName)) return "CLIENTBOUND_PLAY";
+		if ("PLAY".equals(protocolName) && "SERVERBOUND".equals(flowName)) return "SERVERBOUND_PLAY";
+		return null;
+	}
+
+	private static Object neoCodec(Object id, Object protocol, Object packetFlow) {
+		ClassLoader loader = loaderFor(id, protocol, packetFlow);
+		Class<?> registry = load(loader, NEO_NETWORK_REGISTRY);
+		if (registry == null) return null;
+		Object builtin = neoBuiltinCodec(registry, id);
+		if (builtin != null) return builtin;
+		Object registration = neoRegistration(loader, id, protocol, packetFlow);
+		return registration == null ? null : invokeNoArg(registration, "codec");
+	}
+
+	private static Object neoBuiltinCodec(Class<?> registry, Object id) {
+		try {
+			Field builtinsField = findField(registry, "BUILTIN_PAYLOADS");
+			if (builtinsField == null) return null;
+			builtinsField.setAccessible(true);
+			Object builtins = builtinsField.get(null);
+			return builtins instanceof Map<?, ?> map ? map.get(id) : null;
+		} catch (ReflectiveOperationException | RuntimeException e) {
+			return null;
+		}
+	}
+
+	private static Object fallbackCodec(Object fallback, Object id) {
+		if (fallback == null) return null;
+		return invoke(fallback, "create", id);
+	}
+
+	private static Object typeAndCodecCodec(Object typeAndCodec) {
+		return typeAndCodec == null ? null : invokeNoArg(typeAndCodec, "codec");
+	}
+
+	private static Object typeAndCodecType(Object typeAndCodec) {
+		return typeAndCodec == null ? null : invokeNoArg(typeAndCodec, "type");
+	}
+
+	private static Registration registration(Object payload) {
+		if (payload == null) return null;
+		String className = payload.getClass().getName();
+		String id = payloadId(payload);
+		boolean register = "minecraft:register".equals(id);
+		boolean unregister = "minecraft:unregister".equals(id);
+		if (!register && !unregister) return null;
+
+		Object channels;
+		if (FABRIC_REGISTRATION_PAYLOAD.equals(className)) {
+			channels = invokeNoArg(payload, "channels");
+		} else if (NEO_REGISTER_PAYLOAD.equals(className)) {
+			channels = invokeNoArg(payload, "newChannels");
+			register = true;
+		} else if (NEO_UNREGISTER_PAYLOAD.equals(className)) {
+			channels = invokeNoArg(payload, "forgottenChannels");
+			register = false;
+		} else {
+			return null;
+		}
+		if (!(channels instanceof Collection<?> collection)) return null;
+		return new Registration(register, collection);
+	}
+
+	private static int commonVersion(Object payload) {
+		Object versions = invokeNoArg(payload, "versions");
+		if (versions instanceof int[] ints) {
+			for (int version : ints) if (version == 1) return 1;
+			return ints.length == 0 ? -1 : ints[0];
+		}
+		if (versions instanceof Collection<?> collection) {
+			for (Object version : collection) {
+				if (version instanceof Number number && number.intValue() == 1) return 1;
+			}
+			for (Object version : collection) {
+				if (version instanceof Number number) return number.intValue();
+			}
+		}
+		return -1;
+	}
+
+	private static Object createNeoCommonVersionPayload(Object payload) {
+		ClassLoader loader = loaderFor(payload);
+		Class<?> payloadClass = load(loader, NEO_COMMON_VERSION_PAYLOAD);
+		if (payloadClass == null) return null;
+		Object versions = invokeNoArg(payload, "versions");
+		List<Integer> list = new ArrayList<>();
+		if (versions instanceof int[] ints) {
+			for (int version : ints) list.add(version);
+		} else if (versions instanceof Collection<?> collection) {
+			for (Object version : collection) {
+				if (version instanceof Number number) list.add(number.intValue());
+			}
+		}
+		try {
+			for (java.lang.reflect.Constructor<?> ctor : payloadClass.getConstructors()) {
+				Class<?>[] params = ctor.getParameterTypes();
+				if (params.length == 1 && List.class.isAssignableFrom(params[0])) {
+					return ctor.newInstance(list);
+				}
+			}
+		} catch (ReflectiveOperationException | RuntimeException e) {
+			ForbricLog.warn("[Forbric] could not synthesize NeoForge common-version payload", e);
+		}
+		return null;
+	}
+
+	private static Object createFabricCommonRegisterPayload(Object payload) {
+		ClassLoader loader = loaderFor(payload);
+		Class<?> payloadClass = load(loader, FABRIC_COMMON_REGISTER_PAYLOAD);
+		if (payloadClass == null) return null;
+		Object channels = invokeNoArg(payload, "channels");
+		if (!(channels instanceof Set<?> set)) return null;
+		int version = intValue(invokeNoArg(payload, "version"), 1);
+		String protocol = protocolId(invokeNoArg(payload, "protocol"));
+		try {
+			for (java.lang.reflect.Constructor<?> ctor : payloadClass.getConstructors()) {
+				Class<?>[] params = ctor.getParameterTypes();
+				if (params.length == 3 && params[0] == int.class && params[1] == String.class
+						&& Set.class.isAssignableFrom(params[2])) {
+					return ctor.newInstance(version, protocol, set);
+				}
+			}
+		} catch (ReflectiveOperationException | RuntimeException e) {
+			ForbricLog.warn("[Forbric] could not synthesize Fabric common-register payload", e);
+		}
+		return null;
+	}
+
+	private static Object createNeoCommonRegisterPayload(Object addon, Object payload) {
+		ClassLoader loader = loaderFor(addon, payload);
+		Class<?> payloadClass = load(loader, NEO_COMMON_REGISTER_PAYLOAD);
+		if (payloadClass == null) return null;
+		Object channels = invokeNoArg(payload, "channels");
+		if (!(channels instanceof Set<?> set)) return null;
+		int version = intValue(invokeNoArg(payload, "version"), 1);
+		Object protocol = protocolById(loader, protocolId(invokeNoArg(payload, "protocol")));
+		if (protocol == null) return null;
+		try {
+			for (java.lang.reflect.Constructor<?> ctor : payloadClass.getConstructors()) {
+				Class<?>[] params = ctor.getParameterTypes();
+				if (params.length == 3 && params[0] == int.class && params[1].isInstance(protocol)
+						&& Set.class.isAssignableFrom(params[2])) {
+					return ctor.newInstance(version, protocol, set);
+				}
+			}
+		} catch (ReflectiveOperationException | RuntimeException e) {
+			ForbricLog.warn("[Forbric] could not synthesize NeoForge common-register payload", e);
+		}
+		return null;
+	}
+
+	private static Object createFabricRegistrationPayload(Object payload, boolean register, Collection<?> channels) {
+		ClassLoader loader = loaderFor(payload);
+		Class<?> payloadClass = load(loader, FABRIC_REGISTRATION_PAYLOAD);
+		if (payloadClass == null) return null;
+		try {
+			Object type = staticField(payloadClass, register ? "REGISTER" : "UNREGISTER");
+			for (java.lang.reflect.Constructor<?> ctor : payloadClass.getConstructors()) {
+				Class<?>[] params = ctor.getParameterTypes();
+				if (params.length != 2 || !List.class.isAssignableFrom(params[1])) continue;
+				return ctor.newInstance(type, new ArrayList<>(channels));
+			}
+		} catch (ReflectiveOperationException | RuntimeException e) {
+			ForbricLog.warn("[Forbric] could not synthesize Fabric channel-registration payload", e);
+		}
+		return null;
+	}
+
+	private static boolean invokeReceiveRegistration(Object addon, boolean register, Object fabricPayload) {
+		Method method = findMethod(addon.getClass(), "receiveRegistration", boolean.class, fabricPayload.getClass());
+		if (method == null) {
+			// Silent before. This is the single point where the client's whole Fabric channel declaration is
+			// produced — receiveRegistration is the only caller of sendInitialChannelRegistrationPacket — so a
+			// quiet miss here reads downstream as "the server thinks you have no Fabric API".
+			ForbricLog.warn("[Forbric] no receiveRegistration(boolean," + fabricPayload.getClass().getName()
+					+ ") on " + addon.getClass().getName() + "; Fabric's channel set was left untouched");
+			return false;
+		}
+		try {
+			method.setAccessible(true);
+			method.invoke(addon, register, fabricPayload);
+			return true;
+		} catch (ReflectiveOperationException | RuntimeException e) {
+			ForbricLog.warn("[Forbric] could not mirror channel-registration payload into Fabric networking", unwrap(e));
+			// The loader's own log is not always wired on a dedicated server; under -Dforbric.debug say it here too.
+			probe(() -> "  receiveRegistration threw: " + stackTraceOf(unwrap(e)));
+			return false;
+		}
+	}
+
+	private static String stackTraceOf(Throwable t) {
+		java.io.StringWriter out = new java.io.StringWriter();
+		t.printStackTrace(new java.io.PrintWriter(out));
+		return out.toString();
+	}
+
+	private static void syncNeoChannels(Object connection, boolean register, Collection<?> channels) {
+		ClassLoader loader = loaderFor(connection);
+		Class<?> registry = load(loader, NEO_NETWORK_REGISTRY);
+		if (registry == null) return;
+		Set<Object> set = new LinkedHashSet<>(channels);
+		String methodName = register ? "onMinecraftRegister" : "onMinecraftUnregister";
+		for (Method method : registry.getMethods()) {
+			if (!method.getName().equals(methodName) || method.getParameterCount() != 2) continue;
+			if (!method.getParameterTypes()[0].isInstance(connection)) continue;
+			if (!Collection.class.isAssignableFrom(method.getParameterTypes()[1])) continue;
+			try {
+				method.invoke(null, connection, set);
+				return;
+			} catch (ReflectiveOperationException | RuntimeException e) {
+				ForbricLog.warn("[Forbric] could not mirror channel-registration payload into NeoForge networking", e);
+				return;
+			}
+		}
+	}
+
+	private static Object commonPacketListener(Object addon) {
+		Object listener = fieldValue(addon, "listener");
+		return listener != null ? listener : fieldValue(addon, "handler");
+	}
+
+	private static void invokeNeoNetworkRegistry(String name, Object listener, Object payload) {
+		Class<?> registry = load(loaderFor(listener, payload), NEO_NETWORK_REGISTRY);
+		if (registry == null) return;
+		Object result = invokeStatic(registry, name, listener, payload);
+		if (result == INVOKE_FAILED) {
+			ForbricLog.warn("[Forbric] could not mirror common-networking payload into NeoForge: " + name);
+		}
+	}
+
+	private static boolean isDinnerboneChannelRegistration(Object id) {
+		String s = String.valueOf(id);
+		return "minecraft:register".equals(s) || "minecraft:unregister".equals(s);
+	}
+
+	private static boolean isCommonNegotiation(Object id) {
+		String s = String.valueOf(id);
+		return "c:version".equals(s) || "c:register".equals(s);
+	}
+
+	private static boolean equivalentCommonTask(String a, String b) {
+		if (a == null || b == null) return false;
+		return ("c:version".equals(a) && "neoforge:common_version".equals(b))
+				|| ("neoforge:common_version".equals(a) && "c:version".equals(b))
+				|| ("c:register".equals(a) && "neoforge:common_register".equals(b))
+				|| ("neoforge:common_register".equals(a) && "c:register".equals(b));
+	}
+
+	private static Object uniqueCodec(Object... codecs) {
+		Object found = null;
+		for (Object codec : codecs) {
+			if (codec == null) continue;
+			if (found == null) {
+				found = codec;
+			} else if (found != codec && !found.equals(codec)) {
+				return null;
+			}
+		}
+		return found;
+	}
+
+	private static Object firstNonNull(Object... values) {
+		for (Object value : values) if (value != null) return value;
+		return null;
+	}
+
+	private static String payloadId(Object payload) {
+		Object type = invokeNoArg(payload, "type");
+		Object id = type == null ? null : invokeNoArg(type, "id");
+		return String.valueOf(id);
+	}
+
+	private static String taskId(Object type) {
+		Object id = invokeNoArg(type, "id");
+		return id == null ? null : String.valueOf(id);
+	}
+
+	private static int intValue(Object value, int fallback) {
+		return value instanceof Number number ? number.intValue() : fallback;
+	}
+
+	private static String protocolId(Object protocol) {
+		if (protocol == null) return "configuration";
+		Object id = invokeNoArg(protocol, "id");
+		if (id instanceof String s) return s;
+		return String.valueOf(protocol).toLowerCase(java.util.Locale.ROOT);
+	}
+
+	private static Object protocolById(ClassLoader loader, String id) {
+		Class<?> protocolClass = load(loader, "net.minecraft.network.ConnectionProtocol");
+		if (protocolClass == null) return null;
+		Object values = invokeStatic(protocolClass, "values");
+		if (values == INVOKE_FAILED || values == null || !values.getClass().isArray()) return null;
