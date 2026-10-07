@@ -298,3 +298,162 @@ class MixinFitHandlerFitTest {
 		first.instructions.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "()V", false));
 		first.instructions.add(new InsnNode(Opcodes.POP));
 		first.instructions.add(new InsnNode(Opcodes.RETURN));
+		ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_MAXS);
+		node.accept(writer);
+		byte[] bytes = writer.toByteArray();
+		return name -> name.equals(TARGET + ".class") ? bytes : null;
+	}
+
+	/** The handler for {@code place(String)}, its one {@code @At} spelled by {@code at} (value first, then key, value…). */
+	private static byte[] pointMixin(Object... at) {
+		return mixin("place", "(" + STRING + CI + ")V", m -> {
+			AnnotationNode point = MixinFit.atNodes(MixinFit.injectorOf(m.methods.getFirst())).getFirst();
+			point.values = new ArrayList<>(List.of("value", at[0]));
+			for (int i = 1; i + 1 < at.length; i += 2) point.values.addAll(List.of(at[i], at[i + 1]));
+		});
+	}
+
+	private static boolean rejects(byte[] mixin) {
+		MixinFit.Result fit = MixinFit.evaluate(mixin, targetWithCalls());
+		assertEquals(MixinFit.Verdict.UNFIT, fit.verdict(), fit.reason());
+		return !fit.rejected().isEmpty();
+	}
+
+	/**
+	 * Mixin checks an {@code @Inject} handler at each point it finds in the bound method: where its {@code @At} finds none
+	 * it injects nothing and throws nothing, and {@code require} counts that as any other miss. So a refused binding is a
+	 * rejection only where a point is sure to be found -- the rest are misses, and the mixin is kept as one with misses.
+	 */
+	@Test void aRefusedBindingIsARejectionOnlyWhereItsAtIsSureToFindAPoint() {
+		System.setProperty(MixinOverloadPin.PROPERTY, "off");
+		String count = "L" + TARGET + ";count()I";
+		assertTrue(rejects(pointMixin("HEAD")));
+		assertTrue(rejects(pointMixin("HEAD", "ordinal", 3)), "HEAD takes the first instruction whatever the ordinal");
+		assertTrue(rejects(pointMixin("RETURN")));
+		assertTrue(rejects(pointMixin("RETURN", "ordinal", 0)));
+		assertFalse(rejects(pointMixin("RETURN", "ordinal", 1)), "one return: ordinal 1 finds none");
+		assertTrue(rejects(pointMixin("TAIL")));
+		assertTrue(rejects(pointMixin("INVOKE", "target", count)));
+		assertTrue(rejects(pointMixin("INVOKE", "target", TARGET + ".count()I")), "the dotted owner too");
+		assertFalse(rejects(pointMixin("INVOKE", "target", "L" + TARGET + ";absent()V")), "a call the carrier's body never makes");
+		assertFalse(rejects(pointMixin("INVOKE", "target", "Lother/Owner;count()I")), "the same name on another owner");
+		assertTrue(rejects(pointMixin("INVOKE", "target", count, "ordinal", 0)));
+		assertFalse(rejects(pointMixin("INVOKE", "target", count, "ordinal", 1)), "one call: ordinal 1 finds none");
+		assertTrue(rejects(pointMixin("INVOKE_ASSIGN", "target", count)));
+		assertFalse(rejects(pointMixin("INVOKE_ASSIGN", "target", "L" + TARGET + ";log()V")), "a void call assigns nothing");
+		assertTrue(rejects(pointMixin("INVOKE", "target", "L" + TARGET + ";log()V")));
+		assertTrue(rejects(pointMixin("FIELD", "target", "L" + TARGET + ";flag:Z")));
+		assertTrue(rejects(pointMixin("FIELD", "target", "L" + TARGET + ";flag:Z", "opcode", Opcodes.GETFIELD)));
+		assertFalse(rejects(pointMixin("FIELD", "target", "L" + TARGET + ";flag:Z", "opcode", Opcodes.PUTFIELD)), "no write");
+		assertTrue(rejects(pointMixin("NEW", "target", "java/lang/StringBuilder")));
+		assertTrue(rejects(pointMixin("NEW", "target", "Ljava/lang/StringBuilder;")));
+		assertTrue(rejects(pointMixin("NEW", "target", "()Ljava/lang/StringBuilder;")));
+		assertFalse(rejects(pointMixin("NEW", "target", "(Ljava/lang/String;)Ljava/lang/StringBuilder;")), "another constructor");
+		assertFalse(rejects(pointMixin("NEW", "target", "java/lang/StringBuilder", "ordinal", 1)), "one new: ordinal 1 finds none");
+		assertFalse(rejects(pointMixin("NEW", "target", "java/util/ArrayList")), "a type the body never makes");
+		assertFalse(rejects(pointMixin("CONSTANT")), "a kind of point this does not read is not sure");
+		assertFalse(rejects(pointMixin("INVOKE")), "no target: not sure");
+		assertFalse(rejects(pointMixin("INVOKE", "target", count, "slice", "s")), "a slice: not sure");
+		byte[] sliced = mixin("place", "(" + STRING + CI + ")V", m -> MixinFit.injectorOf(m.methods.getFirst()).values.addAll(
+				List.of("slice", new ArrayList<>(List.of(new AnnotationNode("Lorg/spongepowered/asm/mixin/injection/Slice;"))))));
+		assertFalse(rejects(sliced), "an injector slice: not sure, even at HEAD");
+	}
+
+	/** The miss says why it is not a rejection; the verdict is the one any miss gets. */
+	@Test void aMissWithNoSurePointSaysSo() {
+		System.setProperty(MixinOverloadPin.PROPERTY, "off");
+		MixinFit.Result fit = MixinFit.evaluate(pointMixin("INVOKE", "target", "L" + TARGET + ";absent()V"), targetWithCalls());
+		assertEquals(List.of("@Inject target Target.place binds place(" + STRING + "I)V, which the handler was not written for; it fits "
+				+ "place(" + STRING + ")V, declared later, and Mixin binds the first; its @At may find no point there, and Mixin "
+				+ "rejects a handler only at a point it finds"), fit.unresolved());
+		assertEquals(List.of(), fit.rejected());
+	}
+
+	/** RED control: with the point rule off a refused binding is a rejection whatever its @At finds, as before. */
+	@Test void withThePointRuleOffEveryRefusedBindingIsARejection() {
+		System.setProperty(MixinOverloadPin.PROPERTY, "off");
+		System.setProperty(MixinFit.REJECTION_POINT_PROPERTY, "off");
+		assertTrue(rejects(pointMixin("INVOKE", "target", "L" + TARGET + ";absent()V")));
+		assertTrue(rejects(pointMixin("CONSTANT")));
+		assertTrue(rejects(pointMixin("HEAD")));
+	}
+
+	/**
+	 * The node seam asks the same: with the target's code, a binding whose point is not sure is not taken out. Without
+	 * code there is nothing to find a point in, so nothing is sure -- which is why the seam reads its targets with code.
+	 */
+	@Test void theNodeSeamAsksForAPointInTheTargetsCode() {
+		System.setProperty(MixinOverloadPin.PROPERTY, "off");
+		ClassNode withCode = new ClassNode();
+		new ClassReader(targetWithCalls().apply(TARGET + ".class")).accept(withCode, 0);
+		ClassNode skipped = new ClassNode();
+		new ClassReader(targetWithCalls().apply(TARGET + ".class")).accept(skipped, ClassReader.SKIP_CODE);
+		ClassNode head = MixinFit.parse(pointMixin("HEAD"));
+		ClassNode absent = MixinFit.parse(pointMixin("INVOKE", "target", "L" + TARGET + ";absent()V"));
+		assertNotNull(MixinFit.stillRejected(head, head.methods.getFirst(), n -> withCode));
+		assertNull(MixinFit.stillRejected(absent, absent.methods.getFirst(), n -> withCode));
+		assertNull(MixinFit.stillRejected(head, head.methods.getFirst(), n -> skipped), "no code, no sure point");
+		System.setProperty(MixinFit.REJECTION_POINT_PROPERTY, "off");
+		assertNotNull(MixinFit.stillRejected(absent, absent.methods.getFirst(), n -> withCode), "RED control: the rule off");
+	}
+
+	// --- a @Surrogate, as Mixin looks one up ---
+
+	/** A {@code @Surrogate} of the handler's name with {@code desc}, its annotation visible or not. */
+	private static java.util.function.Consumer<ClassNode> surrogate(String desc, boolean visible, boolean coerceFirst) {
+		return m -> {
+			MethodNode s = body("onPlace", desc, Opcodes.RETURN);
+			s.access = Opcodes.ACC_PRIVATE;
+			List<AnnotationNode> annotation = new ArrayList<>(List.of(new AnnotationNode("Lorg/spongepowered/asm/mixin/injection/Surrogate;")));
+			if (visible) s.visibleAnnotations = annotation; else s.invisibleAnnotations = annotation;
+			if (coerceFirst) {
+				s.invisibleParameterAnnotations = new List[Type.getArgumentTypes(desc).length];
+				s.invisibleParameterAnnotations[0] = new ArrayList<>(List.of(new AnnotationNode("Lorg/spongepowered/asm/mixin/injection/Coerce;")));
+			}
+			m.methods.add(s);
+		};
+	}
+
+	/**
+	 * When the handler does not fit, Mixin looks a surrogate up by the handler's name and EXACTLY the callback descriptor
+	 * ({@code Bytecode.findMethod}), and takes it only with a visible {@code @Surrogate} ({@code Annotations.getVisible}).
+	 * A surrogate that takes the callback alone, or a {@code @Coerce}d argument, or whose annotation is invisible, is not
+	 * found: the binding stays refused (and pinned, with the pin on). Only the exact one stands in.
+	 */
+	@Test void aSurrogateStandsInOnlyWhereMixinFindsIt() {
+		ClassNode target = MixinFit.parse(target().apply(TARGET + ".class"));
+		String exact = "(" + STRING + "I" + CI + ")V";
+		List<java.util.function.Consumer<ClassNode>> notFound = List.of(
+				surrogate("(" + CI + ")V", true, false),
+				surrogate("(Ljava/lang/Object;I" + CI + ")V", true, true),
+				surrogate(exact, false, false));
+		for (java.util.function.Consumer<ClassNode> edit : notFound) {
+			byte[] mixin = mixin("place", "(" + STRING + CI + ")V", edit);
+			ClassNode node = MixinFit.parse(mixin);
+			MethodNode surrogate = node.methods.get(1);
+			assertSame(target.methods.get(1), MixinOverloadPin.destination(node, node.methods.getFirst(), "place", target),
+					"not found by Mixin, so the pin moves the handler: " + surrogate.desc);
+			System.setProperty(MixinOverloadPin.PROPERTY, "off");
+			assertEquals(1, judge(mixin).rejected().size(), "refused, and a rejection: " + surrogate.desc);
+			System.clearProperty(MixinOverloadPin.PROPERTY);
+			if (surrogate.visibleAnnotations != null) {
+				assertTrue(MixinFit.handlerFits(surrogate, target.methods.getFirst().desc),
+						"RED control: the looser rule (the handler's own fit) would have stood it in: " + surrogate.desc);
+			}
+		}
+		byte[] found = mixin("place", "(" + STRING + CI + ")V", surrogate(exact, true, false));
+		ClassNode node = MixinFit.parse(found);
+		assertNull(MixinOverloadPin.destination(node, node.methods.getFirst(), "place", target));
+		System.setProperty(MixinOverloadPin.PROPERTY, "off");
+		assertEquals(MixinFit.Verdict.FIT, judge(found).verdict());
+	}
+
+	/** Beside a selector that binds, a refused one only says how many hit, as any other miss among alternatives. */
+	@Test void anAlternativeThatBindsKeepsTheInjector() {
+		byte[] both = mixin("place", "(" + STRING + CI + ")V", m -> {
+			AnnotationNode inject = MixinFit.injectorOf(m.methods.getFirst());
+			inject.values.set(1, new ArrayList<>(List.of("place", "place(" + STRING + ")V")));
+		});
+		assertEquals(MixinFit.Verdict.FIT, judge(both).verdict());
+	}
+}
