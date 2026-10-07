@@ -298,3 +298,23 @@ public final class KernelModelFormats {
 		if (cause instanceof LinkageError linkage) return doesNotLink(format, linkage);
 		if (cause instanceof Error error) throw error;
 		return new JsonParseException(cause);
+	}
+
+	/**
+	 * A {@code LinkageError} from guest code as the {@code Exception} the game's per-model catch can hold — so one
+	 * model fails, not the resource reload. Said once per format at WARN, since the game's own line names only the
+	 * model file.
+	 */
+	private static JsonParseException doesNotLink(String format, LinkageError error) {
+		if (ANNOUNCED.add("linkage " + format)) {
+			ForbricLog.warn("[Forbric/ModelFormats] the code parsing %s does not link on the merged base (%s) — each "
+					+ "model in that format fails on its own instead of failing the resource reload, which would drop "
+					+ "every resource pack", format, String.valueOf(error));
+		}
+		return new JsonParseException(format + " does not link on the merged base: " + error, error);
+	}
+
+	static boolean enabled() {
+		return !"off".equalsIgnoreCase(System.getProperty(ModelFormatFunnelInjector.PROPERTY, "on"));
+	}
+}
