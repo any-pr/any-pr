@@ -298,3 +298,81 @@ public final class KernelModListScreen extends Screen {
 		return switch (ecosystem) {
 			case FABRIC -> TAG_FABRIC;
 			case NEOFORGE -> TAG_NEOFORGE;
+			default -> BRIGHT;
+		};
+	}
+
+	@Override
+	public void onClose() {
+		this.minecraft.gui.setScreen(this.parent);
+	}
+
+	/** The scrolling list. Vanilla's widget, so scrolling, selection and keyboard navigation are not reinvented. */
+	private static final class ModList extends ObjectSelectionList<Row> {
+		ModList(Minecraft minecraft, int width, int height, int y, int entryHeight) {
+			super(minecraft, width, height, y, entryHeight);
+		}
+
+		/**
+		 * Vanilla centres a fixed-width row inside the list, which for a narrow column puts the row's left edge
+		 * at a NEGATIVE x — the first measurement of this screen showed every mod name with its first few
+		 * characters cut off the left of the window. The rows are this column.
+		 */
+		@Override
+		public int getRowWidth() {
+			return getWidth() - PAD * 2;
+		}
+	}
+
+	/** One mod: its name, and under it the loader it came from — which is the half no vanilla row has. */
+	private final class Row extends ObjectSelectionList.Entry<Row> {
+		private final ModCatalog.Entry entry;
+
+		Row(ModCatalog.Entry entry) {
+			this.entry = entry;
+		}
+
+		@Override
+		public void extractContent(GuiGraphicsExtractor g, int mouseX, int mouseY, boolean hovered,
+				float partialTick) {
+			int x = getContentX();
+			int y = getContentY();
+			if (KernelModListScreen.this.list.getSelected() == this) {
+				g.fill(x - 2, y - 2, x + getContentWidth() + 2, y + getContentHeight() + 1, SELECTED);
+			}
+			boolean broken = this.entry.status() != ModCatalog.Status.OK;
+			String name = broken ? BROKEN_MARK + this.entry.name() : this.entry.name();
+			g.text(KernelModListScreen.this.font, trim(name, getContentWidth()), x, y, broken ? BROKEN : BRIGHT);
+			g.text(KernelModListScreen.this.font, label(this.entry.ecosystem()), x, y + 11,
+					tag(this.entry.ecosystem()));
+		}
+
+		/** Names are arbitrary user data and the column is narrow; an ellipsis beats drawing over the next pane. */
+		private String trim(String text, int width) {
+			if (KernelModListScreen.this.font.width(text) <= width) return text;
+			String cut = KernelModListScreen.this.font.plainSubstrByWidth(text, width - 6);
+			return cut + "…";
+		}
+
+		@Override
+		public Component getNarration() {
+			return Component.literal(this.entry.name() + ", " + label(this.entry.ecosystem()));
+		}
+
+		/**
+		 * Select on a click, open the config on a double click.
+		 *
+		 * <p>The Config button is still there and is still what says whether a mod HAS one; this is the shortcut
+		 * for the mod already under the cursor. A double click on a mod with no config does nothing rather than
+		 * flashing an empty screen — {@code openConfig} already returns without a screen in that case, and a mod
+		 * with no settings to change is the ordinary case, not an error worth reporting.
+		 */
+		@Override
+		public boolean mouseClicked(net.minecraft.client.input.MouseButtonEvent event, boolean doubled) {
+			KernelModListScreen.this.list.setSelected(this);
+			KernelModListScreen.this.selectionChanged();
+			if (doubled) KernelModListScreen.this.openConfig();
+			return true;
+		}
+	}
+}
