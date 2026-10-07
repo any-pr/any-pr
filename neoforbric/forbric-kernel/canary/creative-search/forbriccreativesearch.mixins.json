@@ -1,0 +1,1 @@
+{"required": true, "package": "forbric.creativesearch.mixin", "compatibilityLevel": "JAVA_21", "client": ["ClientPacketListenerMixin"], "injectors": {"defaultRequire": 1}}
