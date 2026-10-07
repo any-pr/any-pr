@@ -598,3 +598,8 @@ def main(argv=None):
         return 130
     except (OSError, subprocess.SubprocessError, RuntimeError, ValueError, KeyError, zipfile.BadZipFile) as error:
         print('[dev] ERROR: ' + str(error), file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())
