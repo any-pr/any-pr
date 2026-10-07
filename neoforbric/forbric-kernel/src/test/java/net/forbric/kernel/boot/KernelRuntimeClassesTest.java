@@ -298,3 +298,122 @@ class KernelRuntimeClassesTest {
 		if (t.isArray()) {
 			assertSeamType(binary, call, t.getComponentType());
 			return;
+		}
+
+		String name = t.getName();
+		boolean jdk = name.startsWith("java.") || name.startsWith("javax.");
+
+		assertTrue(jdk || DelegationPolicy.alwaysParent(name),
+				binary + "." + call.name() + " crosses the boot/game seam carrying " + name
+						+ ", which DelegationPolicy does not pin to the parent. Game objects have to cross as "
+						+ "Object; anything else must be a type both loaders resolve to the SAME class, or the "
+						+ "two sides are not speaking about the same thing");
+	}
+
+	@Test
+	void verifyPassesWhenTheGameSideJarIsOwned(@TempDir Path dir) throws Exception {
+		URL runtimeJar = jarWith(dir.resolve("forbric-kernel-runtime.jar"), KernelRuntimeClasses.compiled());
+
+		try (ForbricClassLoader loader =
+				new ForbricClassLoader(new URL[] {runtimeJar}, getClass().getClassLoader())) {
+			assertTrue(KernelRuntimeClasses.verify(loader));
+		}
+	}
+
+	@Test
+	void verifyFailsWhenTheBootJarWasBuiltWithoutStagedArtifacts(@TempDir Path dir) throws Exception {
+		// The jar is simply not there — exactly what a boot jar built with no staged artifacts produces.
+		URL somethingElse = jarWith(dir.resolve("unrelated.jar"), List.of("forbrictest.Unrelated"));
+
+		try (ForbricClassLoader loader =
+				new ForbricClassLoader(new URL[] {somethingElse}, getClass().getClassLoader())) {
+			assertFalse(KernelRuntimeClasses.verify(loader),
+					"a kernel whose own game-side classes are absent must say so; every one of them fails to "
+							+ "link later, at the point of use, naming a class instead of the build");
+		}
+	}
+
+	@Test
+	void verifyFailsWhenAGameSideClassIsPresentButWillNotDefine(@TempDir Path dir) throws Exception {
+		String victim = KernelRuntimeClasses.compiled().get(0);
+		Path jar = dir.resolve("forbric-kernel-runtime.jar");
+
+		try (OutputStream out = Files.newOutputStream(jar); ZipOutputStream zip = new ZipOutputStream(out)) {
+			zip.putNextEntry(new ZipEntry(victim.replace('.', '/') + ".class"));
+			zip.write("not a class file".getBytes(StandardCharsets.UTF_8));
+			zip.closeEntry();
+		}
+
+		try (ForbricClassLoader loader =
+				new ForbricClassLoader(new URL[] {jar.toUri().toURL()}, getClass().getClassLoader())) {
+			assertFalse(KernelRuntimeClasses.verify(loader),
+					"present-but-broken is a different failure from absent, and must not read as success");
+		}
+	}
+
+	/**
+	 * Issue #13, one layer down: the class is there and defines, but one of its public methods names a game type the
+	 * launch does not have. {@code initialize=false} resolves nothing, so the load succeeds and {@code getMethod} --
+	 * which resolves EVERY public signature, not only the one asked for -- throws {@code NoClassDefFoundError}. That
+	 * escaped verify, and the boot, to stderr.
+	 */
+	@Test
+	void verifyReportsAGameTypeItsMethodsNameThatThisLaunchDoesNotHaveInsteadOfThrowing(@TempDir Path dir)
+			throws Exception {
+		String victim = KernelRuntimeClasses.compiled().stream()
+				.filter(name -> !KernelRuntimeClasses.callsOn(name).isEmpty()).findFirst().orElseThrow();
+		Path jar = dir.resolve("forbric-kernel-runtime.jar");
+		try (OutputStream out = Files.newOutputStream(jar); ZipOutputStream zip = new ZipOutputStream(out)) {
+			for (String binary : KernelRuntimeClasses.compiled()) {
+				String internal = binary.replace('.', '/');
+				zip.putNextEntry(new ZipEntry(internal + ".class"));
+				zip.write(binary.equals(victim)
+						? standInNaming(internal, KernelRuntimeClasses.callsOn(binary), "forbrictest/AbsentGameType")
+						: standIn(internal, KernelRuntimeClasses.callsOn(binary), null));
+				zip.closeEntry();
+			}
+		}
+
+		String said;
+		boolean verified;
+		try (ForbricClassLoader loader =
+				new ForbricClassLoader(new URL[] {jar.toUri().toURL()}, getClass().getClassLoader())) {
+			boolean[] result = new boolean[1];
+			said = KernelLoadReportTest.capture(() -> result[0] = KernelRuntimeClasses.verify(loader));
+			verified = result[0];
+		}
+
+		assertFalse(verified, "a class whose methods cannot be resolved is not linked");
+		assertTrue(said.contains("[Forbric/Runtime] the kernel's own game-side class " + victim + " is there, but a "
+				+ "game type its methods name cannot be loaded"), said);
+		assertTrue(said.contains("forbrictest/AbsentGameType"), "the missing type is the lead, so it is named: " + said);
+	}
+
+	/** {@link #standIn}, plus one more public method whose only parameter is {@code absentType}. */
+	private static byte[] standInNaming(String internalName, List<KernelRuntimeClasses.Call> calls, String absentType) {
+		ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_MAXS);
+		new org.objectweb.asm.ClassReader(standIn(internalName, calls, null)).accept(
+				new org.objectweb.asm.ClassVisitor(Opcodes.ASM9, cw) {
+					@Override
+					public void visitEnd() {
+						MethodVisitor mv = super.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "needsTheGame",
+								"(L" + absentType + ";)V", null, null);
+						mv.visitCode();
+						mv.visitInsn(Opcodes.RETURN);
+						mv.visitMaxs(0, 0);
+						mv.visitEnd();
+						super.visitEnd();
+					}
+				}, 0);
+		return cw.toByteArray();
+	}
+
+	@Test
+	void theRegistryIsNotEmpty() {
+		assertEquals(KernelRuntimeClasses.all().size(),
+				KernelRuntimeClasses.all().keySet().stream().distinct().count());
+		assertTrue(KernelRuntimeClasses.compiled().size() >= 1,
+				"with nothing COMPILED the boot-time check verifies nothing and would pass on a kernel whose "
+						+ "game-side jar was never built");
+	}
+}
