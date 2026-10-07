@@ -1,0 +1,300 @@
+package net.forbric.kernel.boot;
+
+import static org.junit.jupiter.api.Assertions.*;
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.*;
+import java.util.*;
+import java.util.zip.*;
+import net.fabricmc.api.EnvType;
+import net.forbric.api.CompatibilityFindings;
+import net.forbric.kernel.fabric.FabricModDiscovery;
+import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.objectweb.asm.*;
+
+@ResourceLock("ModCatalog") @ResourceLock("system-properties")
+class NestedCandidateSelectionTest {
+	@TempDir Path root;
+	@BeforeEach @AfterEach void reset() {
+		DuplicateModArbiter.reset(); MultiLoaderArbiter.reset(); CompatibilityFindings.reset();
+		KernelBundledJars.mixinExtrasVersionForTests(null);
+		for (String property : List.of("forbric.modOwner", "forbric.dupeIdPreference", "forbric.nestedDupePreference",
+				"forbric.multiLoaderPreference", "forbric.arbitrationMaxNodes", "forbric.arbitrationTimeoutMillis")) System.clearProperty(property);
+	}
+	private Path mods() throws Exception { Path mods = root.resolve("mods"); Files.createDirectories(mods); return mods; }
+	private Path install(String name, byte[] bytes) throws Exception { Path path = mods().resolve(name); Files.write(path, bytes); return path; }
+	private DuplicateModArbiter.Decision decide() throws Exception { return DuplicateModArbiter.arbitrate(mods(), EnvType.CLIENT); }
+
+	@Test void manifestlessRuntimeBundleLoadsItsDeclaredLibrariesWithoutInventingAModIdentity() throws Exception {
+		String path = "META-INF/jarjar/stdlib.jar";
+		String metadata = "{\"jars\":[{\"path\":\"" + path + "\",\"identifier\":{\"group\":\"example\",\"artifact\":\"stdlib\"},"
+				+ "\"version\":{\"range\":\"[1,2)\",\"artifactVersion\":\"1\"}}]}";
+		Path bundle = install("runtime-all.jar", bytes(Map.of(path, bytes(Map.of("example/Runtime.class", type("example/Runtime"))),
+				"META-INF/jarjar/metadata.json", metadata.getBytes(StandardCharsets.UTF_8))));
+		install("unrelated-library.jar", bytes(Map.of("ignored.marker", new byte[] {1})));
+		String hash = NestedCandidateInventory.digest(bundle);
+		var decision = decide(); var plan = DuplicateModArbiter.currentPlan();
+		assertNotNull(plan); assertEquals(JointCandidateSelector.Status.SOLVED, plan.selection().status());
+		assertTrue(plan.selected().contains(bundle.toAbsolutePath()));
+		assertTrue(plan.inventory().nodes().get(bundle.toAbsolutePath()).claim().modIds().isEmpty());
+		assertEquals(1, plan.nestedFiles().size()); assertTrue(decision.ownerByModId().isEmpty());
+		assertEquals(hash, NestedCandidateInventory.digest(bundle)); assertTrue(plan.verify(plan.nestedFiles()));
+		try (var loader = new java.net.URLClassLoader(new java.net.URL[] {plan.nestedFiles().getFirst().toUri().toURL()}, null)) {
+			assertEquals("example.Runtime", loader.loadClass("example.Runtime").getName());
+		}
+	}
+
+	@Test void sameBasenameWithDifferentContentGetsTwoStablePhysicalFiles() throws Exception {
+		byte[] a = fabric("lib_a", "1", Map.of(), "", Map.of());
+		byte[] b = fabric("lib_b", "1", Map.of(), "", Map.of());
+		Path first = install("a.jar", fabric("a", "1", Map.of("META-INF/jars/shared.jar", a), "", Map.of()));
+		Path second = install("b.jar", fabric("b", "1", Map.of("META-INF/jars/shared.jar", b), "", Map.of()));
+		String firstHash = NestedCandidateInventory.digest(first), secondHash = NestedCandidateInventory.digest(second);
+		decide(); NestedCandidatePlan plan = DuplicateModArbiter.currentPlan();
+		assertEquals(2, plan.nestedFiles().size());
+		assertNotEquals(plan.nestedFiles().get(0).getParent(), plan.nestedFiles().get(1).getParent());
+		assertTrue(plan.nestedFiles().stream().allMatch(p -> p.getFileName().toString().equals("shared.jar")));
+		assertEquals(firstHash, NestedCandidateInventory.digest(first)); assertEquals(secondHash, NestedCandidateInventory.digest(second));
+		FabricModDiscovery discovery = new FabricModDiscovery(EnvType.CLIENT, root.resolve("legacy-cache")); discovery.discover(mods());
+		assertEquals(Set.of("a", "b", "lib_a", "lib_b"), discovery.getContainers().stream().map(c -> c.getMetadata().getId()).collect(java.util.stream.Collectors.toSet()));
+		assertTrue(plan.verify(discovery.getClasspathJars()));
+		assertFalse(Files.exists(root.resolve("legacy-cache")), "planned discovery must not extract through the old name/size cache");
+	}
+
+	@Test void oneSharedChildKeepsBothParentEdgesButIsLoadedOnce() throws Exception {
+		byte[] shared = fabric("shared", "1", Map.of(), "", Map.of());
+		install("a.jar", fabric("a", "1", Map.of("META-INF/jars/shared.jar", shared), "", Map.of()));
+		install("b.jar", fabric("b", "1", Map.of("META-INF/jars/shared.jar", shared), "", Map.of()));
+		decide(); var plan = DuplicateModArbiter.currentPlan();
+		assertEquals(1, plan.nestedFiles().size());
+		Path child = plan.nestedFiles().getFirst();
+		assertEquals(2, plan.inventory().edges().stream().filter(e -> e.child().equals(child)).count());
+		assertEquals(KernelModCatalog.UNKNOWN_PARENT, KernelModCatalog.bundledBy(child.toString(), mods()), "shared content must not invent a single parent");
+		FabricModDiscovery discovery = new FabricModDiscovery(EnvType.CLIENT, root.resolve("old")); discovery.discover(mods());
+		assertEquals(1, discovery.getContainers().stream().filter(c -> c.getMetadata().getId().equals("shared")).count());
+	}
+	@Test void selectedParentIdentitySurvivesContentAddressedExtraction() throws Exception {
+		Path parent = install("api.jar", fabric("fabric-api", "1", Map.of("META-INF/jars/module.jar", fabric("module", "1", Map.of(), "", Map.of())), "", Map.of()));
+		decide(); var plan = DuplicateModArbiter.currentPlan(); Path child = plan.nestedFiles().getFirst();
+		assertEquals("fabric-api", KernelModCatalog.bundledBy(child.toString(), mods()));
+		assertEquals("", KernelModCatalog.bundledBy(parent.toString(), mods()));
+		assertTrue(plan.bundledBy(root.resolve("never-selected.jar")).isEmpty());
+	}
+
+	@Test void aChildOfAnUnselectedParentCannotActivateItsParentOrLeakOntoTheClasspath() throws Exception {
+		Path neo = install("host-neo.jar", neo("host", "1", Map.of(), Map.of(), Map.of()));
+		Path fabric = install("host-fabric.jar", fabric("host", "1",
+				Map.of("META-INF/jars/ghost.jar", fabric("ghost", "1", Map.of(), "", Map.of())), "", Map.of()));
+		var decision = decide(); var plan = DuplicateModArbiter.currentPlan();
+		assertFalse(decision.suppressed(neo)); assertTrue(decision.suppressed(fabric));
+		assertTrue(plan.nestedFiles().isEmpty());
+		assertTrue(plan.inventory().nodes().values().stream().anyMatch(n -> n.claim() != null && n.claim().modIds().contains("ghost")));
+		FabricModDiscovery discovery = new FabricModDiscovery(EnvType.CLIENT, root.resolve("old")); discovery.discover(mods());
+		assertTrue(discovery.getContainers().isEmpty());
+	}
+
+	@Test void aSodiumStyleWrapperAndSameIdPayloadStayTogetherWithoutCompetingForTheIdentity() throws Exception {
+		byte[] payload = neo("sodium", "1", Map.of(), Map.of(), Map.of("payload.marker", new byte[] {1}));
+		Path wrapper = install("sodium.jar", neo("sodium", "1", Map.of("META-INF/jarjar/implementation.jar", payload), Map.of(), Map.of()));
+		var decision = decide(); var plan = DuplicateModArbiter.currentPlan();
+		assertEquals(JointCandidateSelector.Status.SOLVED, plan.selection().status());
+		assertFalse(decision.suppressed(wrapper)); assertEquals(1, plan.nestedFiles().size());
+		assertFalse(decision.suppressed(plan.nestedFiles().getFirst()));
+		assertTrue(plan.inventory().edges().getFirst().payload());
+		assertTrue(plan.verify(plan.nestedFiles()));
+		try (ZipFile zip = new ZipFile(plan.nestedFiles().getFirst().toFile())) { assertNotNull(zip.getEntry("payload.marker")); }
+	}
+
+	@Test void aNestedDependencyCanForceChangingTheTopLevelWinner() throws Exception {
+		Path preferred = install("host-neo.jar", neo("host", "1", Map.of("META-INF/jarjar/shared.jar",
+				neo("shared", "1", Map.of(), Map.of(), Map.of())), Map.of(), Map.of()));
+		Path alternative = install("host-fabric.jar", fabric("host", "1", Map.of("META-INF/jars/shared.jar",
+				fabric("shared", "2", Map.of(), "", Map.of())), "", Map.of()));
+		install("consumer.jar", fabric("consumer", "1", Map.of(), ",\"depends\":{\"shared\":\">=2\"}", Map.of()));
+		var decision = decide(); var plan = DuplicateModArbiter.currentPlan();
+		assertEquals(JointCandidateSelector.Status.SOLVED, plan.selection().status());
+		assertTrue(decision.suppressed(preferred)); assertFalse(decision.suppressed(alternative));
+		assertEquals("2", plan.inventory().nodes().get(plan.nestedFiles().getFirst()).claim().versionOf("shared"));
+	}
+
+	@Test void jarJarRangesChooseOneArtifactAndActualDiscoveryDoesNotChooseTheHighestAgain() throws Exception {
+		byte[] one = bytes(Map.of("version.txt", "one".getBytes(StandardCharsets.UTF_8)));
+		byte[] two = bytes(Map.of("version.txt", "two".getBytes(StandardCharsets.UTF_8)));
+		install("a.jar", neo("a", "1", Map.of("META-INF/jarjar/lib-1.jar", one),
+				Map.of("META-INF/jarjar/lib-1.jar", new NestedCandidateInventory.Coordinate("example:lib", "[1,2)", "1")), Map.of()));
+		install("b.jar", neo("b", "1", Map.of("META-INF/jarjar/lib-2.jar", two),
+				Map.of("META-INF/jarjar/lib-2.jar", new NestedCandidateInventory.Coordinate("example:lib", "[1,3)", "2")), Map.of()));
+		var decision = decide(); var plan = DuplicateModArbiter.currentPlan();
+		assertEquals(JointCandidateSelector.Status.SOLVED, plan.selection().status());
+		assertEquals(1, plan.nestedFiles().size()); assertEquals("lib-1.jar", plan.nestedFiles().getFirst().getFileName().toString());
+		System.setProperty("forbric.nestedDupePreference", "fabric,neoforge");
+		assertSame(decision, DuplicateModArbiter.arbitrateNested(EnvType.CLIENT, plan.nestedFiles()));
+		assertTrue(CompatibilityFindings.confirmedRequired().isEmpty());
+	}
+
+	@Test void aFabricParentAlsoDiscoversJarJarMetadataPathsOutsideTheUsualDirectories() throws Exception {
+		String path = "private-libraries/unusual-location.jar";
+		String metadata = "{\"jars\":[{\"path\":\"" + path + "\",\"identifier\":{\"group\":\"example\",\"artifact\":\"library\"},"
+				+ "\"version\":{\"range\":\"[2,3)\",\"artifactVersion\":\"2\"}}]}";
+		install("fabric-parent.jar", fabric("parent", "1", Map.of(), ",\"depends\":{\"library\":\">=2\"}",
+				Map.of(path, fabric("library", "2", Map.of(), "", Map.of()),
+						"META-INF/jarjar/metadata.json", metadata.getBytes(StandardCharsets.UTF_8))));
+		decide(); var plan = DuplicateModArbiter.currentPlan();
+		assertEquals(JointCandidateSelector.Status.SOLVED, plan.selection().status());
+		assertEquals(1, plan.nestedFiles().size(), "JarJar declarations do not depend on which ecosystem owns the parent");
+		assertEquals(path, plan.inventory().edges().getFirst().entry());
+		FabricModDiscovery discovery = new FabricModDiscovery(EnvType.CLIENT, root.resolve("legacy")); discovery.discover(mods());
+		assertEquals(Set.of("parent", "library"), discovery.getContainers().stream().map(c -> c.getMetadata().getId()).collect(java.util.stream.Collectors.toSet()));
+		assertTrue(plan.verify(discovery.getClasspathJars()));
+	}
+
+	@Test void aRootCannotSupplyAClassThatOnlyItsSuppressedNestedCandidateContains() throws Exception {
+		byte[] only = type("dep/OnlyInFabric");
+		byte[] helper = fabric("helper", "1", Map.of(), "", Map.of("dep/OnlyInFabric.class", only));
+		Path preferred = install("dep-neo.jar", neo("dep", "1", Map.of("META-INF/jarjar/helper.jar", helper), Map.of(), Map.of()));
+		Path alternative = install("dep-fabric.jar", fabric("dep", "1", Map.of(), "", Map.of("dep/OnlyInFabric.class", only)));
+		install("helper-neo.jar", neo("helper", "1", Map.of(), Map.of(), Map.of()));
+		String config = "{\"required\":true,\"package\":\"app.mixin\",\"mixins\":[\"Need\"]}";
+		install("app.jar", fabric("app", "1", Map.of(), ",\"depends\":{\"dep\":\"*\"},\"mixins\":[\"need.mixins.json\"]",
+				Map.of("need.mixins.json", config.getBytes(StandardCharsets.UTF_8), "app/mixin/Need.class", mixin("app/mixin/Need", "dep/OnlyInFabric"))));
+		System.setProperty("forbric.modOwner", "helper=neoforge");
+		var decision = decide();
+		assertTrue(decision.suppressed(preferred)); assertFalse(decision.suppressed(alternative));
+		assertEquals(JointCandidateSelector.Status.SOLVED, DuplicateModArbiter.currentPlan().selection().status());
+	}
+
+	@Test void replacingASelectedCacheFileIsDetectedWithoutReArbitrating() throws Exception {
+		install("a.jar", fabric("a", "1", Map.of("META-INF/jars/child.jar", fabric("child", "1", Map.of(), "", Map.of())), "", Map.of()));
+		var decision = decide(); var plan = DuplicateModArbiter.currentPlan(); Path selected = plan.nestedFiles().getFirst();
+		Files.write(selected, fabric("different", "2", Map.of(), "", Map.of()));
+		assertFalse(plan.verify(plan.nestedFiles()));
+		assertSame(decision, DuplicateModArbiter.arbitrateNested(EnvType.CLIENT, plan.nestedFiles()));
+		assertTrue(CompatibilityFindings.confirmedRequired().stream().anyMatch(f -> f.id().equals("arbitration:materialization")));
+	}
+
+	@Test void aMissingOrOutOfRangeDependencyWithNoContestIsLeftToTheDependencyAudit() throws Exception {
+		// gate-m20's shape: an ordinary pack whose only issue is a dependency nobody installed. DependencyAudit
+		// warns and offers its dialog; arbitration has no choice to make and must not turn it into a launch stop.
+		install("lonely.jar", fabric("lonely", "1", Map.of(), ",\"depends\":{\"forbricnosuchmod\":\"*\"}", Map.of()));
+		install("wants-new.jar", fabric("wants_new", "1", Map.of(), ",\"depends\":{\"old\":\">=5\"}", Map.of()));
+		install("old.jar", fabric("old", "4", Map.of(), "", Map.of()));
+		var decision = decide(); var plan = DuplicateModArbiter.currentPlan();
+		assertEquals(JointCandidateSelector.Status.SOLVED, plan.selection().status());
+		assertTrue(decision.suppressedJars().isEmpty());
+		assertTrue(CompatibilityFindings.confirmedRequired().isEmpty(), () -> CompatibilityFindings.all().toString());
+		assertTrue(CompatibilityFindings.all().stream().noneMatch(f -> f.id().startsWith("arbitration:")), () -> CompatibilityFindings.all().toString());
+	}
+
+	@Test void aDependencySpelledTheOtherEcosystemsWayIsTheSameLibraryHereToo() throws Exception {
+		// gate-m20's second canary: DependencyAudit already calls forbric_dep_canary and forbricdepcanary one mod.
+		install("forbricdepcanary.jar", fabric("forbricdepcanary", "1.0.0", Map.of(), "", Map.of()));
+		install("forbriccrosseco.jar", fabric("forbriccrosseco", "1", Map.of(), ",\"depends\":{\"forbric_dep_canary\":\">=1.0.0\"}", Map.of()));
+		decide();
+		assertEquals(JointCandidateSelector.Status.SOLVED, DuplicateModArbiter.currentPlan().selection().status());
+		assertTrue(CompatibilityFindings.all().stream().noneMatch(f -> f.id().startsWith("arbitration:")), () -> CompatibilityFindings.all().toString());
+	}
+
+	@Test void aRespelledVersionRequirementStillSteersTheContestedChoice() throws Exception {
+		Path preferred = install("foobar-neo.jar", neo("foobar", "1", Map.of(), Map.of(), Map.of()));
+		Path wanted = install("foobar-fabric.jar", fabric("foobar", "2", Map.of(), "", Map.of()));
+		install("consumer.jar", fabric("consumer", "1", Map.of(), ",\"depends\":{\"foo_bar\":\">=2\"}", Map.of()));
+		var decision = decide();
+		assertEquals(JointCandidateSelector.Status.SOLVED, DuplicateModArbiter.currentPlan().selection().status());
+		assertTrue(decision.suppressed(preferred)); assertFalse(decision.suppressed(wanted));
+		assertTrue(CompatibilityFindings.confirmedRequired().isEmpty());
+	}
+
+	@Test void anAmbiguousRespellingIsNotGuessedAt() throws Exception {
+		// Two different mods collapse to the requested key: ModIds declines, so arbitration must not pick one.
+		Path first = install("foobar.jar", fabric("foobar", "1", Map.of(), "", Map.of()));
+		Path second = install("foo-dot-bar.jar", neo("foo.bar", "1", Map.of(), Map.of(), Map.of()));
+		install("consumer.jar", fabric("consumer", "1", Map.of(), ",\"depends\":{\"foo_bar\":\">=2\"}", Map.of()));
+		var decision = decide();
+		assertEquals(JointCandidateSelector.Status.SOLVED, DuplicateModArbiter.currentPlan().selection().status());
+		assertFalse(decision.suppressed(first)); assertFalse(decision.suppressed(second));
+		assertTrue(CompatibilityFindings.all().stream().noneMatch(f -> f.id().startsWith("arbitration:")));
+	}
+
+	@Test void aMalformedJarJarRangeIsUnprovedInsteadOfAbortingTheBoot() throws Exception {
+		for (String range : List.of("[1.0", "[]")) {
+			reset();
+			byte[] lib = bytes(Map.of("version.txt", range.getBytes(StandardCharsets.UTF_8)));
+			install("parent.jar", neo("parent", "1", Map.of("META-INF/jarjar/lib.jar", lib),
+					Map.of("META-INF/jarjar/lib.jar", new NestedCandidateInventory.Coordinate("example:lib", range, "1")), Map.of()));
+			decide(); var plan = DuplicateModArbiter.currentPlan();
+			assertEquals(JointCandidateSelector.Status.UNPROVED, plan.selection().status(), range);
+			assertEquals(1, plan.nestedFiles().size(), "the library is still loaded, as the legacy extractor did");
+			assertTrue(plan.selection().uncertain().stream().anyMatch(r -> r.detail().contains("malformed JarJar version range")), range);
+			assertTrue(CompatibilityFindings.confirmedRequired().isEmpty());
+			Files.delete(mods().resolve("parent.jar"));
+		}
+	}
+
+	/** The real xaero pair: two Forge-family parents name their own platform artifact of one shared mod id. */
+	private void xaeroPair() throws Exception {
+		install("xaerominimap-forge.jar", forge("xaerominimap", "26.5.1", Map.of("META-INF/jarjar/xaerolib-forge.jar", forge("xaerolib", "1.7.3", Map.of(), Map.of(), Map.of())),
+				Map.of("META-INF/jarjar/xaerolib-forge.jar", new NestedCandidateInventory.Coordinate("xaero.lib:xaerolib-forge-26.2", "[1.7.3,)", "1.7.3")), Map.of()));
+		install("xaeroworldmap-neoforge.jar", neo("xaeroworldmap", "1.46.0", Map.of("META-INF/jarjar/xaerolib-neoforge.jar", neo("xaerolib", "1.7.3", Map.of(), Map.of(), Map.of())),
+				Map.of("META-INF/jarjar/xaerolib-neoforge.jar", new NestedCandidateInventory.Coordinate("xaero.lib:xaerolib-neoforge-26.2", "[1.7.0,1.8)", "1.7.3")), Map.of()));
+	}
+	private net.forbric.api.Ecosystem selectedFamily(String id) {
+		var plan = DuplicateModArbiter.currentPlan();
+		var chosen = plan.inventory().nodes().values().stream().filter(n -> plan.selected().contains(n.path()) && n.claim() != null
+				&& n.claim().modIds().contains(id)).toList();
+		assertEquals(1, chosen.size(), () -> id + " selected " + chosen);
+		return chosen.getFirst().claim().ecosystem();
+	}
+
+	@Test void samePlatformLibraryUnderTwoPlatformArtifactsFollowsTheNestedPreference() throws Exception {
+		xaeroPair();
+		decide();
+		assertEquals(JointCandidateSelector.Status.SOLVED, DuplicateModArbiter.currentPlan().selection().status());
+		assertEquals(net.forbric.api.Ecosystem.NEOFORGE, selectedFamily("xaerolib"));
+		assertTrue(CompatibilityFindings.confirmedRequired().isEmpty(), () -> CompatibilityFindings.all().toString());
+		// The order is a preference among satisfying builds, not an artifact the first-sorted identity forced.
+		reset(); System.setProperty("forbric.nestedDupePreference", "neoforge,fabric");
+		xaeroPair(); decide();
+		assertEquals(JointCandidateSelector.Status.SOLVED, DuplicateModArbiter.currentPlan().selection().status());
+		assertEquals(net.forbric.api.Ecosystem.NEOFORGE, selectedFamily("xaerolib"));
+		reset(); System.setProperty("forbric.modOwner", "xaerolib=neoforge");
+		xaeroPair(); decide();
+		assertEquals(JointCandidateSelector.Status.SOLVED, DuplicateModArbiter.currentPlan().selection().status());
+		assertEquals(net.forbric.api.Ecosystem.NEOFORGE, selectedFamily("xaerolib"));
+	}
+
+	@Test void aFabricBuildWithoutJarJarMetadataCanStandInForAForgeCoordinate() throws Exception {
+		// Real Fabric JiJ parents ship no META-INF/jarjar/metadata.json (xaerominimap-fabric), yet the MinecraftForge
+		// parent's coordinate is met by any build of the same mod whose version is in range.
+		install("parent-fabric.jar", fabric("parentfabric", "1", Map.of("META-INF/jars/lib-fabric.jar", fabric("lib", "2.0.0", Map.of(), "", Map.of())),
+				",\"depends\":{\"lib\":\">=2.0.0\"}", Map.of()));
+		install("parent-forge.jar", forge("parentforge", "1", Map.of("META-INF/jarjar/lib-forge.jar", forge("lib", "1.5.0", Map.of(), Map.of(), Map.of())),
+				Map.of("META-INF/jarjar/lib-forge.jar", new NestedCandidateInventory.Coordinate("example:lib-forge", "[1.5,)", "1.5.0")), Map.of()));
+		for (String pin : List.of("", "lib=fabric")) {
+			reset(); if (!pin.isEmpty()) System.setProperty("forbric.modOwner", pin);
+			decide();
+			assertEquals(JointCandidateSelector.Status.SOLVED, DuplicateModArbiter.currentPlan().selection().status(), pin);
+			assertEquals(net.forbric.api.Ecosystem.FABRIC, selectedFamily("lib"), pin);
+			assertTrue(CompatibilityFindings.confirmedRequired().isEmpty(), () -> pin + CompatibilityFindings.all());
+		}
+	}
+
+	@Test void aNewerTopLevelCopySatisfiesABundlingParentsCoordinate() throws Exception {
+		install("a.jar", neo("a", "1", Map.of("META-INF/jarjar/lib-1.jar", neo("lib", "1.0", Map.of(), Map.of(), Map.of())),
+				Map.of("META-INF/jarjar/lib-1.jar", new NestedCandidateInventory.Coordinate("example:lib", "[1.0,)", "1.0")), Map.of()));
+		Path topLevel = install("lib-2.jar", neo("lib", "2.0", Map.of(), Map.of(), Map.of()));
+		for (boolean consumer : List.of(false, true)) {
+			reset();
+			if (consumer) install("b.jar", fabric("b", "1", Map.of(), ",\"depends\":{\"lib\":\">=2.0\"}", Map.of()));
+			var decision = decide(); var plan = DuplicateModArbiter.currentPlan();
+			assertEquals(JointCandidateSelector.Status.SOLVED, plan.selection().status(), "consumer=" + consumer);
+			assertFalse(decision.suppressed(topLevel), "the jar the player installed is not silently replaced");
+			assertTrue(plan.nestedFiles().isEmpty(), "the older bundled copy stays out");
+			assertTrue(CompatibilityFindings.confirmedRequired().isEmpty());
+		}
+	}
+
+	@Test void sameFamilyNestedDuplicatesResolveToTheHighestVersionNotTheDigestOrder() throws Exception {
+		// Distant Horizons nests fabric-api 0.149's modules next to the player's fabric-api 0.161. The candidate
+		// directory is the content digest, so ordering by path picked whichever hash sorted first.
