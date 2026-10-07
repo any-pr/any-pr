@@ -598,3 +598,31 @@ class RegistryDirectoryOwnerInjectorTest {
 					}
 				}
 			}
+			throw new AssertionError(internalName + " not found in " + jar.getFileName() + " " + seen);
+		}
+	}
+
+	private static ClassNode node(byte[] bytes) {
+		ClassNode node = new ClassNode();
+		new ClassReader(bytes).accept(node, 0);
+		return node;
+	}
+
+	private static MethodNode method(ClassNode node, String name) {
+		for (MethodNode m : node.methods) if (m.name.equals(name)) return m;
+		throw new AssertionError(node.name + " has no " + name);
+	}
+
+	private static boolean calls(MethodNode method, String owner, String name) {
+		for (AbstractInsnNode insn : method.instructions) {
+			if (insn instanceof MethodInsnNode call && call.owner.equals(owner) && call.name.equals(name)) return true;
+		}
+		return false;
+	}
+
+	private static int count(MethodNode method, int opcode) {
+		int n = 0;
+		for (AbstractInsnNode insn : method.instructions) if (insn.getOpcode() == opcode) n++;
+		return n;
+	}
+}
