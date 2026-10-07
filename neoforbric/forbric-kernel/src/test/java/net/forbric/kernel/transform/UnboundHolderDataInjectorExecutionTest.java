@@ -298,3 +298,60 @@ class UnboundHolderDataInjectorExecutionTest {
 	@Test void aRegisteredBlockStillFollowsTheDataMap(@TempDir Path work) throws Throwable {
 		Game game = Game.of(repaired(InjectorExecution.compile(work, STAND_INS)));
 		Object copper = game.block("copper_block"), exposed = game.block("exposed_copper"), other = game.block("weathered_copper");
+		game.vanillaNext(copper, other);
+		game.dataMapNext("minecraft:copper_block", exposed);
+		game.register("minecraft:copper_block", copper);
+		assertSame(exposed, game.next(copper), "the data map's entry wins for a registered block");
+	}
+
+	/**
+	 * A block still unregistered when its registry closed: native NeoForge's throw here was the only report of that, so
+	 * the answer stays vanilla's while the first lookup for each such value WARNs with the stack that asked.
+	 */
+	@Test void aValueStillUnregisteredWhenItsRegistryClosedIsReported(@TempDir Path work) throws Throwable {
+		Game game = Game.of(repaired(InjectorExecution.compile(work, STAND_INS)));
+		Object orphan = game.block("orphan_ladder"), exposed = game.block("exposed_orphan_ladder"), registered = game.block("copper_ladder");
+		game.register("moreladders:copper_ladder", registered);
+		game.vanillaNext(orphan, exposed);
+		game.vanillaNext(registered, exposed);
+		InjectorExecution.invoke(game.registry(), "freeze");
+
+		Object[] answer = new Object[1];
+		String first = capture(() -> answer[0] = game.next(orphan));
+		assertSame(exposed, answer[0], "still vanilla's answer: the report changes nothing");
+		assertTrue(first.contains("WARN") && first.contains("net.minecraft.world.level.block.Block 'orphan_ladder'")
+				&& first.contains("Registry[test_blocks]") && first.contains("Trying to access unbound value")
+				&& first.contains("DataMapHooks.getNextOxidizedStage"), "the value, its registry, native's throw and the asking stack:\n" + first);
+
+		String again = capture(() -> {
+			game.next(orphan);
+			game.next(registered);
+		});
+		assertFalse(again.contains("WARN"), "once per value, and a registered block is never reported:\n" + again);
+		String other = capture(() -> game.next(exposed));
+		assertTrue(other.contains("'exposed_orphan_ladder'"), "a second value gets its own line:\n" + other);
+	}
+
+	/** RED premise: as merged, the same call inside a mod's initializer throws before vanilla's table is asked. */
+	@Test void asMergedTheUnregisteredBlockThrows(@TempDir Path work) throws Throwable {
+		Game game = Game.of(InjectorExecution.compile(work, STAND_INS));
+		Object ladder = game.block("copper_ladder");
+		game.vanillaNext(ladder, game.block("exposed_copper_ladder"));
+		IllegalStateException thrown = assertThrows(IllegalStateException.class, () -> game.next(ladder));
+		assertTrue(thrown.getMessage().startsWith("Trying to access unbound value 'copper_ladder'"), thrown.getMessage());
+	}
+
+	@Test void editedOnceAndSwitchedOffLeftAsMerged(@TempDir Path work) throws Throwable {
+		Map<String, byte[]> original = InjectorExecution.compile(work, STAND_INS);
+		byte[] once = repaired(original).get(UnboundHolderDataInjector.OWNER);
+		assertSame(once, InjectorExecution.transform(new UnboundHolderDataInjector(), UnboundHolderDataInjector.TARGET, once, EnvType.SERVER),
+				"a getData that already opens with the guard is left alone");
+
+		System.setProperty(UnboundHolderDataInjector.PROPERTY, "off");
+		byte[] bytes = original.get(UnboundHolderDataInjector.OWNER);
+		assertSame(bytes, InjectorExecution.transform(new UnboundHolderDataInjector(), UnboundHolderDataInjector.TARGET, bytes, EnvType.SERVER));
+		Game game = Game.of(original);
+		Object ladder = game.block("copper_ladder");
+		assertThrows(IllegalStateException.class, () -> game.next(ladder), "off, the lookup throws as merged");
+	}
+}
