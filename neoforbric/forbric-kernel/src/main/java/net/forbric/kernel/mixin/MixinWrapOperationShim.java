@@ -298,3 +298,75 @@ public final class MixinWrapOperationShim {
 			}
 			if (found < 0 || used[found]) return null;
 			used[found] = true;
+			mapping[i] = found;
+		}
+		return mapping;
+	}
+
+	private static boolean mapped(int[] mapping, int position) {
+		for (int value : mapping) if (value == position) return true;
+		return false;
+	}
+
+	private static void box(MethodNode method, Type type) {
+		String wrapper = switch (type.getSort()) {
+			case Type.BOOLEAN -> "java/lang/Boolean";
+			case Type.BYTE -> "java/lang/Byte";
+			case Type.CHAR -> "java/lang/Character";
+			case Type.SHORT -> "java/lang/Short";
+			case Type.INT -> "java/lang/Integer";
+			case Type.LONG -> "java/lang/Long";
+			case Type.FLOAT -> "java/lang/Float";
+			case Type.DOUBLE -> "java/lang/Double";
+			default -> null;
+		};
+		if (wrapper == null) return;
+		method.instructions.add(new MethodInsnNode(Opcodes.INVOKESTATIC, wrapper, "valueOf",
+				"(" + type.getDescriptor() + ")L" + wrapper + ";", false));
+	}
+
+	private static boolean annotated(MethodNode handler, int parameter) {
+		for (List<AnnotationNode>[] all : List.of(nonNull(handler.visibleParameterAnnotations), nonNull(handler.invisibleParameterAnnotations))) {
+			if (parameter < all.length && all[parameter] != null && !all[parameter].isEmpty()) return true;
+		}
+		return false;
+	}
+
+	@SuppressWarnings("unchecked")
+	private static List<AnnotationNode>[] nonNull(List<AnnotationNode>[] annotations) {
+		return annotations == null ? new List[0] : annotations;
+	}
+
+	/** The handler's parameter annotations moved to the outer's positions: the call's shape is unannotated, trailing ones shift. */
+	@SuppressWarnings("unchecked")
+	static List<AnnotationNode>[] shifted(List<AnnotationNode>[] original, int handlerParams, int shift, int head, int outerParams) {
+		if (original == null) return null;
+		List<AnnotationNode>[] moved = new List[outerParams];
+		for (int i = head; i < Math.min(original.length, handlerParams); i++) {
+			if (original[i] != null) moved[i + shift] = new ArrayList<>(original[i]);
+		}
+		return moved;
+	}
+
+	/** The target methods this injector's {@code method} selectors name, matched as written. */
+	private static List<MethodNode> selected(AnnotationNode injector, List<MethodNode> declared) {
+		List<String> selectors = MixinFit.stringList(MixinFit.value(injector, "method"));
+		List<MethodNode> bodies = new ArrayList<>();
+		for (MethodNode body : declared) {
+			for (String selector : selectors) {
+				if (selector.equals(body.name) || selector.equals(body.name + body.desc)) {
+					bodies.add(body);
+					break;
+				}
+			}
+		}
+		return bodies;
+	}
+
+	private static List<AnnotationNode> without(List<AnnotationNode> annotations, String desc) {
+		if (annotations == null) return null;
+		List<AnnotationNode> kept = new ArrayList<>();
+		for (AnnotationNode annotation : annotations) if (!desc.equals(annotation.desc)) kept.add(annotation);
+		return kept;
+	}
+}
