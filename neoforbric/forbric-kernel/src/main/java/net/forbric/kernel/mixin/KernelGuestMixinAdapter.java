@@ -298,3 +298,303 @@ public final class KernelGuestMixinAdapter {
 					}
 					if (!shown.foreign().isEmpty()) {
 						// A DIFFERENT thing from the line below, and the reason the two are separated. An anchor
+						// that misses on a merged-base class is routine -- 1226 such anchors across every gate log
+						// in this repo, on runs that pass. An anchor that misses on ANOTHER MOD's class is not:
+						// across those same 1226 there is not one. It means two mods that were built to fit each
+						// other no longer do, and the failure that follows names neither of them. Iris 1.11.2
+						// beside Sodium 0.9.2-beta.1 is the worked example: its @Redirect wanted a call to
+						// RenderRegion.clearAllCachedBatches inside RenderRegionManager.uploadResults, that Sodium
+						// stopped making the call, and the client died a render frame later on "Unsupported
+						// stride: 36".
+						//
+						// Says "did not attach", not "will crash". Whether it crashes is not something this layer
+						// can establish -- it knows an anchor did not resolve and nothing more.
+						//
+						// Three records, because three readers need it. The finding stays SUSPECTED: application
+						// has not been observed, and only an observed loss may ask the player to continue or quit.
+						// ForeignMixinBreaks is the dependency dialog's non-blocking mixin section -- the details a
+						// suspicion belongs in -- and the row is what the Mods screen shows. Without the last two
+						// the one pointer from "Unsupported stride" back to the pair of mods is gone.
+						ForbricLog.warn("[Forbric/Mixin] %s:%s has unresolved preflight anchors on ANOTHER MOD — %s. "
+								+ "Both mods are installed and each is within the version range the other declares, "
+								+ "so nothing else will report this; one of them probably needs a different version. "
+								+ "This is a suspected mismatch; actual application has not been observed yet.",
+								MixinConfigOwners.describe(configName), mixin, String.join(", ", shown.foreign()));
+						ForeignMixinBreaks.record(configName, mixin, shown.foreign());
+						attribute(configName, "its mixin " + mixin + " targets another mod's class that has changed ("
+								+ String.join(", ", shown.foreign()) + ")");
+						preflight(configName, pkg, mixin, pluginClass, classBytes, required,
+								"preflight could not resolve this mixin's anchors on another mod", shown.foreign());
+					} else if (shown.verdict() == MixinFit.Verdict.PARTIAL) {
+						// Before reporting a PARTIAL, ask whether it is one the merge MADE: an injector bound by
+						// explicit descriptor to a merge-added delegating stub whose body moved. If rebinding it to
+						// the delegate makes the mixin fit, remember the plan; Mixin receives the rewritten
+						// annotation from the bytecode provider.
+						if (retargeted(configName, pkg, mixin, pluginClass, classBytes, required, judged, shown, resource, added,
+								configMinimum, suppress, nativeView)) continue;
+						// An injector Mixin rejects outright would fail the mixin it is kept in: taken out, or the mixin left out.
+						MixinFit.Result kept = answerRejections(configName, pkg, mixin, pluginClass, classBytes, required, judged,
+								shown, resource, added, configMinimum, false, nativeView);
+						if (kept == null) {
+							suppress.add(mixin);
+							continue;
+						}
+						if (kept.verdict() == MixinFit.Verdict.FIT) continue;
+						String drifted = driftedTarget(kept);
+						if (drifted != null) {
+							ForbricLog.warn("[Forbric/Mixin] guest mixin %s:%s targets %s, a renumbered anonymous class — on this "
+									+ "base that name is a different class (%s); its injections bind to unrelated code",
+									MixinConfigOwners.describe(configName), mixin, drifted, MergedBaseAnonymousDrift.describe(drifted));
+						}
+						suspectDrift(configName, pkg, mixin, pluginClass, classBytes, required, kept);
+						notePartial(configName, mixin, kept);
+						preflight(configName, pkg, mixin, pluginClass, classBytes, required, kept.reason(), kept.unresolved());
+						ForbricLog.info("[Forbric/Mixin] guest mixin %s:%s applies only partially on the merged base "
+								+ "— %s (kept; -Dforbric.mixinFit=strict drops these%s)", MixinConfigOwners.describe(configName), mixin,
+								kept.reason(), rejectionNote(kept));
+					}
+					continue;
+				}
+				// An UNFIT the merge MADE is asked the same question first: MoogsStructureLib's HEAD of placeEntities,
+				// alone in its mixin, misses only because the carrier replaced that method, and R7 moves it there.
+				if (fit.verdict() == MixinFit.Verdict.UNFIT && retargeted(configName, pkg, mixin, pluginClass, classBytes,
+						required, judged, fit, resource, added, configMinimum, suppress, nativeView)) continue;
+				// UNFIT means "no anchor resolves against the merged base", which the adapter reads as dead weight.
+				// It is not dead weight when the anchor belongs to ANOTHER mod: a cross-mod compatibility mixin
+				// targets a member that mod's own mixin adds at runtime. See ForeignMixinTargets for the two Physics
+				// Mod cases (Sodium's SpriteCoordinateExpander.transform, Iris' VertexFormat.bindAttributesIris) that
+				// this rule was silently deleting. Keeping it is cheap — a relaxed injector soft-skips if the member
+				// really is absent — while dropping it removes a working feature with no error anywhere.
+				if (fit.verdict() == MixinFit.Verdict.UNFIT && ForeignMixinTargets.claimedByAnotherConfig(
+						configName, MixinFit.mixinTargets(MixinFit.parse(classBytes)), resource)) {
+					// Kept for the other mod's sake -- but not with an injector Mixin rejects outright, which fails it all the
+					// same: taken out where it can go alone, or the mixin is left out.
+					if (answerRejections(configName, pkg, mixin, pluginClass, classBytes, required, judged, fit, resource, added,
+							configMinimum, true, nativeView) == null) {
+						suppress.add(mixin);
+						continue;
+					}
+					ForbricLog.info("[Forbric/Mixin] keeping guest mixin %s:%s — %s, but another loaded mod's mixin "
+							+ "targets the same class, so the missing member is that mod's to add (cross-mod "
+							+ "compatibility layer, not dead weight)", MixinConfigOwners.describe(configName), mixin, fit.reason());
+					continue;
+				}
+				suppress.add(mixin);
+				String optional = OptionalMixinDependencies.absent(MixinFit.parse(classBytes), net.forbric.api.ModPresence::isLoaded);
+				if (optional != null) {
+					ForbricLog.info("[Forbric/Mixin] %s:%s is an optional %s integration; that mod is absent, so the "
+							+ "integration is not applicable on this boot", MixinConfigOwners.describe(configName), mixin, optional);
+					continue;
+				}
+				ForbricLog.info("[Forbric/Mixin] auto-suppressing guest mixin %s:%s — %s on the merged base (%s)",
+						MixinConfigOwners.describe(configName), mixin, fit.verdict(), fit.reason());
+				report(MixinCompatibility.id(configName, pkg + "." + mixin), configName, pkg, mixin, pluginClass, classBytes,
+						"guest mixin " + mixin + " did not fit the merged game and was left out",
+						CompatibilityFinding.Confidence.CONFIRMED, required, List.of(fit.reason(), "kernel suppressed this mixin"));
+			} catch (RuntimeException perMixin) {
+				ForbricLog.debug("[Forbric/Mixin] could not scan guest mixin %s:%s — %s", MixinConfigOwners.describe(configName), mixin,
+						String.valueOf(perMixin));
+			}
+		}
+
+		closeOverPinnedContracts(configName, pkg, pluginClass, loaded, suppress, resource);
+		closeOverCastContracts(configName, pkg, pluginClass, loaded, suppress);
+		if (!suppress.isEmpty()) {
+			ForbricLog.info("[Forbric/Mixin] %s: left out %d of %d mixin(s)", MixinConfigOwners.describe(configName),
+					suppress.size(), loaded.size());
+		}
+		return suppress;
+	}
+
+	/**
+	 * Takes MixinRetarget's plan for a PARTIAL or UNFIT mixin when it leaves fewer misses and a mixin the adapter keeps
+	 * ({@link MixinRetarget#adopt}): remembered for the bytecode provider, announced, and what still misses reported as a
+	 * PARTIAL. False when there is none, and the caller goes on with the verdict as it was.
+	 */
+	private static boolean retargeted(String configName, String pkg, String mixin, String pluginClass, byte[] classBytes,
+			boolean required, byte[] judged, MixinFit.Result fit, Function<String, byte[]> resource, MixinAddedMembers.View added,
+			int configMinimum, List<String> suppress, NativeAbsentTargets.Context nativeView) {
+		MixinRetarget.Adoption adoption = MixinRetarget.adopt(judged, fit, resource, bytes -> MixinFit.evaluate(bytes, resource,
+				net.forbric.kernel.classloading.DelegationPolicy::alwaysGame, added, nativeView));
+		if (adoption == null) return false;
+		MixinFit.Result after = adoption.after();
+		MixinRetarget.remember(adoption.plan());
+		ForbricLog.info("[Forbric/Mixin] retargeted guest mixin %s:%s — %s; verdict %s→%s",
+				MixinConfigOwners.describe(configName), mixin, adoption.plan().describe(), fit.verdict(), after.verdict());
+		if (after.verdict() == MixinFit.Verdict.PARTIAL) {
+			// Only the rejections the mixin already had (MixinRetarget.adopt), answered on the rewritten mixin, whose names
+			// are the ones the pruner meets once the plan is applied.
+			after = answerRejections(configName, pkg, mixin, pluginClass, classBytes, required, adoption.rewritten(), after,
+					resource, added, configMinimum, false, nativeView);
+			if (after == null) {
+				suppress.add(mixin);
+				return true;
+			}
+			if (after.verdict() == MixinFit.Verdict.FIT) return true;
+			notePartial(configName, mixin, after);
+			suspectDrift(configName, pkg, mixin, pluginClass, classBytes, required, after);
+			preflight(configName, pkg, mixin, pluginClass, classBytes, required, after.reason(), after.unresolved());
+			ForbricLog.info("[Forbric/Mixin] guest mixin %s:%s still applies only partially — %s%s",
+					MixinConfigOwners.describe(configName), mixin, after.reason(), rejectionNote(after));
+		}
+		return true;
+	}
+
+	/**
+	 * What a kept mixin with an injector Mixin rejects outright ({@link MixinFit.Rejection}) becomes. Kept as it was, the
+	 * injector makes Mixin throw "Invalid descriptor" at the point it finds, whatever {@code require} says, which fails
+	 * the mixin's application to that class (every injector still to come included) and, in a config that stays
+	 * required, the game -- so the PARTIAL verdict's "keeps the handlers that bound and loses the rest" was not true of it.
+	 *
+	 * <p>So the injector is taken out ({@link net.forbric.kernel.transform.GuestInjectorPruner#rememberRefused}) when it
+	 * can go alone -- nothing else in the mixin calls it, it is in no group, no target binds it as written -- and the
+	 * mixin without it is one the adapter keeps; the verdict returned is that mixin's. Otherwise the mixin is left out
+	 * whole, reported as any mixin that did not fit, and null is returned. A mixin a named kernel repair supersedes
+	 * ({@link SupersededMixins}) is always left out whole: the repair does the job of all of it, and pruning would let the
+	 * rest apply beside the repair. With {@code -Dforbric.guestInjectorPruner.refused=off} the mixin stays as it was.
+	 *
+	 * <p>Asked of every mixin the adapter keeps on its verdict: a PARTIAL one, one kept for its misses on another mod's
+	 * class, a retargeted one, and an UNFIT one kept because another mod's mixin targets the same class. Not asked of a
+	 * mixin kept by name ({@link MergedBaseMixinCompat#KEPT_MIXINS}, {@code -Dforbric.keepMixins}), which is handed to
+	 * Mixin unjudged: whoever named it decided, and the entries are measured ones.
+	 *
+	 * @param judged  the mixin as Mixin will receive it before the pruner, whose handler names the pruner looks for
+	 * @param claimed the mixin is kept although UNFIT, because another mod's mixin targets the same class: the pruned
+	 *                mixin is kept whatever its verdict
+	 * @param nativeView the owning mod's own platform, asked of the pruned mixin as of the original
+	 *                ({@link NativeAbsentTargets})
+	 */
+	private static MixinFit.Result answerRejections(String configName, String pkg, String mixin, String pluginClass,
+			byte[] classBytes, boolean required, byte[] judged, MixinFit.Result fit, Function<String, byte[]> resource,
+			MixinAddedMembers.View added, int configMinimum, boolean claimed, NativeAbsentTargets.Context nativeView) {
+		if (fit.rejected().isEmpty() || !"on".equals(refusedHandling())) return fit;
+		String binary = pkg + "." + mixin;
+		String superseded = SupersededMixins.replacementFor(binary);
+		if (superseded == null && net.forbric.kernel.transform.GuestInjectorPruner.refusedEnabled()) {
+			ClassNode node = MixinFit.parse(judged);
+			boolean alone = true;
+			List<String> handlers = new ArrayList<>();
+			for (MixinFit.Rejection r : fit.rejected()) {
+				alone &= r.everywhere() && net.forbric.kernel.transform.GuestInjectorPruner.prunable(node, r.handler(), r.desc());
+				handlers.add(r.handler() + r.desc());
+			}
+			MixinFit.Result after = alone ? MixinFit.evaluate(net.forbric.kernel.transform.GuestInjectorPruner.without(judged,
+					handlers), resource, net.forbric.kernel.classloading.DelegationPolicy::alwaysGame, added, nativeView) : null;
+			if (after != null && (claimed || !after.shouldSuppress()) && after.rejected().isEmpty()) {
+				for (MixinFit.Rejection r : fit.rejected()) {
+					MethodNode handler = null;
+					for (MethodNode m : node.methods) if (m.name.equals(r.handler()) && m.desc.equals(r.desc())) handler = m;
+					net.forbric.kernel.transform.GuestInjectorPruner.rememberRefused(new net.forbric.kernel.transform
+							.GuestInjectorPruner.Refused(configName, node.name, r.handler(), r.desc(), r.reason(),
+							minimumOf(handler, configMinimum) >= 1));
+				}
+				ForbricLog.info("[Forbric/Mixin] guest mixin %s:%s keeps %d injector(s) Mixin would reject outright, failing "
+						+ "the mixin with them — %s; the kernel takes them out before Mixin reads the mixin, and the rest "
+						+ "applies — verdict %s→%s", MixinConfigOwners.describe(configName), mixin, handlers.size(),
+						String.join("; ", fit.rejected().stream().map(MixinFit.Rejection::reason).toList()), fit.verdict(),
+						after.verdict());
+				return after;
+			}
+		}
+		List<String> reasons = fit.rejected().stream().map(MixinFit.Rejection::reason).toList();
+		ForbricLog.info("[Forbric/Mixin] auto-suppressing guest mixin %s:%s — Mixin would reject %s outright and fail the "
+				+ "mixin with it (%s)%s", MixinConfigOwners.describe(configName), mixin,
+				String.join(", ", fit.rejected().stream().map(MixinFit.Rejection::handler).toList()), String.join("; ", reasons),
+				superseded != null ? "; " + superseded : "");
+		List<String> evidence = new ArrayList<>(reasons);
+		evidence.add("kernel suppressed this mixin: an injector in it Mixin rejects outright");
+		if (superseded != null) {
+			// The kernel's measured decision, with a named repair doing the whole job: not a loss the player decides on,
+			// and resolved once the repair is seen in the class the game defines, as the same mixin's apply failure was.
+			report(MixinCompatibility.id(configName, binary), configName, pkg, mixin, pluginClass, classBytes,
+					"the kernel leaves out its mixin " + mixin + " on the merged game", CompatibilityFinding.Confidence.CONFIRMED,
+					false, evidence);
+			SupersededMixins.awaitProof(configName, binary);
+		} else {
+			report(MixinCompatibility.id(configName, binary), configName, pkg, mixin, pluginClass, classBytes,
+					"guest mixin " + mixin + " did not fit the merged game and was left out",
+					CompatibilityFinding.Confidence.CONFIRMED, required, evidence);
+		}
+		return null;
+	}
+
+	/**
+	 * {@code -Dforbric.guestInjectorPruner.refused}: {@code on} (the default) answers a rejection as
+	 * {@link #answerRejections} says; {@code off} keeps the mixin as it was, in front of Mixin.
+	 */
+	private static String refusedHandling() {
+		return "off".equalsIgnoreCase(System.getProperty(net.forbric.kernel.transform.GuestInjectorPruner.REFUSED_PROPERTY,
+				"on")) ? "off" : "on";
+	}
+
+	/** What a kept PARTIAL line adds when it still carries an injector Mixin rejects: the switch is off. */
+	private static String rejectionNote(MixinFit.Result kept) {
+		if (kept.rejected().isEmpty()) return "";
+		return "; -D" + net.forbric.kernel.transform.GuestInjectorPruner.REFUSED_PROPERTY + "=off keeps "
+				+ String.join(", ", kept.rejected().stream().map(MixinFit.Rejection::handler).toList())
+				+ ", which Mixin rejects outright, failing this mixin when it is applied";
+	}
+
+	/**
+	 * The author's own count for an injector, as InjectionInfo reads it: an explicit {@code require}, else none inside a
+	 * {@code @Group}, else the config's {@code defaultRequire} as the mod wrote it.
+	 */
+	private static int minimumOf(MethodNode handler, int configMinimum) {
+		if (handler == null) return configMinimum;
+		AnnotationNode injector = MixinFit.injectorOf(handler);
+		Object declared = injector == null ? null : MixinFit.value(injector, "require");
+		if (declared instanceof Number n && n.intValue() >= 0) return n.intValue();
+		return MixinFit.groupOf(handler) != null ? 0 : configMinimum;
+	}
+
+	/** A bytecode preflight cannot know which targets, plugins or preceding transforms will actually run. */
+	private static void preflight(String config, String pkg, String mixin, String plugin, byte[] bytes,
+			boolean required, String detail, List<String> evidence) {
+		report(MixinCompatibility.id(config, pkg + "." + mixin), config, pkg, mixin, plugin, bytes, detail,
+				CompatibilityFinding.Confidence.SUSPECTED, required, evidence);
+	}
+
+	/**
+	 * A renumbered anonymous {@code @Mixin} target, on a row of its own.
+	 *
+	 * <p>On the whole-mixin row it was discharged by the very evidence it is about: the final class is checked for
+	 * references to each merged handler, and on a drifted target every handler binds cleanly — to the unrelated
+	 * class that carries vanilla's name here. Attachment proves nothing about WHICH class, so this row stays
+	 * SUSPECTED unless the mod's own plugin declines the mixin.
+	 */
+	private static void suspectDrift(String config, String pkg, String mixin, String plugin, byte[] bytes,
+			boolean required, MixinFit.Result fit) {
+		String drifted = driftedTarget(fit);
+		if (drifted == null) return;
+		List<String> evidence = fit.unresolved().stream().filter(r -> r.startsWith("@Mixin target ")).toList();
+		report(MixinCompatibility.driftId(config, pkg + "." + mixin), config, pkg, mixin, plugin, bytes,
+				"its mixin " + mixin + " targets " + drifted.replace('/', '.') + ", a renumbered anonymous class; on this "
+						+ "base that name is a different class, so its injections may bind to unrelated code",
+				CompatibilityFinding.Confidence.SUSPECTED, required, evidence);
+	}
+
+	/** Holds the row back for the mod's config plugin when it has one, and records it now when it does not. */
+	private static void report(String id, String config, String pkg, String mixin, String plugin, byte[] bytes,
+			String detail, CompatibilityFinding.Confidence confidence, boolean required, List<String> evidence) {
+		report(id, config, pkg, mixin, plugin, dottedTargets(bytes), detail, confidence, required, evidence);
+	}
+
+	private static void report(String id, String config, String pkg, String mixin, String plugin, List<String> targets,
+			String detail, CompatibilityFinding.Confidence confidence, boolean required, List<String> evidence) {
+		if (!PluginDeclinedMixins.defer(id, config, plugin, mixin, pkg + "." + mixin, targets, detail,
+				confidence, required, evidence)) {
+			MixinCompatibility.recordAs(id, config, pkg + "." + mixin, detail, confidence, required, evidence);
+		}
+	}
+
+	/**
+	 * Puts the mixins the kernel leaves out BY NAME in the finding ledger: {@link MergedBaseMixinCompat}'s measured
+	 * hand list, the pruner's whole-mixin fallback and {@code -Dforbric.suppressMixins}. Until now each was one log
+	 * line, so the report said nothing about a mixin that never runs.
+	 *
+	 * <p>CONFIRMED, because the entry is gone from the config before Mixin reads it. Not a necessary loss on the
+	 * prompt's terms: every entry is a measured decision the kernel ships, or the player's own switch, and a
+	 * continue-or-quit question on every launch could change neither. The mod's own declaration is kept in the
+	 * evidence, and a config plugin that would not have applied the mixin still clears it.
+	 *
+	 * @param sources mixin entry → where the suppression came from, as the report should name it
