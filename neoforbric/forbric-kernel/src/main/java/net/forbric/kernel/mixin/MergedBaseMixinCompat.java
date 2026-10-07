@@ -298,3 +298,16 @@ public final class MergedBaseMixinCompat {
 	 * {@code -Dforbric.keepMixins=<config>:<MixinEntry>,…}.
 	 */
 	/**
+	 * Pinned only while {@link net.forbric.kernel.transform.GuestInjectorPruner} is switched off. Each entry is a
+	 * mixin the pruner trims down to the injectors that fit; with the pruner off it would apply half, which is the
+	 * state that produced 4666 missingno block models — so the kill switch has to bring the whole-mixin pin back
+	 * rather than leave the mixin loose. See the {@code ModelManagerMixin} paragraph above.
+	 */
+	public static final List<String> SUPPRESSED_UNLESS_PRUNED = List.of(
+			"fabric-model-loading-api-v1.mixins.json:ModelManagerMixin");
+
+	public static final List<String> KEPT_MIXINS = List.of(
+			"jade.mixins.json:GuiGraphicsExtractorMixin",
+			"jade.mixins.json:FogRendererMixin",
+			"fabric-resource-loader-v1.mixins.json:SynchronizeRegistriesTaskMixin");
+}
