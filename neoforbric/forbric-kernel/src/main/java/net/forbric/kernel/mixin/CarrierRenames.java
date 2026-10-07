@@ -298,3 +298,120 @@ public final class CarrierRenames {
 		List<VarInsnNode> expected = new ArrayList<>();
 		if (!isStatic) expected.add(new VarInsnNode(Opcodes.ALOAD, 0));
 		int slot = isStatic ? 0 : 1;
+		for (Type param : params) {
+			expected.add(new VarInsnNode(param.getOpcode(Opcodes.ILOAD), slot));
+			slot += param.getSize();
+		}
+		for (AbstractInsnNode insn : method.instructions) {
+			boolean store = insn instanceof VarInsnNode var && var.getOpcode() >= Opcodes.ISTORE && var.getOpcode() <= Opcodes.ASTORE
+					&& var.var < slot;
+			if (store || insn instanceof IincInsnNode iinc && iinc.var < slot) return false;
+		}
+		for (AbstractInsnNode insn : method.instructions) {
+			if (!reaches(owner, insn, piece)) continue;
+			if (insn instanceof InvokeDynamicInsnNode indy && Type.getArgumentTypes(indy.desc).length != expected.size()) continue;
+			AbstractInsnNode at = insn;
+			boolean inPlace = true;
+			for (int i = expected.size() - 1; i >= 0 && inPlace; i--) {
+				at = previousReal(at);
+				inPlace = at instanceof VarInsnNode load && load.getOpcode() == expected.get(i).getOpcode()
+						&& load.var == expected.get(i).var;
+			}
+			if (inPlace) return true;
+		}
+		return false;
+	}
+
+	private static final String EITHER = "com/mojang/datafixers/util/Either";
+	private static final String EITHER_DESC = "L" + EITHER + ";";
+
+	/**
+	 * Whether {@code method} returns {@code piece}'s result whenever it is an {@code Either} left: it takes the result —
+	 * of a call to {@code piece}, or of the no-argument call of the lambda whose body {@code piece} is, made right where
+	 * the lambda is created — into a local, maybe through static hooks that take it as their last argument and give an
+	 * {@code Either} back into the same local, and then, straight on, returns that local if its {@code left()} is present.
+	 * NeoForge's {@code startSleepInBed}:
+	 * <pre>
+	 *   aload this; aload pos; invokedynamic get -> lambda$startSleepInBed$0; invokeinterface Supplier.get
+	 *   checkcast Either; astore r
+	 *   aload this; aload pos; aload r; invokestatic EventHooks.canPlayerStartSleeping; astore r
+	 *   aload r; invokevirtual Either.left; invokevirtual Optional.isPresent; ifeq L; aload r; areturn
+	 * </pre>
+	 * The piece's own early returns are vanilla's checks saying no, each an {@code Either.left}; they reach the carrier's
+	 * hook and leave the method. A handler that cancels the piece with a left leaves it the same way.
+	 */
+	static boolean returnsLefts(ClassNode owner, MethodNode method, MethodNode piece) {
+		if (method.instructions == null || !Type.getReturnType(method.desc).getDescriptor().equals(EITHER_DESC)
+				|| !Type.getReturnType(piece.desc).getDescriptor().equals(EITHER_DESC)) return false;
+		List<AbstractInsnNode> real = new ArrayList<>();
+		for (AbstractInsnNode insn : method.instructions) if (insn.getOpcode() >= 0) real.add(insn);
+		for (int i = 0; i < real.size(); i++) {
+			int at = pastResult(owner, real, i, piece);
+			if (at < 0) continue;
+			if (at < real.size() && real.get(at) instanceof TypeInsnNode cast && cast.getOpcode() == Opcodes.CHECKCAST
+					&& cast.desc.equals(EITHER)) at++;
+			if (at >= real.size() || !(real.get(at) instanceof VarInsnNode store) || store.getOpcode() != Opcodes.ASTORE) continue;
+			int result = store.var;
+			at++;
+			while (true) {
+				if (leftReturned(real, at, result)) return true;
+				int call = at;
+				while (call < real.size() && real.get(call) instanceof VarInsnNode load && load.getOpcode() >= Opcodes.ILOAD
+						&& load.getOpcode() <= Opcodes.ALOAD) call++;
+				if (call == at || call + 1 >= real.size() || !(real.get(call) instanceof MethodInsnNode hook)
+						|| hook.getOpcode() != Opcodes.INVOKESTATIC || !load(real.get(call - 1), Opcodes.ALOAD, result)
+						|| !load(real.get(call + 1), Opcodes.ASTORE, result)) break;
+				Type[] args = Type.getArgumentTypes(hook.desc);
+				if (args.length != call - at || !args[args.length - 1].getDescriptor().equals(EITHER_DESC)
+						|| !Type.getReturnType(hook.desc).getDescriptor().equals(EITHER_DESC)) break;
+				at = call + 2;
+			}
+		}
+		return false;
+	}
+
+	/** Past the instructions at {@code i} that leave {@code piece}'s result on the stack, or -1. */
+	private static int pastResult(ClassNode owner, List<AbstractInsnNode> real, int i, MethodNode piece) {
+		AbstractInsnNode insn = real.get(i);
+		if (insn instanceof MethodInsnNode && reaches(owner, insn, piece)) return i + 1;
+		if (!(insn instanceof InvokeDynamicInsnNode indy) || !reaches(owner, indy, piece) || i + 1 >= real.size()) return -1;
+		Type functional = Type.getReturnType(indy.desc);
+		return real.get(i + 1) instanceof MethodInsnNode get && get.getOpcode() == Opcodes.INVOKEINTERFACE
+				&& functional.getSort() == Type.OBJECT && get.owner.equals(functional.getInternalName()) && get.name.equals(indy.name)
+				&& get.desc.equals("()Ljava/lang/Object;") ? i + 2 : -1;
+	}
+
+	/** {@code aload r; Either.left(); Optional.isPresent(); ifeq; aload r; areturn} at {@code at}. */
+	private static boolean leftReturned(List<AbstractInsnNode> real, int at, int result) {
+		if (at + 5 >= real.size() || !load(real.get(at), Opcodes.ALOAD, result)) return false;
+		return real.get(at + 1) instanceof MethodInsnNode left && left.getOpcode() == Opcodes.INVOKEVIRTUAL && left.owner.equals(EITHER)
+				&& left.name.equals("left") && left.desc.equals("()Ljava/util/Optional;")
+				&& real.get(at + 2) instanceof MethodInsnNode present && present.getOpcode() == Opcodes.INVOKEVIRTUAL
+				&& present.owner.equals("java/util/Optional") && present.name.equals("isPresent") && present.desc.equals("()Z")
+				&& real.get(at + 3) instanceof JumpInsnNode skip && skip.getOpcode() == Opcodes.IFEQ
+				&& load(real.get(at + 4), Opcodes.ALOAD, result) && real.get(at + 5).getOpcode() == Opcodes.ARETURN;
+	}
+
+	private static boolean load(AbstractInsnNode insn, int opcode, int var) {
+		return insn instanceof VarInsnNode v && v.getOpcode() == opcode && v.var == var;
+	}
+
+	private static boolean reaches(ClassNode owner, AbstractInsnNode insn, MethodNode renamed) {
+		if (insn instanceof MethodInsnNode call) {
+			return call.owner.equals(owner.name) && call.name.equals(renamed.name) && call.desc.equals(renamed.desc);
+		}
+		if (insn instanceof InvokeDynamicInsnNode indy && indy.bsmArgs != null) {
+			for (Object arg : indy.bsmArgs) {
+				if (arg instanceof Handle handle && handle.getOwner().equals(owner.name)
+						&& handle.getName().equals(renamed.name) && handle.getDesc().equals(renamed.desc)) return true;
+			}
+		}
+		return false;
+	}
+
+	private static AbstractInsnNode previousReal(AbstractInsnNode insn) {
+		AbstractInsnNode at = insn.getPrevious();
+		while (at != null && at.getOpcode() < 0) at = at.getPrevious();
+		return at;
+	}
+}
