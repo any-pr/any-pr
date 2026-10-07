@@ -298,3 +298,89 @@ public final class ModFileScanner {
 			// Class.forName(memberName) with no normalisation at all. Handing it the slashed internal name found
 			// every @JeiPlugin in the pack and then lost all nine to ClassNotFoundException, leaving JEI to throw
 			// "plugins must not be empty" out of its own @Mod constructor. Jade and JourneyMap discover their
+			// plugins the same way and failed the same way. FIELD and METHOD keep their own shapes below.
+			return collect(descriptor, ElementType.TYPE, Type.getObjectType(internalName).getClassName());
+		}
+
+		@Override
+		public FieldVisitor visitField(int access, String name, String descriptor, String signature, Object value) {
+			return new FieldVisitor(Opcodes.ASM9) {
+				@Override
+				public AnnotationVisitor visitAnnotation(String desc, boolean visible) {
+					return collect(desc, ElementType.FIELD, name);
+				}
+			};
+		}
+
+		@Override
+		public MethodVisitor visitMethod(int access, String name, String descriptor, String signature,
+				String[] exceptions) {
+			// FML records a method as "<name><descriptor>" so an overload is distinguishable.
+			String member = name + descriptor;
+			return new MethodVisitor(Opcodes.ASM9) {
+				@Override
+				public AnnotationVisitor visitAnnotation(String desc, boolean visible) {
+					return collect(desc, ElementType.METHOD, member);
+				}
+			};
+		}
+
+		private AnnotationVisitor collect(String descriptor, ElementType target, String memberName) {
+			Map<String, Object> values = new LinkedHashMap<>();
+			found.add(new Found(descriptor, target, internalName, memberName, values));
+			return new ValueCollector(values);
+		}
+	}
+
+	/** Captures an annotation's members. Nested annotations are recorded as their own value maps. */
+	private static final class ValueCollector extends AnnotationVisitor {
+		private final Map<String, Object> values;
+
+		ValueCollector(Map<String, Object> values) {
+			super(Opcodes.ASM9);
+			this.values = values;
+		}
+
+		@Override
+		public void visit(String name, Object value) {
+			values.put(name == null ? "value" : name, value);
+		}
+
+		@Override
+		public void visitEnum(String name, String descriptor, String value) {
+			// NOT the bare constant name: FML wraps it, differently per ecosystem, in a game-side type. See EnumValue.
+			values.put(name == null ? "value" : name, new EnumValue(descriptor, value));
+		}
+
+		@Override
+		public AnnotationVisitor visitArray(String name) {
+			List<Object> items = new ArrayList<>();
+			values.put(name == null ? "value" : name, items);
+			return new AnnotationVisitor(Opcodes.ASM9) {
+				@Override
+				public void visit(String ignored, Object value) {
+					items.add(value);
+				}
+
+				@Override
+				public void visitEnum(String ignored, String descriptor, String value) {
+					items.add(new EnumValue(descriptor, value));
+				}
+
+				@Override
+				public AnnotationVisitor visitAnnotation(String ignored, String descriptor) {
+					Map<String, Object> nested = new LinkedHashMap<>();
+					items.add(nested);
+					return new ValueCollector(nested);
+				}
+			};
+		}
+
+		@Override
+		public AnnotationVisitor visitAnnotation(String name, String descriptor) {
+			Map<String, Object> nested = new LinkedHashMap<>();
+			values.put(name == null ? "value" : name, nested);
+			return new ValueCollector(nested);
+		}
+	}
+}
