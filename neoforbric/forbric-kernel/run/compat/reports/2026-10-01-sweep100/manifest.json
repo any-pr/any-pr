@@ -1,0 +1,300 @@
+[
+  {
+    "kind": "popular",
+    "slug": "terralith",
+    "project_id": "8oi3bsk5",
+    "loader": "neoforge",
+    "version": "2.6.4",
+    "version_id": "lqrGyTjO",
+    "version_type": "release",
+    "loaders": [
+      "neoforge"
+    ],
+    "filename": "Terralith_26.2_v2.6.4_Neoforge.jar",
+    "source_filename": "Terralith_26.2_v2.6.4_Neoforge.jar",
+    "url": "https://cdn.modrinth.com/data/8oi3bsk5/versions/lqrGyTjO/Terralith_26.2_v2.6.4_Neoforge.jar",
+    "size": 2975530,
+    "sha1": "23231002eac964fec4939dcde30c976d906d7c9f",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "popular",
+    "slug": "justenoughcharacters",
+    "project_id": "I7k4B65h",
+    "loader": "fabric",
+    "version": "4.6.8",
+    "version_id": "aZJO08Yo",
+    "version_type": "release",
+    "loaders": [
+      "fabric"
+    ],
+    "filename": "jecharacters-26.1.2-fabric-4.6.8.jar",
+    "source_filename": "jecharacters-26.1.2-fabric-4.6.8.jar",
+    "url": "https://cdn.modrinth.com/data/I7k4B65h/versions/aZJO08Yo/jecharacters-26.1.2-fabric-4.6.8.jar",
+    "size": 261988,
+    "sha1": "6a4c551e87cc3602410f7d2558121fc6ee849222",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "popular",
+    "slug": "cardinal-components-api",
+    "project_id": "K01OU20C",
+    "loader": "fabric",
+    "version": "8.0.1",
+    "version_id": "d78LiKJ8",
+    "version_type": "release",
+    "loaders": [
+      "fabric",
+      "quilt"
+    ],
+    "filename": "cardinal-components-api-8.0.1.jar",
+    "source_filename": "cardinal-components-api-8.0.1.jar",
+    "url": "https://cdn.modrinth.com/data/K01OU20C/versions/d78LiKJ8/cardinal-components-api-8.0.1.jar",
+    "size": 237909,
+    "sha1": "7983337a3ae2be07c8f9d2430ca3bd1965da87af",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "popular",
+    "slug": "comforts",
+    "project_id": "SaCpeal4",
+    "loader": "neoforge",
+    "version": "16.0.0+26.2",
+    "version_id": "fbz515w1",
+    "version_type": "release",
+    "loaders": [
+      "neoforge"
+    ],
+    "filename": "comforts-neoforge-16.0.0+26.2.jar",
+    "source_filename": "comforts-neoforge-16.0.0+26.2.jar",
+    "url": "https://cdn.modrinth.com/data/SaCpeal4/versions/fbz515w1/comforts-neoforge-16.0.0%2B26.2.jar",
+    "size": 456327,
+    "sha1": "4d8bb58c264cecc9b2210ee5d2fd6fcb8f8d025b",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "popular",
+    "slug": "rrls",
+    "project_id": "ZP7xHXtw",
+    "loader": "fabric",
+    "version": "5.2.8+mc26.2",
+    "version_id": "DVwuMj1w",
+    "version_type": "beta",
+    "loaders": [
+      "fabric",
+      "neoforge"
+    ],
+    "filename": "rrls-5.2.8+mc.26.2.jar",
+    "source_filename": "rrls-5.2.8+mc.26.2.jar",
+    "url": "https://cdn.modrinth.com/data/ZP7xHXtw/versions/DVwuMj1w/rrls-5.2.8%2Bmc.26.2.jar",
+    "size": 119145,
+    "sha1": "b74544c874a3b679acad16a31e34bb23443a5357",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "popular",
+    "slug": "sound",
+    "project_id": "ZouiUX7t",
+    "loader": "fabric",
+    "version": "2.5.1+edge+26.2-fabric",
+    "version_id": "kv2RxMQu",
+    "version_type": "beta",
+    "loaders": [
+      "fabric"
+    ],
+    "filename": "sounds-2.5.1+edge+26.2-fabric.jar",
+    "source_filename": "sounds-2.5.1+edge+26.2-fabric.jar",
+    "url": "https://cdn.modrinth.com/data/ZouiUX7t/versions/kv2RxMQu/sounds-2.5.1%2Bedge%2B26.2-fabric.jar",
+    "size": 8140184,
+    "sha1": "557183656b2a09545c7348507880c5f59293d16b",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "popular",
+    "slug": "xaeroplus",
+    "project_id": "EnPUzSTg",
+    "loader": "fabric",
+    "version": "2.36.3+fabric-26.2",
+    "version_id": "DnpkRkhk",
+    "version_type": "release",
+    "loaders": [
+      "fabric",
+      "quilt"
+    ],
+    "filename": "XaeroPlus-2.36.3+fabric-26.2-WM1.46.1-MM26.5.1.jar",
+    "source_filename": "XaeroPlus-2.36.3+fabric-26.2-WM1.46.1-MM26.5.1.jar",
+    "url": "https://cdn.modrinth.com/data/EnPUzSTg/versions/DnpkRkhk/XaeroPlus-2.36.3%2Bfabric-26.2-WM1.46.1-MM26.5.1.jar",
+    "size": 8153579,
+    "sha1": "214688487eef68cfca7865d9f860fef07cd9f76e",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "popular",
+    "slug": "puzzle",
+    "project_id": "3IuO68q1",
+    "loader": "neoforge",
+    "version": "2.3.1.1+26.2-neoforge",
+    "version_id": "563lcr7M",
+    "version_type": "release",
+    "loaders": [
+      "neoforge"
+    ],
+    "filename": "puzzle-neoforge-2.3.1.1+26.2.jar",
+    "source_filename": "puzzle-neoforge-2.3.1.1+26.2.jar",
+    "url": "https://cdn.modrinth.com/data/3IuO68q1/versions/563lcr7M/puzzle-neoforge-2.3.1.1%2B26.2.jar",
+    "size": 44190,
+    "sha1": "0bff9a1dabdf9378dd2c0e21f820832bef98c9a6",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "popular",
+    "slug": "paginatedadvancements",
+    "project_id": "pJogNFap",
+    "loader": "neoforge",
+    "version": "2.8.2+26.2-neoforge",
+    "version_id": "B8C7aIUR",
+    "version_type": "release",
+    "loaders": [
+      "neoforge"
+    ],
+    "filename": "PaginatedAdvancements-2.8.2+26.2-neoforge.jar",
+    "source_filename": "PaginatedAdvancements-2.8.2+26.2-neoforge.jar",
+    "url": "https://cdn.modrinth.com/data/pJogNFap/versions/B8C7aIUR/PaginatedAdvancements-2.8.2%2B26.2-neoforge.jar",
+    "size": 78860,
+    "sha1": "bd62a9ffcf982a458fa6fd16bead602b6b4d22f1",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "popular",
+    "slug": "cubes-without-borders",
+    "project_id": "ETlrkaYF",
+    "loader": "forge",
+    "version": "4.1.0+26.2",
+    "version_id": "Zn8JbMkF",
+    "version_type": "release",
+    "loaders": [
+      "fabric",
+      "forge",
+      "neoforge",
+      "quilt"
+    ],
+    "filename": "cwb-4.1.0+26.2.jar",
+    "source_filename": "cwb-4.1.0+26.2.jar",
+    "url": "https://cdn.modrinth.com/data/ETlrkaYF/versions/Zn8JbMkF/cwb-4.1.0%2B26.2.jar",
+    "size": 91405,
+    "sha1": "9420614dd8f95a9ca1e1b2371f342e92855bb354",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "popular",
+    "slug": "leaves-be-gone",
+    "project_id": "AVq17PqV",
+    "loader": "fabric",
+    "version": "26.2.0",
+    "version_id": "5vBSTK0b",
+    "version_type": "release",
+    "loaders": [
+      "fabric"
+    ],
+    "filename": "LeavesBeGone-v26.2.0-mc26.2.x-Fabric.jar",
+    "source_filename": "LeavesBeGone-v26.2.0-mc26.2.x-Fabric.jar",
+    "url": "https://cdn.modrinth.com/data/AVq17PqV/versions/5vBSTK0b/LeavesBeGone-v26.2.0-mc26.2.x-Fabric.jar",
+    "size": 41880,
+    "sha1": "938e0f3f4aadd5e732056d2863b1aebc8e630f7d",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "popular",
+    "slug": "first-person-model",
+    "project_id": "H5XMjpHi",
+    "loader": "fabric",
+    "version": "2.7.3",
+    "version_id": "f4rPoQxS",
+    "version_type": "release",
+    "loaders": [
+      "fabric"
+    ],
+    "filename": "firstperson-fabric-2.7.3-mc26.2.jar",
+    "source_filename": "firstperson-fabric-2.7.3-mc26.2.jar",
+    "url": "https://cdn.modrinth.com/data/H5XMjpHi/versions/f4rPoQxS/firstperson-fabric-2.7.3-mc26.2.jar",
+    "size": 1526783,
+    "sha1": "9a5f7f95c274ce2aa110cf19297426d63955b561",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "popular",
+    "slug": "durability-tooltip",
+    "project_id": "smUP7V3r",
+    "loader": "fabric",
+    "version": "1.2.0a-fabric-mc26.2",
+    "version_id": "mm3FDVjB",
+    "version_type": "release",
+    "loaders": [
+      "fabric",
+      "quilt"
+    ],
+    "filename": "durabilitytooltip-1.2.0a-fabric-mc26.2.jar",
+    "source_filename": "durabilitytooltip-1.2.0a-fabric-mc26.2.jar",
+    "url": "https://cdn.modrinth.com/data/smUP7V3r/versions/mm3FDVjB/durabilitytooltip-1.2.0a-fabric-mc26.2.jar",
+    "size": 21024,
+    "sha1": "5b48c9d613c1b9f2b87a2e02df72b614406cfd51",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "popular",
+    "slug": "crash-assistant",
+    "project_id": "ix1qq8Ux",
+    "loader": "neoforge",
+    "version": "1.11.14",
+    "version_id": "b1ry6azL",
+    "version_type": "release",
+    "loaders": [
+      "neoforge"
+    ],
+    "filename": "CrashAssistant-neoforge-26.2-26.3-1.11.14.jar",
+    "source_filename": "CrashAssistant-neoforge-26.2-26.3-1.11.14.jar",
+    "url": "https://cdn.modrinth.com/data/ix1qq8Ux/versions/b1ry6azL/CrashAssistant-neoforge-26.2-26.3-1.11.14.jar",
+    "size": 3450662,
+    "sha1": "4d7afd41d0872efaf377bcd9761d2d0d00e11126",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "popular",
+    "slug": "cicada",
+    "project_id": "IwCkru1D",
+    "loader": "fabric",
+    "version": "0.15.3+26.2",
+    "version_id": "gBbqA6lp",
+    "version_type": "release",
+    "loaders": [
+      "fabric"
+    ],
+    "filename": "cicada-lib-0.15.3+26.2.jar",
+    "source_filename": "cicada-lib-0.15.3+26.2.jar",
+    "url": "https://cdn.modrinth.com/data/IwCkru1D/versions/gBbqA6lp/cicada-lib-0.15.3%2B26.2.jar",
+    "size": 360541,
+    "sha1": "c0840ed708d12f4039bb293f88e08a71443b524b",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "popular",
+    "slug": "trek",
+    "project_id": "h2jngREY",
+    "loader": "neoforge",
+    "version": "B0.6.2+mod",
+    "version_id": "OYbFzi8L",
