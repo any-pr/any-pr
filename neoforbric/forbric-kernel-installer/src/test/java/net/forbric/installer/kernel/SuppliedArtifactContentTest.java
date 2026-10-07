@@ -298,3 +298,4 @@ public final class SuppliedArtifactContentTest {
 	private static void require(boolean condition, String message) {
 		if (!condition) throw new AssertionError(message);
 	}
+}
