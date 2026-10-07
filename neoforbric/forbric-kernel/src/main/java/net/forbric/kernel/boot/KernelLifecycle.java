@@ -898,3 +898,303 @@ public final class KernelLifecycle {
 	 * {@code getModContainerById}/{@code isLoaded} answer for the baseline too.
 	 *
 	 * <p>Runs on the dedicated server as well, and did not always: it lived inside the client-only step, so every
+	 * server's ModList held the mods and not NeoForge. The server posts fewer mod-bus events from game code than the
+	 * client, but {@code NetworkRegistry.setup()}'s {@code RegisterPayloadHandlersEvent} is one of them, and its
+	 * NeoForge-internal listener is what registers {@code neoforge:recipe_content} and every other built-in payload
+	 * type. Without it a server can negotiate a NeoForge connection and then fail to encode the first NeoForge
+	 * payload it sends (gate-m12).
+	 */
+	private static void publishModBusDelivery(ClassLoader cl) throws Exception {
+		Class<?> modListCls = Class.forName(ForeignType.MOD_LIST.binary(Ecosystem.NEOFORGE), false, cl);
+		Object modList = modListCls.getMethod("get").invoke(null);
+
+		Field modsField = modListCls.getDeclaredField("mods");
+		modsField.setAccessible(true);
+		Object current = modsField.get(modList);
+
+		List<Object> containers = new ArrayList<>();
+		containers.add(baselineContainer);
+		if (current instanceof List<?> existing) {
+			for (Object c : existing) {
+				if (c != null && c != baselineContainer) containers.add(c);
+			}
+		}
+
+		for (String field : new String[] {"sortedContainers", "mods"}) {
+			Field f = modListCls.getDeclaredField(field);
+			f.setAccessible(true);
+			f.set(modList, List.copyOf(containers));
+		}
+
+		try {
+			Method getModId = modContainerClass(cl).getMethod("getModId");
+			java.util.Map<String, Object> indexed = new java.util.HashMap<>();
+			for (Object c : containers) {
+				indexed.put((String) getModId.invoke(c), c);
+			}
+			// "minecraft" goes into the by-id index and NOWHERE else. ModLoadingContext.getActiveContainer()
+			// falls back to getModContainerById("minecraft").orElseThrow() when no container is active, and the
+			// throw it reaches says "Where is minecraft???!" — so a mod registering an extension point outside a
+			// window the kernel wraps got an exception out of NeoForge rather than a container. The container's
+			// own getEventBus() returns null by design, which is why it must not join the list the mod-bus
+			// fan-out walks.
+			indexed.computeIfAbsent("minecraft", id -> minecraftContainerOrNull(cl));
+			indexed.values().removeIf(java.util.Objects::isNull);
+
+			Field f = modListCls.getDeclaredField("indexedMods");
+			f.setAccessible(true);
+			f.set(modList, indexed);
+		} catch (Throwable t) {
+			ForbricLog.debug("[Forbric/Lifecycle] could not rebuild ModList.indexedMods: %s",
+					String.valueOf(unwrap(t)));
+		}
+
+		// NeoForge's title-screen version-check overlay (NeoForgeVersionCheck.getStatus →
+		// ModList.getModFileById("neoforge").getMods().get(0)) reads the `fileById` map, which our routing does not
+		// otherwise touch. It used to be seeded here with the BASELINE'S entry alone, which rendered the main menu
+		// and left getModFileById(anyOtherMod) answering null — an NPE inside any mod that resolves its own file by
+		// id. The whole container list goes in now, baseline included, through the same helper the publish pass
+		// uses, so the two passes cannot disagree about what the map holds.
+		try {
+			KernelModLoader.publishFileById(cl, modListCls, modList, containers);
+		} catch (Throwable t) {
+			ForbricLog.debug("[Forbric/Lifecycle] could not seed ModList.fileById (title version-check may NPE): %s",
+					String.valueOf(unwrap(t)));
+		}
+		ForbricLog.info("[Forbric/Lifecycle] NeoForge mod-bus delivery covers %d container(s) — baseline + every "
+				+ "loaded mod (ModLoader.postEvent fans out over this list, and the Mods screen lists it)",
+				containers.size());
+	}
+
+	/**
+	 * NeoForge's own {@code "minecraft"} container, or null if it cannot be built.
+	 *
+	 * <p>Null rather than a throw: failing to publish this costs one fallback lookup, while letting it abort the
+	 * index rebuild would cost every mod its container.
+	 */
+	private static Object minecraftContainerOrNull(ClassLoader cl) {
+		try {
+			return KernelModContainerFactory.minecraftContainer(cl);
+		} catch (Throwable t) {
+			ForbricLog.debug("[Forbric/Lifecycle] could not publish the 'minecraft' container: %s",
+					String.valueOf(unwrap(t)));
+			return null;
+		}
+	}
+
+	/**
+	 * Posts {@code DataPackRegistryEvent.NewRegistry} so mods can declare their own DATAPACK registries.
+	 *
+	 * <p>Distinct from {@code RegisterEvent}, which the kernel already fires: that one fills registries that exist,
+	 * while this one DECLARES per-world registries {@code RegistryDataLoader} must then build from datapacks.
+	 * NeoForge accumulates the declarations on the event and flushes them into
+	 * {@code DataPackRegistriesHooks.DATA_PACK_REGISTRIES} in its package-private {@code process()}.
+	 *
+	 * <p>One event instance posted to every bus and processed once — the shape FML uses, and required: the
+	 * declarations accumulate ON the event, so a per-mod instance would drop all but the last mod's.
+	 *
+	 * <p>The baseline bus is included deliberately. NeoForge declares its OWN datapack registries through this same
+	 * event ({@code neoforge:biome_modifier}, {@code neoforge:structure_modifier}), so posting it there is what
+	 * makes those resolvable — the gap that forced {@code ServerLifecycleHooks.runModifiers} to be neutered.
+	 *
+	 * <p>Once per process, and never retried: a client reaches it from up to three places (see
+	 * {@link DatapackRegistryDeclaration#waitsForFabric}), and a second post would hand every mod's listener the
+	 * event twice, while a failed first attempt has usually left a class erroneous that a retry cannot revive.
+	 */
+	private static void registerDataPackRegistries(ClassLoader cl) {
+		if (!DATAPACK_REGISTRIES_DECLARED.compareAndSet(false, true)) return;
+		try {
+			Class<?> eventCls = Class.forName(
+					"net.neoforged.neoforge.registries.DataPackRegistryEvent$NewRegistry", false, cl);
+			Class<?> busCls = Class.forName("net.neoforged.bus.api.IEventBus", false, cl);
+			Class<?> baseEvent = Class.forName("net.neoforged.bus.api.Event", false, cl);
+			Class<?> hooksCls = Class.forName(
+					"net.neoforged.neoforge.registries.DataPackRegistriesHooks", false, cl);
+
+			int before = ((java.util.List<?>) hooksCls.getMethod("getDataPackRegistries").invoke(null)).size();
+
+			Object event = eventCls.getConstructor().newInstance();
+			Method post = busCls.getMethod("post", baseEvent);
+
+			int posted = 0;
+			if (baselineBus != null) {
+				post.invoke(baselineBus, event);
+				posted++;
+			}
+			for (java.util.Map.Entry<String, KernelModLoader.NeoIdentity> e
+					: KernelModLoader.publishedNeoMods().entrySet()) {
+				// The active container matters here too: a mod may resolve itself while building its codec.
+				KernelModLoader.setNeoActiveContainer(cl, e.getValue().container());
+				try {
+					post.invoke(e.getValue().bus(), event);
+					posted++;
+				} catch (Throwable perMod) {
+					ForbricLog.warn("[Forbric/Lifecycle] " + e.getKey()
+							+ " failed declaring its datapack registries", unwrap(perMod));
+				} finally {
+					KernelModLoader.setNeoActiveContainer(cl, null);
+				}
+			}
+
+			Method process = eventCls.getDeclaredMethod("process");
+			process.setAccessible(true);
+			process.invoke(event);
+
+			// Name what landed, not just how many: on the merged pack a count alone could not distinguish "the
+			// registry a mod needs is present" from "nine OTHER registries are present", and that ambiguity cost a
+			// diagnosis. RegistryData is a record whose toString carries the key.
+			java.util.List<?> now = (java.util.List<?>) hooksCls.getMethod("getDataPackRegistries").invoke(null);
+			java.util.List<String> added = new java.util.ArrayList<>();
+			for (int i = before; i < now.size(); i++) added.add(String.valueOf(now.get(i)));
+			ForbricLog.info("[Forbric/Lifecycle] posted datapack-registry declaration to %d bus(es) — %d declared "
+					+ "(%s), %d total", posted, now.size() - before, added, now.size());
+
+			mirrorIntoFabricDynamicRegistries(cl, now.subList(before, now.size()));
+			// Before the Fabric mirror: that one would also carry these across, but as bare (key, codec) copies.
+			reconcileLoaderRegistriesIntoNeoForge(cl, hooksCls);
+			mirrorFabricDynamicRegistriesIntoNeoForge(cl, eventCls, hooksCls);
+			reconcileSynchronizedRegistries(cl, hooksCls);
+		} catch (ClassNotFoundException absent) {
+			ForbricLog.debug("[Forbric/Lifecycle] no NeoForge DataPackRegistryEvent — skipping");
+		} catch (Throwable t) {
+			// A class that failed to initialise is a different failure from a declaration that failed, and a far
+			// bigger one; it gets a finding, so the player hears it before the title screen and not at "Create".
+			CompatibilityFinding poisoned = DatapackRegistryDeclaration.poisonedLoader(t);
+			if (poisoned != null) {
+				CompatibilityFindings.record(poisoned);
+				ForbricLog.error("[Forbric/Lifecycle] " + poisoned.detail(), unwrap(t));
+			} else {
+				ForbricLog.warn("[Forbric/Lifecycle] could not declare mods' datapack registries — a mod with its own "
+						+ "worldgen registry will fail with \"Missing registry\" the moment a world loads", unwrap(t));
+			}
+		}
+	}
+
+	private static final java.util.concurrent.atomic.AtomicBoolean DATAPACK_REGISTRIES_DECLARED =
+			new java.util.concurrent.atomic.AtomicBoolean();
+
+	/**
+	 * Puts NeoForge's synced datapack registries back into {@code RegistryDataLoader.SYNCHRONIZED_REGISTRIES}, the
+	 * list both ends sync from: the server packs each entry of it for the client, and the client builds each one.
+	 *
+	 * <p>NeoForge's merged {@code <clinit>} makes that field a live view of its own networkable list, and
+	 * {@code DataPackRegistryEvent} adds every registry declared with a network codec to it. fabric-api's
+	 * {@code DynamicRegistriesImpl.registerSynced} replaces the field with an {@code ArrayList} copy the first time a
+	 * Fabric mod syncs a registry of its own, and on a Forbric client the Fabric mains run before NeoForge's
+	 * declaration — so every NeoForge mod's synced registry was left out of the copy. The server never sent it, the
+	 * client never built it, and the first lookup threw: Create's {@code create:potato_projectile/type} crashed
+	 * the client building the creative search tree ("Missing registry"). Each NeoForge entry the list lacks by key
+	 * is appended; a list that is still NeoForge's view lacks none. Under {@code -Dforbric.datapackRegistryReconcile}.
+	 */
+	@SuppressWarnings("unchecked")
+	private static void reconcileSynchronizedRegistries(ClassLoader cl, Class<?> hooksCls) {
+		try {
+			Class<?> loaderCls = Class.forName(DatapackRegistryDeclaration.LOADER, false, cl);
+			Class<?> dataCls = Class.forName("net.minecraft.resources.RegistryDataLoader$RegistryData", false, cl);
+			Method key = dataCls.getMethod("key");
+			Field networkable = hooksCls.getDeclaredField("NETWORKABLE_REGISTRIES");
+			networkable.setAccessible(true);
+			Field syncedField = loaderCls.getField("SYNCHRONIZED_REGISTRIES");
+			java.util.List<Object> synced = (java.util.List<Object>) syncedField.get(null);
+			java.util.List<Object> copy = new java.util.ArrayList<>(synced);
+			java.util.List<Object> added = DatapackRegistryDeclaration.reconcile((java.util.List<?>) networkable.get(null),
+					copy, data -> {
+						try {
+							return key.invoke(data);
+						} catch (ReflectiveOperationException e) {
+							throw new IllegalStateException(e);
+						}
+					}, copy::add, null);
+			if (added.isEmpty()) return;
+			try {
+				synced.addAll(added);
+			} catch (UnsupportedOperationException unmodifiable) {
+				syncedField.setAccessible(true);
+				syncedField.set(null, copy);
+			}
+			java.util.List<String> keys = new java.util.ArrayList<>();
+			for (Object data : added) keys.add(String.valueOf(key.invoke(data)));
+			ForbricLog.info("[Forbric/Lifecycle] put %d NeoForge-synced datapack registr(ies) back into "
+					+ "RegistryDataLoader.SYNCHRONIZED_REGISTRIES — fabric-api had replaced that live view with a copy "
+					+ "before NeoForge's declaration, so the server would not send them and the client would not build "
+					+ "them: %s", keys.size(), keys);
+		} catch (Throwable t) {
+			ForbricLog.warn("[Forbric/Lifecycle] could not check NeoForge's synced datapack registries against "
+					+ "RegistryDataLoader.SYNCHRONIZED_REGISTRIES — a NeoForge mod's synced registry may be missing on "
+					+ "the client", unwrap(t));
+		}
+	}
+
+	/**
+	 * Declares to NeoForge whatever {@code RegistryDataLoader.WORLDGEN_REGISTRIES} ended up holding that NeoForge's
+	 * list lacks — the entries a {@code <clinit>} TAIL injector added after NeoForge had already copied the list,
+	 * which happens whenever the loader initialises before the hooks. See
+	 * {@link DatapackRegistryDeclaration#reconcile} for why the order is not the kernel's to choose.
+	 *
+	 * <p>Through NeoForge's own {@code addRegistryCodec}, the method {@code NewRegistry.process()} ends in, with the
+	 * loader's entry object itself and no network codec — exactly what the hooks-first copy would have put there.
+	 * {@code -Dforbric.datapackRegistryReconcile=off} leaves NeoForge's list as it was copied.
+	 */
+	private static void reconcileLoaderRegistriesIntoNeoForge(ClassLoader cl, Class<?> hooksCls) {
+		try {
+			Class<?> loaderCls = Class.forName(DatapackRegistryDeclaration.LOADER, false, cl);
+			Class<?> dataCls = Class.forName("net.minecraft.resources.RegistryDataLoader$RegistryData", false, cl);
+			Class<?> wrapperCls = Class.forName(
+					"net.neoforged.neoforge.registries.DataPackRegistryEvent$DataPackRegistryData", false, cl);
+			Class<?> codecCls = Class.forName("com.mojang.serialization.Codec", false, cl);
+			Method key = dataCls.getMethod("key");
+			Constructor<?> wrap = wrapperCls.getDeclaredConstructor(dataCls, codecCls);
+			wrap.setAccessible(true);
+			Method add = hooksCls.getDeclaredMethod("addRegistryCodec", wrapperCls);
+			add.setAccessible(true);
+			Field worldgen = loaderCls.getDeclaredField("WORLDGEN_REGISTRIES");
+			worldgen.setAccessible(true);
+
+			java.util.List<?> loaderList = (java.util.List<?>) worldgen.get(null);
+			java.util.List<?> neoList = (java.util.List<?>) hooksCls.getMethod("getDataPackRegistries").invoke(null);
+			java.util.List<Object> replaced = new java.util.ArrayList<>();
+			java.util.List<Object> declared = DatapackRegistryDeclaration.reconcile(loaderList, neoList,
+					data -> {
+						try {
+							return key.invoke(data);
+						} catch (ReflectiveOperationException e) {
+							throw new IllegalStateException(e);
+						}
+					},
+					data -> {
+						try {
+							add.invoke(null, wrap.newInstance(data, null));
+						} catch (ReflectiveOperationException e) {
+							throw new IllegalStateException(e);
+						}
+					}, replaced);
+			if (!declared.isEmpty()) {
+				java.util.List<String> keys = new java.util.ArrayList<>();
+				for (Object data : declared) keys.add(String.valueOf(key.invoke(data)));
+				ForbricLog.info("[Forbric/Lifecycle] reconciled %d datapack registr(ies) from RegistryDataLoader's own "
+						+ "list into NeoForge's — the loader initialised before DataPackRegistriesHooks, so NeoForge "
+						+ "copied the list before a mixin added these, and worlds load only NeoForge's list: %s",
+						keys.size(), keys);
+			}
+			if (!replaced.isEmpty()) {
+				ForbricLog.warn("[Forbric/Lifecycle] RegistryDataLoader's list and NeoForge's disagree on the entry for "
+						+ "%s — NeoForge's is the one worlds load, so a mixin that replaced it in place is not in effect",
+						replaced);
+			}
+		} catch (Throwable t) {
+			ForbricLog.warn("[Forbric/Lifecycle] could not reconcile RegistryDataLoader's list with NeoForge's — a "
+					+ "registry a mixin added to the loader may be missing at world load", unwrap(t));
+		}
+	}
+
+	/**
+	 * The same mirror in the other direction: Fabric-declared dynamic registries into NeoForge's list.
+	 *
+	 * <p><b>Both directions are needed because which list wins is not ours to decide.</b>
+	 * {@link #mirrorIntoFabricDynamicRegistries} exists because fabric-api's {@code WorldLoaderMixin} replaces the
+	 * loader's argument with Fabric's own list. That mixin stopped applying at NeoForge 26.2.0.88, which widened
+	 * {@code RegistryDataLoader.load} from four parameters to five — fabric-api is compiled against vanilla's
+	 * four-parameter signature, so its {@code @At(INVOKE)} anchor no longer resolves. Nothing about that is
+	 * reported as an error: the mixin simply applies partially, Fabric's substitution never happens, NeoForge's
+	 * list is used as-is, and every registry a FABRIC mod declared is missing at world load.
+	 *
