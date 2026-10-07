@@ -298,3 +298,78 @@ class NightlyTest(unittest.TestCase):
         for expected in ('[dry-run] git -C', 'fetch --quiet --prune origin', 'worktree add --quiet --detach',
                          'tools/dev.py integration', '--skip gate-m34-soak.sh', 'push --quiet origin ci-results',
                          'api repos/Ray-T-r/Minecraft-Forbric-mod-loader/statuses/', '# Forbric nightly 2026-10-03: DRY RUN'):
+            self.assertIn(expected, output)
+
+    def test_the_main_checkout_and_folders_in_it_are_never_used_as_the_nightly_worktree(self):
+        before = self.checkout_state()
+        origin_before = self.origin_refs()
+        for work in (self.repo, self.repo / 'nightly'):
+            with self.subTest(work=work.name):
+                self.work = work
+                code, output = self.night()
+                self.assertEqual(2, code, output)
+                self.assertIn('is the main checkout or inside it', output)
+                self.assertEqual(before, self.checkout_state(), 'the main checkout changed')
+                self.assertEqual(origin_before, self.origin_refs())
+                self.assertFalse((self.repo / 'nightly').exists())
+                self.assertEqual([], self.calls('dev'))
+                self.assertEqual([], self.statuses())
+
+
+class ScheduleAndSummaryTest(unittest.TestCase):
+    def test_the_soak_runs_on_sundays_only(self):
+        week = [datetime.date(2026, 9, 28) + datetime.timedelta(days=n) for n in range(7)]
+        self.assertEqual([False] * 6 + [True], [nightly.soak_tonight(day) for day in week])
+        self.assertTrue(all(nightly.soak_tonight(day, 'always') for day in week))
+        self.assertFalse(any(nightly.soak_tonight(day, 'never') for day in week))
+        self.assertEqual(['-j', '4', '--skip', 'gate-m34-soak.sh'], nightly.gates_arguments(False, 4))
+        self.assertEqual(['-j', 'auto', '--release'], nightly.gates_arguments(True, 'auto'))
+
+    def test_summary_from_junit_xml_and_gate_results(self):
+        work = Path(tempfile.mkdtemp(prefix='forbric nightly summary '))
+        self.addCleanup(remove_tree, work)
+        (work / 'tools').mkdir()
+        shutil.copy(ROOT / 'tools/junit_report.py', work / 'tools/junit_report.py')
+        results = work / 'forbric-kernel/build/test-results'
+        (results / 'test').mkdir(parents=True)
+        (results / 'test/TEST-a.xml').write_text(
+            '<testsuite name="a" tests="3" skipped="1" failures="1" errors="0">'
+            '<testcase classname="net.forbric.A" name="passes"/>'
+            '<testcase classname="net.forbric.A" name="breaks"><failure type="AssertionError" message="no"/></testcase>'
+            f'<testcase classname="net.forbric.A" name="waits"><skipped message="fixture absent: {work}/x.jar"/></testcase>'
+            '</testsuite>')
+        gates = work / 'summary.txt'
+        gates.write_text('RESULT gate-m0.sh GREEN (exit=0)\nRESULT gate-m9-client.sh RED (exit=1)\n'
+                         'RESULT gate-m34-soak.sh SKIP (explicit --skip)\nnoise\n')
+
+        night = nightly.Night(datetime.date(2026, 10, 3), False, False)
+        night.sha, night.subject, night.ref = 'a' * 40, 'Do a thing', 'origin/main'
+        night.integration = nightly.Step('integration', 'python3 tools/dev.py integration', ran=True, returncode=1,
+                                         seconds=600)
+        night.gates = nightly.Step('gates', 'bash gates-all.sh', ran=True, returncode=1, seconds=1800)
+        night.junit = nightly.junit_summary(nightly.Runner(False, io.StringIO()), work)
+        night.gate_results = nightly.read_gate_results(gates)
+        night.missing_fixtures = ['forbric-kernel/run/client-popular']
+        text = nightly.render_summary(night)
+
+        self.assertIn('# Forbric nightly 2026-10-03: FAIL', text)
+        self.assertIn('| integration | FAILED (exit 1) in 10 min |', text)
+        self.assertIn('| gates | FAILED (exit 1) in 30 min: 1 GREEN, 1 RED, 1 SKIP |', text)
+        self.assertIn('| test | 3 | 2 | 1 | 33.3 | 1 |', text)
+        self.assertIn('Did not execute (no results): `transferTest`', text)
+        self.assertIn('- `test` net.forbric.A.breaks (AssertionError)', text)
+        self.assertIn('fixture absent: $ROOT/x.jar', text)
+        self.assertNotIn(str(work), text)
+        self.assertIn('- `gate-m9-client.sh` RED (exit=1)', text)
+        self.assertIn('- `gate-m34-soak.sh` SKIP (explicit --skip)', text)
+        self.assertIn('All 3 RESULT lines', text)
+        self.assertIn('`forbric-kernel/run/client-popular`', text)
+        self.assertEqual('integration FAILED (exit 1); gates FAILED (exit 1): 1 GREEN, 1 RED, 1 SKIP (gate-m9-client.sh)',
+                         nightly.status_description(night))
+
+        night.gate_results = [(f'gate-m{n}-with-a-long-name.sh', 'RED', '(exit=1)') for n in range(20)]
+        self.assertLessEqual(len(nightly.status_description(night)), 140)
+
+
+if __name__ == '__main__':
+    unittest.main()
