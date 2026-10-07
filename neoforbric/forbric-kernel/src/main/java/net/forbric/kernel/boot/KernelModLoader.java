@@ -298,3 +298,303 @@ public final class KernelModLoader {
 			neoConstructed.add(mod.modId());
 		}
 		NeoSettlement settled = settleNeo(otherSide, neoConstructed, failedNeo.keySet());
+		Set<String> neoBuilt = settled.kept();
+		markPartlyConstructed(settled.degraded(), failedNeo);
+		if (neoNeedsWithdrawal(neo.keySet(), neoBuilt)) {
+			List<String> droppedNeo = new ArrayList<>();
+			Map<String, NeoIdentity> keptNeo = keepConstructed(neo, neoBuilt, droppedNeo);
+			publishedNeo = Map.copyOf(withClassless(keptNeo, classless));
+
+			Map<String, NeoIdentity> republish = new LinkedHashMap<>(keptNeo);
+			// A declared-only mod has no constructor that could have thrown, so it stays whatever else went.
+			republish.putAll(classless);
+			republish.putAll(aliases);
+			// allowEmpty: "every NeoForge mod failed and there are no aliases" must publish an EMPTY list rather
+			// than leave the full one standing.
+			publishNeoModList(cl, republish, true);
+			ForbricLog.warn("[Forbric/ModLoader] withdrew %d NeoForge container(s) from ModList — their @Mod "
+					+ "constructor threw, so the bus those containers hand out is one nothing will ever post "
+					+ "to %s", droppedNeo.size(), droppedNeo);
+			for (String id : droppedNeo) markWithdrawn(List.of(id), constructorThrew(failedNeo.get(id)));
+		}
+		return built;
+	}
+
+	/**
+	 * The published entries whose {@code @Mod} constructor actually ran, in their original order.
+	 *
+	 * <p>Both families withdraw the same way, and the reason is the same on both: a container left standing for a
+	 * mod that never constructed passes {@code instanceof} and hands out a live-looking event bus that nothing
+	 * will ever post to. So a library mod resolving it registers into nothing, and the failure surfaces much
+	 * later somewhere that names neither mod.
+	 *
+	 * @param dropped receives the ids that come out, in order, for the log line
+	 */
+	static <T> Map<String, T> keepConstructed(Map<String, T> published, Set<String> constructed,
+			List<String> dropped) {
+		Map<String, T> kept = new LinkedHashMap<>();
+		for (Map.Entry<String, T> entry : published.entrySet()) {
+			if (constructed.contains(entry.getKey())) kept.put(entry.getKey(), entry.getValue());
+			else dropped.add(entry.getKey());
+		}
+		return kept;
+	}
+
+	static final String NEO_TWIN_SWITCH = "forbric.neoTwinCtorFailure";
+
+	/**
+	 * The per-class half of what {@link #settleNeo} settles from: a class that does not run on this side, or a
+	 * NeoForge class whose constructor threw, recorded under its id with the class that threw.
+	 *
+	 * <p>Pulled out of the construction loop so the wiring into settleNeo is tested, not only settleNeo: dropping
+	 * either branch in the loop brought back RollingGate's masking while every settleNeo test stayed green.
+	 */
+	static void recordNeoOutcome(ModAnnotationScanner.ModClassInfo info, boolean runsHere, Throwable failure,
+			Set<String> otherSide, Map<String, List<String>> failedNeo) {
+		if (!runsHere) {
+			otherSide.add(safeId(info));
+			return;
+		}
+		if (failure != null) {
+			failedNeo.computeIfAbsent(safeId(info), id -> new ArrayList<>()).add(info.className);
+		}
+	}
+
+	/**
+	 * The FAILED reason for a withdrawn NeoForge mod, naming the {@code @Mod} classes that threw when known. It starts
+	 * with the plain reason, which is what {@code CompatibilityFindings} keys the constructor finding on.
+	 */
+	static String constructorThrew(List<String> classes) {
+		return classes == null || classes.isEmpty() ? "its @Mod constructor threw"
+				: "its @Mod constructor threw (" + String.join(", ", classes) + ")";
+	}
+
+	/**
+	 * What the NeoForge side keeps after construction: {@code kept} is every id whose container stays in
+	 * {@code ModList}, {@code degraded} the kept ids that also lost a constructor.
+	 */
+	record NeoSettlement(Set<String> kept, Set<String> degraded) {
+	}
+
+	/**
+	 * Settles each NeoForge mod id from what happened to ALL of its {@code @Mod} classes, not to any one of them.
+	 *
+	 * <p>A mod may ship several {@code @Mod} classes under one id, and the common shape is a common class plus a
+	 * {@code dist = CLIENT} one. This used to count an id as settled the moment ANY of its classes was other-side,
+	 * and then compared the count with the number of published containers. RollingGate is exactly that shape:
+	 * its common {@code RollingGate} threw, its client-only {@code RollingGateClient} put {@code rolling_gate} in
+	 * the other-side set, the counts matched, and nothing was withdrawn or reported — the Mods screen and the
+	 * compatibility report said OK while every rule it registers was missing, and {@code server_plus_plus}, which
+	 * requires it, was told its dependency was live. notenoughcrashes has the same pair of classes.
+	 *
+	 * <ul>
+	 *   <li>something of the id ran here: kept — and if something else of it threw, DEGRADED rather than
+	 *       withdrawn, because one id is ONE container and ONE mod bus, so withdrawing would also cut the
+	 *       listeners of the class that did construct (RollingGate on a client, where both classes run);</li>
+	 *   <li>nothing ran here and nothing threw: every class is other-side, and the mod keeps its container as a
+	 *       mod that is installed but does not run on this side — Sodium's CLIENT-only class on a server;</li>
+	 *   <li>nothing ran here and something threw: withdrawn, whatever else it has on the other side (RollingGate
+	 *       on a dedicated server).</li>
+	 * </ul>
+	 *
+	 * <p>{@code -Dforbric.neoTwinCtorFailure=off} goes back to letting any other-side class stand for the id.
+	 */
+	static NeoSettlement settleNeo(Set<String> otherSide, Set<String> constructed, Set<String> failed) {
+		Set<String> kept = new LinkedHashSet<>(constructed);
+		Set<String> degraded = new LinkedHashSet<>();
+		if ("off".equalsIgnoreCase(System.getProperty(NEO_TWIN_SWITCH, "on"))) {
+			kept.addAll(otherSide);
+			return new NeoSettlement(kept, degraded);
+		}
+		for (String id : otherSide) {
+			if (!failed.contains(id)) kept.add(id);
+		}
+		for (String id : failed) {
+			if (constructed.contains(id)) degraded.add(id);
+		}
+		return new NeoSettlement(kept, degraded);
+	}
+
+	/**
+	 * Whether any published NeoForge container has to come out.
+	 *
+	 * <p>By membership, not by count. The count compared the kept set's SIZE with the published map's, and the
+	 * kept set can hold an id the map never published — an other-side {@code @Mod} whose container could not be
+	 * built at all — so each such id cancelled out one NeoForge mod whose constructor threw, and that dead
+	 * container stayed. {@code -Dforbric.neoTwinCtorFailure=off} restores the count.
+	 */
+	static boolean neoNeedsWithdrawal(Set<String> published, Set<String> kept) {
+		if ("off".equalsIgnoreCase(System.getProperty(NEO_TWIN_SWITCH, "on"))) return kept.size() != published.size();
+		return !kept.containsAll(published);
+	}
+
+	/** One Forge-family {@code [[mods]]} entry and the jar whose manifest declares it. */
+	record Declared(DiscoveredMod mod, Path jar) {
+	}
+
+	/**
+	 * Every Forge-family mod the jars' own manifests declare, by id, first declaration winning.
+	 *
+	 * <p>Only the family that OWNS each jar counts: {@link MultiLoaderArbiter} has already given a universal jar to
+	 * one family, and its other manifest describes a mod that is not being loaded as that family here.
+	 *
+	 * <p>This is the only description the kernel has of a mod nested inside another mod's jar. Discovery's
+	 * {@code ModPresence} list is built from the jars in {@code mods/}, so the containers built for LibJF's twelve
+	 * modules — every one of them a jar-in-jar — described themselves at version "0.0" with an empty
+	 * {@code [modproperties]} table, and LibJF, which finds every one of its entry points in that table, found none
+	 * of theirs.
+	 */
+	static Map<String, Declared> declaredMods(List<Path> modJars) {
+		Map<String, Declared> out = new LinkedHashMap<>();
+		// The seeder's discoverer: it has already parsed these jars, so they are not parsed (or logged) again here.
+		ForbricModDiscoverer discoverer = PassiveSeeder.MANIFESTS;
+		for (Path jar : modJars) {
+			List<DiscoveredMod> mods;
+			try {
+				mods = discoverer.discoverJar(jar);
+			} catch (Throwable t) {
+				// The @Mod scan below reports an unreadable jar in its own words; one line per jar is enough.
+				ForbricLog.debug("[Forbric/ModLoader] could not read the manifest of %s: %s", jar.getFileName(),
+						String.valueOf(t));
+				continue;
+			}
+			for (DiscoveredMod mod : mods) {
+				if (!mod.getEcosystem().isForgeFamily()) continue;
+				if (mod.getId() == null || mod.getId().isBlank()) continue;
+				if (MultiLoaderArbiter.suppressedFor(jar, mod.getEcosystem())) continue;
+				out.putIfAbsent(mod.getId(), new Declared(mod, jar));
+			}
+		}
+		return out;
+	}
+
+	/** {@code -Dforbric.classlessModContainers=off} gives a mod with no {@code @Mod} class no container, as before. */
+	static final String CLASSLESS_SWITCH = "forbric.classlessModContainers";
+
+	/**
+	 * The declared mods of {@code family} that no {@code @Mod} class claims and that the family's own loader
+	 * would still give a container, in dependency order among themselves.
+	 *
+	 * <p>Which ones get a container is the loader's rule, not the kernel's. NeoForge's FancyModLoader gives one to
+	 * every mod of a {@code javafml} file whether or not a class carries its id, and maps the deprecated
+	 * {@code lowcodefml} onto the same provider (the native log says so for LibJF's own jar). Any other language
+	 * belongs to a provider the kernel does not have, and inventing a container for it would claim a mod is
+	 * loaded that the real loader might have refused.
+	 *
+	 * @param taken ids something else already answers for — an {@code @Mod} class of any family, or a presence
+	 *              alias — which must not get a second container
+	 */
+	static List<Declared> declaredWithoutClass(Map<String, Declared> declared, Set<String> taken, Ecosystem family) {
+		return declaredWithoutClass(declared, taken, family, entry -> languageOf(entry.jar(), family));
+	}
+
+	/** As above, with the language lookup handed in so a test can say what each jar declares. */
+	static List<Declared> declaredWithoutClass(Map<String, Declared> declared, Set<String> taken, Ecosystem family,
+			java.util.function.Function<Declared, String> languageOf) {
+		if ("off".equalsIgnoreCase(System.getProperty(CLASSLESS_SWITCH, "on"))) return List.of();
+
+		List<Declared> out = new ArrayList<>();
+		Map<Path, String> languages = new java.util.HashMap<>();
+		for (Declared entry : declared.values()) {
+			if (entry.mod().getEcosystem() != family || taken.contains(entry.mod().getId())) continue;
+			String language = languages.containsKey(entry.jar()) ? languages.get(entry.jar()) : languageOf.apply(entry);
+			languages.put(entry.jar(), language);
+			if (!getsAContainer(family, language)) {
+				ForbricLog.debug("[Forbric/ModLoader] %s declares mod %s with no @Mod class under modLoader=%s, which "
+						+ "%s gives no container of its own", entry.jar().getFileName(), entry.mod().getId(), language,
+						family);
+				continue;
+			}
+			out.add(entry);
+		}
+		if (out.size() < 2) return out;
+		try {
+			List<DiscoveredMod> mods = new ArrayList<>();
+			for (Declared entry : out) mods.add(entry.mod());
+			return ModConstructionOrder.sort(out, entry -> entry.mod().getId(), ModConstructionOrder.of(mods));
+		} catch (Throwable t) {
+			// An order is an improvement, never a precondition — the same rule orderByDependency keeps.
+			return out;
+		}
+	}
+
+	/**
+	 * Whether {@code family}'s own loader builds a container for a class-less mod written in {@code language}.
+	 *
+	 * <p>The two families differ, and each is read off its own carrier. NeoForge's FancyModLoader builds an
+	 * {@code FMLModContainer} for every mod of a {@code javafml} file and routes {@code lowcodefml} to the same
+	 * provider. MinecraftForge's {@code ModLoader.buildMods} gives a {@code javafml} mod with no {@code @Mod} class
+	 * the {@code fml.modloading.missingclasses} error instead, and only its {@code LowCodeModLanguageProvider}
+	 * builds a container — a {@code LowCodeModContainer} — for a mod with no class at all.
+	 */
+	static boolean getsAContainer(Ecosystem family, String language) {
+		if (language == null) return false;
+		return family == Ecosystem.NEOFORGE
+				&& (LanguageProviders.JAVA.equals(language) || LanguageProviders.LOW_CODE.equals(language));
+	}
+
+	/**
+	 * The {@code modLoader} {@code jar}'s manifest for {@code family} declares, normalised; null when there is no
+	 * such manifest or it cannot be read. A manifest that names none is a Java one.
+	 */
+	static String languageOf(Path jar, Ecosystem family) {
+		String manifest = ForbricModDiscoverer.NEOFORGE_MANIFEST;
+		try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(jar.toFile())) {
+			java.util.zip.ZipEntry entry = zip.getEntry(manifest);
+			if (entry == null) return null;
+			try (java.io.InputStream in = zip.getInputStream(entry)) {
+				return LanguageProviders.of(ModsTomlParser.parse(in));
+			}
+		} catch (Exception unreadable) {
+			ForbricLog.debug("[Forbric/ModLoader] could not read the %s of %s: %s", manifest, jar.getFileName(),
+					String.valueOf(unreadable));
+			return null;
+		}
+	}
+
+	/** {@code constructed} followed by {@code classless}, which never share an id. */
+	static <T> Map<String, T> withClassless(Map<String, T> constructed, Map<String, T> classless) {
+		Map<String, T> out = new LinkedHashMap<>(constructed);
+		out.putAll(classless);
+		return out;
+	}
+
+	/**
+	 * The entry {@code jar} itself declares for {@code modId}, or null. Only the same jar's entry answers: a
+	 * container is built from the jar its {@code @Mod} class came from, and it must not be described with another
+	 * jar's claim to the same id.
+	 */
+	static DiscoveredMod declaredIn(Map<String, Declared> declared, String modId, Path jar) {
+		Declared entry = modId == null ? null : declared.get(modId);
+		return entry != null && entry.jar().equals(jar) ? entry.mod() : null;
+	}
+
+	/**
+	 * The claimed {@code @Mod} classes in dependency order.
+	 *
+	 * <p>The order comes from what discovery already parsed out of every mod's own metadata — its requirements
+	 * and its explicit load-order declarations — through {@link ModConstructionOrder}. Mods the registry has not
+	 * heard of keep their place rather than being moved to either end.
+	 */
+	private static List<ModAnnotationScanner.ModClassInfo> orderByDependency(
+			List<ModAnnotationScanner.ModClassInfo> claimed) {
+		try {
+			List<net.forbric.api.DiscoveredMod> known = new ArrayList<>(ModPresence.forgeFamilyMods());
+			known.addAll(ModPresence.fabricMods());
+			if (known.isEmpty()) return claimed;
+
+			List<String> order = ModConstructionOrder.of(known);
+			List<ModAnnotationScanner.ModClassInfo> sorted =
+					ModConstructionOrder.sort(claimed, info -> info.modId, order);
+
+			if (!sorted.equals(claimed)) {
+				ForbricLog.info("[Forbric/Order] construction order is dependency order, not jar-file order — a mod "
+						+ "that needs another to have run now does (-Dforbric.modOrder=name to go back): %s",
+						sorted.stream().map(KernelModLoader::safeId).distinct().toList());
+			}
+			return sorted;
+		} catch (Throwable t) {
+			// An order is an improvement, never a precondition. Losing it must not cost the pack its mods.
+			ForbricLog.warn("[Forbric/Order] could not order mods by dependency; using the order they were found in",
+					Reflect.unwrap(t));
+			return claimed;
