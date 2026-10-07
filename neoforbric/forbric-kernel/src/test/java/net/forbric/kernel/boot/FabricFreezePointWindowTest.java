@@ -298,3 +298,294 @@ class FabricFreezePointWindowTest {
 		System.clearProperty(FabricFreezePointInjector.PROPERTY);
 		KernelLifecycle.fabricFreezePoint(game, HEAD_HOOK);
 		assertEquals(1, count(game, "heads"));
+	}
+
+	/**
+	 * The pairing the whole fix hangs on: the hooks {@link FabricFreezePointInjector} adds are the ones
+	 * {@code fabricFreezePoint} looks up. A name, descriptor or access flag that drifts apart on one side lands the
+	 * kernel in its "no hook" branch, which is a debug line — and every moved handler would silently never run.
+	 * Mixin's part, merging the handler into the hook, is played here by one call inserted where it puts it.
+	 */
+	@Test
+	void aHandlerMovedOntoTheInjectorsHookRunsAtTheFreezePoint(@TempDir Path dir) throws Throwable {
+		Map<String, byte[]> compiled = InjectorExecution.compile(dir, Map.of(FabricFreezePointInjector.TARGET, HOOKLESS));
+		String internal = FabricFreezePointInjector.TARGET.replace('.', '/');
+		byte[] original = compiled.get(internal);
+
+		byte[] hooked = InjectorExecution.transform(new FabricFreezePointInjector(), FabricFreezePointInjector.TARGET,
+				original, EnvType.SERVER);
+		assertNotSame(original, hooked, "FabricFreezePointInjector left BuiltInRegistries without the hooks");
+		byte[] merged = mergeHandler(hooked, internal);
+		assertEquals("", InjectorExecution.verify(merged, null));
+		ClassLoader game = InjectorExecution.load(Map.of(internal, merged));
+
+		KernelLifecycle.fabricFreezePoint(game, HEAD_HOOK);
+		assertEquals(1, count(game, "heads"), "the handler on the injector's HEAD hook never ran");
+		KernelLifecycle.fabricFreezePoint(game, TAIL_HOOK);
+		assertEquals(1, count(game, "tails"), "the handler on the injector's TAIL hook never ran");
+	}
+
+	// ---- the stand-ins -------------------------------------------------------------------------------------------
+
+	/** Counts each hook's calls. */
+	private static final String COUNTING = """
+			package net.minecraft.core.registries;
+
+			public final class BuiltInRegistries {
+				public static int heads;
+				public static int tails;
+
+				public static void %s() {
+					heads++;
+				}
+
+				public static void %s() {
+					tails++;
+				}
+			}
+			""".formatted(HEAD_HOOK, TAIL_HOOK);
+
+	/** Create Fly's TAIL injector, as it ran in Bootstrap: counts, then throws what the frozen root threw at it. */
+	private static final String THROWING = """
+			package net.minecraft.core.registries;
+
+			public final class BuiltInRegistries {
+				public static int heads;
+				public static int tails;
+
+				public static void %s() {
+					heads++;
+				}
+
+				public static void %s() {
+					tails++;
+					throw new IllegalStateException("%s");
+				}
+			}
+			""".formatted(HEAD_HOOK, TAIL_HOOK, FROZEN);
+
+	/** The class with neither hook: the injector switched off, or a game it never reached. */
+	private static final String BARE = """
+			package net.minecraft.core.registries;
+
+			public final class BuiltInRegistries {
+			}
+			""";
+
+	/** Before the injector: what the handlers Mixin moves onto the hooks do, and no hooks. */
+	private static final String HOOKLESS = """
+			package net.minecraft.core.registries;
+
+			public final class BuiltInRegistries {
+				public static int heads;
+				public static int tails;
+
+				static void movedHead() {
+					heads++;
+				}
+
+				static void movedTail() {
+					tails++;
+				}
+			}
+			""";
+
+	private static ClassLoader standIn(Path dir, String source) throws Exception {
+		return InjectorExecution.load(InjectorExecution.compile(dir, Map.of(FabricFreezePointInjector.TARGET, source)));
+	}
+
+	private static int count(ClassLoader game, String field) throws Exception {
+		return (Integer) InjectorExecution.getStatic(Class.forName(FabricFreezePointInjector.TARGET, false, game), field);
+	}
+
+	/** Puts a call to {@code movedHead}/{@code movedTail} at the start of each hook, where Mixin puts a HEAD handler. */
+	private static byte[] mergeHandler(byte[] hooked, String internal) {
+		ClassNode node = new ClassNode();
+		new ClassReader(hooked).accept(node, 0);
+		Map<String, String> handlers = Map.of(HEAD_HOOK, "movedHead", TAIL_HOOK, "movedTail");
+		int merged = 0;
+		for (MethodNode method : node.methods) {
+			String handler = handlers.get(method.name);
+			if (handler == null || !FabricFreezePointInjector.HOOK_DESC.equals(method.desc)) continue;
+			method.instructions.insert(new MethodInsnNode(Opcodes.INVOKESTATIC, internal, handler, "()V", false));
+			merged++;
+		}
+		assertEquals(2, merged, "the injector's output does not carry both hooks as ()V methods");
+		ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_MAXS);
+		node.accept(writer);
+		return writer.toByteArray();
+	}
+
+	/**
+	 * ForbricLog has no log4j binding under test and splits by level, {@code info} to {@code System.out} and
+	 * {@code warn} to {@code System.err}; both are captured so a warning cannot go unseen.
+	 */
+	private static String capture(Runnable body) {
+		PrintStream originalOut = System.out;
+		PrintStream originalErr = System.err;
+		ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+		PrintStream sink = new PrintStream(buffer, true, StandardCharsets.UTF_8);
+		System.setOut(sink);
+		System.setErr(sink);
+		try {
+			body.run();
+		} finally {
+			System.setOut(originalOut);
+			System.setErr(originalErr);
+		}
+		return buffer.toString(StandardCharsets.UTF_8);
+	}
+
+	// ---- the walk ------------------------------------------------------------------------------------------------
+
+	/** How a walk left the method — each way's steps, then {@link #RETURN} or {@link #THROW} — and what it touched. */
+	private record Walk(Set<List<String>> exits, Set<AbstractInsnNode> visited) {
+	}
+
+	/**
+	 * Every way out of {@code method} from {@code from}, as the {@code tracked} steps it takes in order.
+	 *
+	 * <p>With {@code exceptions}, a call or a rethrow also goes to the first handler covering it — the first, as the
+	 * JVM picks: the exception table alone would also let an inner finally's throw skip straight to the outer one,
+	 * which no execution does. Two calls are taken not to throw: {@code side.isClient()}, on an enum constant, and
+	 * {@code fabricFreezePoint} itself, which catches everything (pinned by the tests above). A throw nothing catches
+	 * leaves the method; one a catch-all handler takes does not.
+	 *
+	 * <p>A branch straight on {@code side.isClient()} goes the one way {@code isClient} says, or both when it is null.
+	 */
+	private static Walk walk(MethodNode method, AbstractInsnNode from, Set<String> tracked, Boolean isClient,
+			boolean exceptions) {
+		InsnList insns = method.instructions;
+		Set<List<String>> exits = new LinkedHashSet<>();
+		Set<AbstractInsnNode> visited = new HashSet<>();
+		Set<String> seen = new HashSet<>();
+		Deque<Object[]> todo = new ArrayDeque<>();
+		todo.push(new Object[] { from, List.of() });
+		while (!todo.isEmpty()) {
+			Object[] next = todo.pop();
+			AbstractInsnNode insn = (AbstractInsnNode) next[0];
+			@SuppressWarnings("unchecked")
+			List<String> steps = (List<String>) next[1];
+			if (insn == null || !seen.add(insns.indexOf(insn) + " " + steps)) continue;
+			visited.add(insn);
+
+			String step = step(insn);
+			if (step != null && (tracked.contains(step) || step.endsWith("(?)"))) steps = plus(steps, step);
+			if (steps.size() > 16) {
+				exits.add(plus(steps, "a loop through a tracked step"));
+				continue;
+			}
+
+			boolean caught = false;
+			if (exceptions && mayThrow(insn)) {
+				int at = insns.indexOf(insn);
+				for (TryCatchBlockNode block : method.tryCatchBlocks) {
+					if (insns.indexOf(block.start) > at || at >= insns.indexOf(block.end)) continue;
+					todo.push(new Object[] { block.handler, steps });
+					if (block.type == null || "java/lang/Throwable".equals(block.type)) {
+						caught = true;
+						break;
+					}
+				}
+			}
+
+			int op = insn.getOpcode();
+			if (op >= Opcodes.IRETURN && op <= Opcodes.RETURN) {
+				exits.add(plus(steps, RETURN));
+			} else if (op == Opcodes.ATHROW) {
+				if (!caught) exits.add(plus(steps, THROW));
+			} else if (insn instanceof JumpInsnNode jump) {
+				Boolean taken = guard(jump, isClient);
+				if (taken == null || taken) todo.push(new Object[] { jump.label, steps });
+				if (op != Opcodes.GOTO && (taken == null || !taken)) todo.push(new Object[] { insn.getNext(), steps });
+			} else if (insn instanceof TableSwitchInsnNode table) {
+				todo.push(new Object[] { table.dflt, steps });
+				for (LabelNode label : table.labels) todo.push(new Object[] { label, steps });
+			} else if (insn instanceof LookupSwitchInsnNode lookup) {
+				todo.push(new Object[] { lookup.dflt, steps });
+				for (LabelNode label : lookup.labels) todo.push(new Object[] { label, steps });
+			} else {
+				todo.push(new Object[] { insn.getNext(), steps });
+			}
+		}
+		return new Walk(exits, visited);
+	}
+
+	/** What one instruction means to these walks, or null; "(?)" for a call whose argument the walk cannot read. */
+	private static String step(AbstractInsnNode insn) {
+		if (!(insn instanceof MethodInsnNode call)) return null;
+		AbstractInsnNode argument = previous(call);
+		if (call.owner.endsWith("/KernelFabricEcosystem")) {
+			return switch (call.name) {
+				case "runMainEntrypoints" -> MAINS;
+				case "runClientEntrypoints" -> CLIENTS;
+				default -> null;
+			};
+		}
+		if (!LIFECYCLE.equals(call.owner)) return null;
+		return switch (call.name) {
+			case "fabricFreezePoint" -> {
+				Object hook = argument instanceof LdcInsnNode ldc ? ldc.cst : null;
+				yield HEAD_HOOK.equals(hook) ? HEAD : TAIL_HOOK.equals(hook) ? TAIL : "fabricFreezePoint(?)";
+			}
+			case "rootRegistry" -> argument != null && argument.getOpcode() == Opcodes.ICONST_1 ? OPEN_ROOT
+					: argument != null && argument.getOpcode() == Opcodes.ICONST_0 ? CLOSE_ROOT : "rootRegistry(?)";
+			case "closeClientEntrypointWindow", "closeRegistrationWindow" -> CLOSE_WINDOW;
+			default -> null;
+		};
+	}
+
+	private static boolean mayThrow(AbstractInsnNode insn) {
+		if (insn.getOpcode() == Opcodes.ATHROW || insn instanceof InvokeDynamicInsnNode) return true;
+		if (!(insn instanceof MethodInsnNode call)) return false;
+		if (SIDE.equals(call.owner) && "isClient".equals(call.name)) return false;
+		return !(LIFECYCLE.equals(call.owner) && "fabricFreezePoint".equals(call.name));
+	}
+
+	/** Whether a branch straight on {@code side.isClient()} is taken; null when it is not one, or either way goes. */
+	private static Boolean guard(JumpInsnNode jump, Boolean isClient) {
+		if (isClient == null || (jump.getOpcode() != Opcodes.IFEQ && jump.getOpcode() != Opcodes.IFNE)) return null;
+		if (!(previous(jump) instanceof MethodInsnNode call) || !SIDE.equals(call.owner) || !"isClient".equals(call.name)) {
+			return null;
+		}
+		return jump.getOpcode() == Opcodes.IFNE ? isClient : !isClient;
+	}
+
+	private static AbstractInsnNode previous(AbstractInsnNode insn) {
+		AbstractInsnNode p = insn.getPrevious();
+		while (p != null && p.getOpcode() < 0) p = p.getPrevious();
+		return p;
+	}
+
+	private static List<String> plus(List<String> steps, String step) {
+		List<String> out = new ArrayList<>(steps);
+		out.add(step);
+		return List.copyOf(out);
+	}
+
+	private static List<AbstractInsnNode> calls(MethodNode method, String name) {
+		List<AbstractInsnNode> out = new ArrayList<>();
+		for (AbstractInsnNode insn : method.instructions.toArray()) {
+			if (insn instanceof MethodInsnNode call && name.equals(call.name)) out.add(insn);
+		}
+		return out;
+	}
+
+	private static AbstractInsnNode onlyCall(MethodNode method, String name) {
+		List<AbstractInsnNode> calls = calls(method, name);
+		assertEquals(1, calls.size(), method.name + " calls " + name + " " + calls.size() + " times; this test walks from one");
+		return calls.get(0);
+	}
+
+	private static MethodNode method(String name) throws Exception {
+		Path compiled = Path.of(System.getProperty("user.dir"), "build", "classes", "java", "main",
+				"net", "forbric", "kernel", "boot", "KernelLifecycle.class");
+		assertTrue(Files.isRegularFile(compiled),
+				"KernelLifecycle not found in the compiled src/main classes, which exist before any test runs");
+
+		ClassNode node = new ClassNode();
+		new ClassReader(Files.readAllBytes(compiled)).accept(node, 0);
+		return node.methods.stream().filter(m -> name.equals(m.name)).findFirst()
+				.orElseThrow(() -> new AssertionError("KernelLifecycle." + name + " is gone"));
+	}
+}
