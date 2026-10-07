@@ -298,3 +298,37 @@ def seeds(crash_text='', analysis_text='', report_json_text='', jars=()):
 # --- runner -------------------------------------------------------------------------------------------------------
 
 @dataclass
+class Reduction:
+    minimal: list            # the 1-minimal failing subset of the candidates
+    closed: list             # minimal plus its dependencies: what to install to see the failure
+    seeded: bool             # the seed set reproduced the failure and the search started there
+    history: list = field(default_factory=list)  # (configuration run, outcome), one per oracle call
+
+    @property
+    def calls(self):
+        return len(self.history)
+
+
+def minimise(items, oracle, closure=None, seed_jars=()):
+    """ddmin over items with every configuration closed over its dependencies, seed set first.
+
+    The oracle sees the closed configuration, and runs are remembered by it: two subsets that differ only in a jar
+    the other already pulls in as a dependency are the same game launch and are run once.
+    """
+    closure = closure or {}
+    history = []
+
+    def launch(config):
+        verdict = oracle(config)
+        history.append((config, verdict))
+        return verdict
+    run = _memo(launch)
+
+    def test(subset):
+        return run(closed(subset, closure))
+    allowed = set(items)
+    start = [jar for jar in _unique(seed_jars) if jar in allowed]
+    minimal = ddmin(items, test, first=start or None)
+    # ddmin tried the seed set first, so this is answered from memory, not by another launch.
+    seeded = bool(start) and test(start) == FAIL
+    return Reduction(minimal, closed(minimal, closure), seeded, history)
