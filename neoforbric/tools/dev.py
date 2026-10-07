@@ -298,3 +298,303 @@ def stage_canaries(stage, libraries, java_home, sources=CANARY_SOURCES):
             classpath = os.pathsep.join(str(p) for p in [stage / jar_path for jar_path in game] + list(libraries))
             subprocess.run([javac, '--release', release, '-proc:none', '-cp', classpath, '-d', str(classes)]
                            + sorted(str(p) for p in tree.rglob('*.java')), check=True)
+            for name in CANARY_RESOURCES:
+                resource = tree / name
+                if resource.is_dir():
+                    shutil.copytree(resource, classes / name, dirs_exist_ok=True)
+                elif resource.is_file():
+                    shutil.copy2(resource, classes / name)
+            partial = target.with_name(target.name + '.part')
+            subprocess.run([jar, '--create', '--file', str(partial), '-C', str(classes), '.'], check=True)
+            partial.replace(target)
+        print(f'[dev] Built {target.name} from {source}', flush=True)
+
+
+def options(args, arch=None):
+    mc = Path(args.mc_dir or os.environ.get('MC_DIR') or STATE / 'minecraft').expanduser().resolve()
+    old = Path(args.staged or os.environ.get('FORBRIC_OLD') or STATE / 'staged').expanduser().resolve()
+    instance = Path(args.instance or os.environ.get('RUNDIR') or STATE / ('client' if args.command == 'client' else 'server')).expanduser().resolve()
+    arch = arch or platform.machine()
+    arch = {'aarch64': 'arm64', 'amd64': 'x86_64'}.get(arch.lower(), arch.lower())
+    natives = Path(args.natives or os.environ.get('NATIVES_DIR') or STATE / 'natives' /
+                   (system_name() + '-' + arch)).expanduser().resolve()
+    return mc, old / 'run', instance, natives
+
+
+def build_properties(mc, stage):
+    return [f'-Pforbric.stagedRoot={stage}', f'-Pforbric.mcLibraries={mc / "libraries"}',
+            f'-Pforbric.fabricApi={STATE / "api" / API_PINS[0][0]}',
+            f'-Pforbric.rebornEnergy={STATE / "api" / API_PINS[1][0]}']
+
+
+def prepare(args, java, env):
+    mc, stage, _, natives = options(args, env['FORBRIC_DEV_ARCH'])
+    gradle('forbric-kernel-installer', ['devToolsJar'], env)
+    tools = ROOT / 'forbric-kernel-installer/build/libs/forbric-dev-tools.jar'
+    subprocess.run([java, '-jar', str(tools), str(mc), str(stage), java], cwd=ROOT, env=env, check=True)
+    stage_minecraft(mc, natives, env['FORBRIC_DEV_ARCH'], assets=not getattr(args, 'no_assets', False))
+    for name, url, sha in API_PINS:
+        fetch(url, STATE / 'api' / name, sha, 'sha256')
+    metadata = json.loads((mc / f'versions/{MC_VERSION}/{MC_VERSION}.json').read_text())
+    game_libraries = [confined(mc / 'libraries', entry['path'])
+                      for entry in libraries(metadata, arch=env['FORBRIC_DEV_ARCH']) if entry['path'].endswith('.jar')]
+    stage_canaries(stage, game_libraries + kernel_libraries(env, mc, stage), env['JAVA_HOME'])
+    print('[dev] Prepared. Launch with python3 tools/dev.py client (Windows: py tools/dev.py client).', flush=True)
+
+
+def ready(mc, stage, natives, arch=None, assets=True):
+    """Prepared for this use. assets=False is for tests and dedicated servers, which never read them."""
+    basic = (all((stage / p).is_file() for p in STAGED_FILES)
+            and all((STATE / 'api' / name).is_file() and digest(STATE / 'api' / name) == sha
+                    for name, _, sha in API_PINS)
+            and (mc / f'versions/{MC_VERSION}/{MC_VERSION}.json').is_file()
+            and (not assets or (mc / 'assets/indexes').is_dir()) and natives.is_dir())
+    if not basic:
+        return False
+    metadata = json.loads((mc / f'versions/{MC_VERSION}/{MC_VERSION}.json').read_text())
+    if any(not confined(mc / 'libraries', lib['path']).is_file() for lib in libraries(metadata, arch=arch)):
+        return False
+    if any(not (mc / f'libraries/org/jline/{name}/3.25.1/{name}-3.25.1.jar').is_file() for name, _ in CONSOLE_PINS):
+        return False
+    if not assets:
+        return any(p.is_file() for p in natives.iterdir())
+    index = confined(mc / 'assets/indexes', metadata['assetIndex']['id'] + '.json')
+    if not index.is_file():
+        return False
+    for entry in json.loads(index.read_text())['objects'].values():
+        sha = entry['hash']
+        path = confined(mc / 'assets/objects', sha[:2] + '/' + sha)
+        if not path.is_file() or path.stat().st_size != entry['size']:
+            return False
+    return any(p.is_file() for p in natives.iterdir())
+
+
+def launch_arguments(side, info, mc, stage, instance, natives, jvm=(), game=(), system=None, pathsep=None, arch=None):
+    system, pathsep = system or system_name(), pathsep or os.pathsep
+    metadata = json.loads((mc / f'versions/{MC_VERSION}/{MC_VERSION}.json').read_text())
+    owned = [str(confined(mc / 'libraries', lib['path'])) for lib in libraries(metadata, system, arch)]
+    missing = [p for p in owned if not Path(p).is_file()]
+    if missing:
+        raise RuntimeError('missing Minecraft libraries; run prepare: ' + ', '.join(missing[:3]))
+    # The dedicated console uses jline, absent from some version metadata.
+    owned += [str(p) for p in sorted((mc / 'libraries/org/jline').glob('**/jline-*-3.25.1.jar')) if str(p) not in owned]
+    boot = os.environ.get('FORBRIC_BOOT_JAR', info['bootJar'])
+    with zipfile.ZipFile(boot) as archive:
+        if 'META-INF/jars/forbric-kernel-runtime.jar' not in archive.namelist():
+            raise RuntimeError('refusing to launch a boot-only kernel jar; run prepare and rebuild')
+    merged = stage / STAGED_FILES[0]
+    metadata_jar = merged.parent / 'forbric-game-metadata.jar'
+    with zipfile.ZipFile(merged) as archive:
+        version = archive.read('version.json')
+    # System-classloader consumers need metadata, but must never see game bytecode on the parent classpath.
+    with zipfile.ZipFile(metadata_jar, 'w') as archive:
+        archive.writestr('version.json', version)
+    cp = pathsep.join([boot] + info['dependencies'] + owned + [str(metadata_jar)])
+    args = ([] if side == 'server' or system != 'osx' else ['-XstartOnFirstThread'])
+    args += [f'-Djava.library.path={natives}',
+             '-Djava.awt.headless=true'] if side == 'server' else [f'-Djava.library.path={natives}']
+    args += [f'-Dforbric.compatibilityPolicy={os.environ.get("FORBRIC_COMPAT_POLICY", "strict")}',
+             f'-Dforbric.dependencyDialog={os.environ.get("FORBRIC_DEP_DIALOG", "off")}']
+    args += list(jvm) + ['-cp', cp, 'net.forbric.kernel.boot.Kernel' + side.title() + 'Launch',
+                        '--gameJar', str(stage / STAGED_FILES[0]),
+                        '--runtimeJar', pathsep.join([str(stage / STAGED_FILES[2]), str(stage / STAGED_FILES[3])]),
+                        '--libraryPath', pathsep.join(owned), '--', '--gameDir', str(instance)]
+    if side == 'client':
+        args += ['--version', '26.2-forbric-dev', '--assetsDir', str(mc / 'assets'),
+                 '--assetIndex', metadata['assetIndex']['id'], '--accessToken', '0',
+                 '--username', 'ForbricDev', '--uuid', '00000000000000000000000000000000',
+                 '--userType', 'legacy', '--versionType', 'release']
+    else:
+        args += ['--nogui']
+    return args + list(game)
+
+
+def write_argument_file(path, arguments):
+    # Java @argfiles avoid cmd.exe's 8191-character limit; quote every path/argument independently.
+    path.write_text('\n'.join('"' + a.replace('\\', '\\\\').replace('"', '\\"')
+                             .replace('\n', '\\n').replace('\r', '\\r') + '"' for a in arguments) + '\n', encoding='utf-8')
+
+
+
+def java_command(java, argument_file, arguments, windows=None, launcher=None):
+    windows = os.name == 'nt' if windows is None else windows
+    if not windows or all(value.isascii() for value in [str(argument_file)] + list(arguments)):
+        return [java, '@' + str(argument_file)]
+    # Both argv and @files pass through Windows Java's native codepage. Keep its command ASCII:
+    # URL-encoded manifest classpaths load the real jars; UTF-8 JSON carries application arguments.
+    launcher = Path(launcher or ROOT / 'forbric-kernel-installer/build/libs/forbric-dev-tools.jar')
+    if not launcher.exists():
+        raise RuntimeError('Unicode Windows launch needs the development tools jar; run prepare first')
+    cp_index = arguments.index('-cp')
+    vm_flags, properties = [], {}
+    for value in arguments[:cp_index]:
+        if value.isascii():
+            vm_flags.append(value)
+        elif value.startswith('-Djava.library.path='):
+            source = Path(value.split('=', 1)[1])
+            destination = argument_file.parent / '.forbric-natives'
+            shutil.copytree(source, destination, dirs_exist_ok=True)
+            vm_flags.append('-Djava.library.path=.forbric-natives')
+        elif value.startswith('-D') and '=' in value:
+            key, setting = value[2:].split('=', 1)
+            properties[key] = setting
+        else:
+            raise RuntimeError('Windows JVM options must be ASCII; use an ASCII output path for: ' + value)
+    entries = [Path(value) for value in arguments[cp_index + 1].split(';')] + [launcher]
+    urls = [entry.resolve().as_uri() + ('/' if entry.is_dir() else '') for entry in entries]
+    attribute = 'Class-Path: ' + ' '.join(urls)
+    lines = [attribute[:72]]
+    attribute = attribute[72:]
+    while attribute:
+        lines.append(' ' + attribute[:71])
+        attribute = attribute[71:]
+    manifest = 'Manifest-Version: 1.0\r\n' + '\r\n'.join(lines) + '\r\n\r\n'
+    classpath_jar = argument_file.parent / '.forbric-classpath.jar'
+    with zipfile.ZipFile(classpath_jar, 'w') as archive:
+        archive.writestr('META-INF/MANIFEST.MF', manifest)
+    configuration = argument_file.parent / '.forbric-launch.json'
+    configuration.write_text(json.dumps(dict(mainClass=arguments[cp_index + 2],
+                                             arguments=list(arguments[cp_index + 3:]),
+                                             properties=properties)), encoding='utf-8')
+    return [java] + vm_flags + ['-cp', classpath_jar.name,
+                              'net.forbric.installer.kernel.DevLaunch', configuration.name]
+
+
+def launch(args, java, env):
+    mc, stage, instance, natives = options(args, env['FORBRIC_DEV_ARCH'])
+    if args.command == 'client' and args.no_assets:
+        raise RuntimeError('the client needs Minecraft assets; drop --no-assets')
+    need_assets = args.command == 'client' or not (args.no_assets or assets_skipped(mc))
+    if not ready(mc, stage, natives, env['FORBRIC_DEV_ARCH'], assets=need_assets):
+        if args.no_build:
+            raise RuntimeError('development inputs missing; run prepareDev first')
+        prepare(args, java, env)
+    info_path = STATE / 'launch-build.json'
+    if not args.no_build:
+        gradle('forbric-kernel', ['jar', 'writeDevClasspath'] + build_properties(mc, stage), env)
+    info = json.loads(info_path.read_text())
+    instance.mkdir(parents=True, exist_ok=True)
+    (instance / 'mods').mkdir(exist_ok=True)
+    for name, _, _ in API_PINS:
+        target = instance / 'mods' / name
+        if not target.exists():
+            shutil.copy2(STATE / 'api' / name, target)
+    if args.command == 'server':
+        properties = instance / 'server.properties'
+        if not properties.exists():
+            properties.write_text('server-ip=127.0.0.1\nonline-mode=false\nenforce-secure-profile=false\n')
+        eula = instance / 'eula.txt'
+        if not args.dry_run and (not eula.is_file() or not re.search(r'^\s*eula\s*=\s*true\s*$', eula.read_text(), re.M)):
+            if not args.accept_eula:
+                raise RuntimeError('server requires Minecraft EULA acceptance: use --accept-eula or set eula=true in ' + str(eula))
+            eula.write_text('eula=true\n')
+    argument_file = instance / '.forbric-java.args'
+    command = launch_arguments(args.command, info, mc, stage, instance, natives, args.jvm, args.game,
+                               arch=env['FORBRIC_DEV_ARCH'])
+    write_argument_file(argument_file, command)
+    if args.dry_run:
+        print(json.dumps([java] + command, indent=2))
+        return
+    print(f'[dev] {args.command}: {instance}', flush=True)
+    if os.name == 'nt' and any(not value.isascii() for value in [str(argument_file)] + command):
+        gradle('forbric-kernel-installer', ['devToolsJar'], env)
+    subprocess.run(java_command(java, argument_file, command), cwd=instance, env=env, check=True)
+
+
+def doctor(args):
+    mc, stage, instance, natives = options(args)
+    failures, arch = [], None
+    try:
+        java = java_bin(args.java)
+        arch = java_environment(java).get('FORBRIC_DEV_ARCH')
+        mc, stage, instance, natives = options(args, arch)
+        print('[dev] JDK: ' + java)
+    except (OSError, subprocess.SubprocessError, RuntimeError, KeyError) as error:
+        failures.append(str(error))
+    for relative in STAGED_FILES:
+        path = stage / relative
+        if not path.is_file():
+            failures.append('missing ' + str(path))
+    for name, _, sha in API_PINS:
+        path = STATE / 'api' / name
+        if not path.is_file() or digest(path) != sha:
+            failures.append('missing or incorrect API: ' + str(path))
+    skipped = assets_skipped(mc)
+    if not ready(mc, stage, natives, arch, assets=not skipped):
+        failures.append('Minecraft libraries/assets/natives or staged APIs need preparation')
+    print(f'[dev] Minecraft: {mc}\n[dev] Stage: {stage}\n[dev] Instance: {instance}')
+    if skipped:
+        print('[dev] Assets were deliberately not prepared (--no-assets): tests and servers only; '
+              'run prepare without it before launching the client')
+    for message in failures:
+        print('[dev] NEEDS PREPARATION: ' + message)
+    print('[dev] ' + ('run python3 tools/dev.py prepare' if failures else 'ready'))
+    return 2 if failures else 0
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('command', choices=['doctor', 'prepare', 'client', 'server', 'test', 'integration', 'gate', 'tool-test'])
+    parser.add_argument('--mc-dir', help='MC_DIR; default: isolated forbric-kernel/.dev/minecraft')
+    parser.add_argument('--staged', help='FORBRIC_OLD; directory containing run/; default: .dev/staged')
+    parser.add_argument('--instance', help='RUNDIR; default: .dev/client or .dev/server')
+    parser.add_argument('--natives', help='NATIVES_DIR; default: .dev/natives/<platform>')
+    parser.add_argument('--java', help='JDK home or java executable; FORBRIC_JAVA, JAVA_HOME, then PATH')
+    parser.add_argument('--jvm', action='append', default=[], help='repeat --jvm=-Dkey=value')
+    parser.add_argument('--accept-eula', action='store_true', help='accept https://aka.ms/MinecraftEULA for the dev server')
+    parser.add_argument('--no-assets', action='store_true',
+                        help='prepare: skip the ~1 GB of Minecraft assets; enough for tests and dedicated servers')
+    parser.add_argument('--dry-run', action='store_true', help='build and print launch command without starting Minecraft')
+    parser.add_argument('--no-build', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--gate', default='m0', help='gate name, e.g. m0 or m33-transfer')
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    game = []
+    if '--' in arguments:
+        split = arguments.index('--')
+        arguments, game = arguments[:split], arguments[split+1:]
+    args = parser.parse_args(arguments)
+    args.game = game
+    if game and args.command not in ('client', 'server'):
+        parser.error('extra game arguments apply only to client/server')
+    try:
+        if args.command == 'doctor':
+            return doctor(args)
+        if args.command == 'tool-test':
+            subprocess.run([sys.executable, '-m', 'unittest', 'discover', '-s', str(ROOT / 'tools'), '-p', 'test_*.py'], check=True, cwd=ROOT)
+            subprocess.run([sys.executable, '-m', 'unittest', 'discover', '-s', str(KERNEL / 'run/compat'), '-p', 'test_*.py'], check=True, cwd=KERNEL)
+            # mac/ is not a package, so the call above never descends into it; its tools import each other flat.
+            mac = KERNEL / 'run/compat/mac'
+            subprocess.run([sys.executable, '-m', 'unittest', 'discover', '-s', str(mac), '-t', str(mac), '-p', 'test_*.py'], check=True, cwd=KERNEL)
+            return 0
+        java = java_bin(args.java)
+        env = java_environment(java, minimum=21 if args.command == 'test' else 25)
+        if args.command == 'prepare':
+            prepare(args, java, env)
+        elif args.command in ('client', 'server'):
+            launch(args, java, env)
+        elif args.command == 'test':
+            gradle('forbric-kernel', ['check'], env)
+        elif args.command == 'integration':
+            mc, stage, _, natives = options(args, env['FORBRIC_DEV_ARCH'])
+            if not ready(mc, stage, natives, env['FORBRIC_DEV_ARCH'], assets=not (args.no_assets or assets_skipped(mc))):
+                prepare(args, java, env)
+            gradle('forbric-kernel', ['cleanTest', 'cleanTransferTest', 'integrationTest'] + build_properties(mc, stage), env)
+        elif args.command == 'gate':
+            if not re.fullmatch(r'm[0-9]+[a-z]?(?:-[a-z0-9-]+)?', args.gate):
+                raise RuntimeError('invalid gate name')
+            gate = KERNEL / 'run' / ('gate-' + args.gate + '.sh')
+            if not gate.is_file():
+                raise RuntimeError('unknown gate: ' + args.gate)
+            if not shutil.which('bash'):
+                raise RuntimeError('legacy gates require Bash and their documented local fixtures')
+            # Legacy gates keep their own staging defaults; do not silently point them at an empty dev fixture set.
+            if args.staged:
+                env['FORBRIC_OLD'] = str(Path(args.staged).resolve())
+            if args.mc_dir:
+                env['MC_DIR'] = str(Path(args.mc_dir).resolve())
+            subprocess.run(['bash', str(gate)], cwd=ROOT, env=env, check=True)
+        return 0
+    except KeyboardInterrupt:
+        return 130
+    except (OSError, subprocess.SubprocessError, RuntimeError, ValueError, KeyError, zipfile.BadZipFile) as error:
+        print('[dev] ERROR: ' + str(error), file=sys.stderr)
