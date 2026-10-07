@@ -157,7 +157,17 @@ def push_branch(fork: str, branch: str, wt: str, force: bool) -> None:
            f"HEAD:refs/heads/{branch}"]
     if force:
         cmd.append("--force")
-    run(cmd)
+    # push 是幂等的（同分支同内容），网络抖动或并发 push 偶发的
+    # "remote rejected" 用退避重试兜底。
+    for i in range(1, 4):
+        try:
+            run(cmd)
+            return
+        except RuntimeError as e:
+            if i == 3:
+                raise
+            log(branch, f"push 失败，{5 * i}s 后重试 ({i}/3)…")
+            time.sleep(5 * i)
 
 
 def wait_for_branch(fork: str, branch: str, timeout: int = 90) -> None:
