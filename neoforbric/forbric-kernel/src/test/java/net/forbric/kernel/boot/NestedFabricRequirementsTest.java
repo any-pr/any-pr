@@ -298,3 +298,139 @@ class NestedFabricRequirementsTest {
 				",\"depends\":{\"minecraft\":\"~26.1\"}")), ""));
 		capture(() -> DuplicateModArbiter.arbitrate(mods(), EnvType.SERVER, GAME));
 		var both = DuplicateModArbiter.currentPlan();
+		Path three = both.inventory().nodes().values().stream().filter(n -> n.claim() != null && "3".equals(n.claim().versionOf("x")))
+				.map(NestedCandidateInventory.Node::path).findFirst().orElseThrow();
+		Path two = both.inventory().nodes().values().stream().filter(n -> n.claim() != null && "2".equals(n.claim().versionOf("x")))
+				.map(NestedCandidateInventory.Node::path).findFirst().orElseThrow();
+		assertEquals(Set.of(three), both.inventory().keptBack().keySet());
+		assertEquals("r requires x >=3, and nothing else installed meets that", both.inventory().keptBack().get(three).because());
+		assertEquals(Map.of(two, "minecraft ~26.1 does not include 26.2"), both.inventory().leftOut());
+		assertEquals(List.of("3"), both.nestedFiles().stream().map(p -> both.inventory().nodes().get(p).claim().versionOf("x")).toList());
+	}
+
+	/** What a left-out mod bundles is kept, and the left-out mod with it, when a mod that loads needs it. */
+	@Test void aModThatNeedsWhatALeftOutModBundlesKeepsTheChain() throws Exception {
+		installViaFabricShape();
+		install("user.jar", fabric("user", "1", Map.of(), ",\"depends\":{\"inner\":\"*\"}"));
+		DuplicateModArbiter.arbitrate(mods(), EnvType.SERVER, GAME);
+		var plan = DuplicateModArbiter.currentPlan();
+		assertEquals(Set.of("host-mc26-1", "inner", "host-mc26-2"), nestedIds(plan));
+		assertEquals(Map.of(only(plan, "inner"), new NestedFabricRequirements.KeptBack("only mods left out bundle it",
+				"user requires inner *, and nothing else installed meets that"), only(plan, "host-mc26-1"),
+				new NestedFabricRequirements.KeptBack("minecraft >=26.1 <=26.1.2 does not include 26.2",
+						"it bundles inner (user requires inner *, and nothing else installed meets that)")), plan.inventory().keptBack());
+		assertTrue(plan.inventory().leftOut().isEmpty());
+
+		System.setProperty("forbric.crossJarArbitration", "off");
+		DuplicateModArbiter.reset();
+		FabricModDiscovery discovery = new FabricModDiscovery(EnvType.SERVER, root.resolve("jij"));
+		discovery.setPlatform(NestedFabricRequirements.Platform.running(GAME));
+		discovery.discover(mods());
+		assertEquals(Set.of("host", "host-mc26-1", "inner", "host-mc26-2", "user"), ids(discovery));
+	}
+
+	/**
+	 * A left-out copy is kept when only it meets what a loaded mod asks for: here lib 2, beside a lib 1 that can run.
+	 * Arbitration then picks between them as it did before the rule, and the newest wins.
+	 */
+	@Test void aLeftOutCopyIsKeptWhenOnlyItMeetsALoadedModsRange() throws Exception {
+		install("a.jar", fabric("a", "1", Map.of("META-INF/jars/lib.jar", fabric("lib", "1", Map.of(), "")), ""));
+		install("b.jar", fabric("b", "1", Map.of("META-INF/jars/lib.jar", fabric("lib", "2", Map.of(),
+				",\"depends\":{\"minecraft\":\"~26.1\"}")), ""));
+		install("c.jar", fabric("c", "1", Map.of(), ",\"depends\":{\"lib\":\">=2\"}"));
+		DuplicateModArbiter.arbitrate(mods(), EnvType.SERVER, GAME);
+		var plan = DuplicateModArbiter.currentPlan();
+		assertEquals(List.of("2"), plan.nestedFiles().stream().map(p -> plan.inventory().nodes().get(p).claim().versionOf("lib")).toList());
+		assertEquals("c requires lib >=2, and nothing else installed meets that",
+				plan.inventory().keptBack().values().iterator().next().because());
+	}
+
+	/** {@code off:<ids>} keeps exactly those ids out of the rule, for the player who needs one nested build anyway. */
+	@Test void aPinnedIdIsKeptAndEveryOtherStillJudged() throws Exception {
+		install("host.jar", fabric("host", "1", Map.of("META-INF/jars/mc26-1.jar", mc261(),
+				"META-INF/jars/java.jar", fabric("needs-java-99", "1", Map.of(), ",\"depends\":{\"java\":\">=99\"}")), ""));
+		System.setProperty(NestedFabricRequirements.SWITCH, "off: host-mc26-1 ,unrelated");
+		DuplicateModArbiter.arbitrate(mods(), EnvType.SERVER, GAME);
+		var plan = DuplicateModArbiter.currentPlan();
+		assertEquals(Set.of("host-mc26-1", "inner"), nestedIds(plan));
+		assertEquals(Set.of(only(plan, "needs-java-99")), plan.inventory().leftOut().keySet());
+
+		System.setProperty("forbric.crossJarArbitration", "off");
+		DuplicateModArbiter.reset();
+		FabricModDiscovery discovery = new FabricModDiscovery(EnvType.SERVER, root.resolve("jij"));
+		discovery.setPlatform(NestedFabricRequirements.Platform.running(GAME));
+		discovery.discover(mods());
+		assertEquals(Set.of("host", "host-mc26-1", "inner"), ids(discovery));
+	}
+
+	private void installViaFabricShape() throws Exception {
+		byte[] current = fabric("host-mc26-2", "1", Map.of(), ",\"depends\":{\"minecraft\":[\"26.2\",\"26.3\"],\"host\":\"*\"}");
+		install("host.jar", fabric("host", "1", Map.of("META-INF/jars/host-mc26-2.jar", current, "META-INF/jars/host-mc26-1.jar", mc261()),
+				",\"depends\":{\"minecraft\":[\"26.1\",\"26.1.1\",\"26.1.2\",\"26.2\",\"26.3\"]}"));
+	}
+	/** Built for the previous Minecraft line, with a nested jar of its own. */
+	private static byte[] mc261() throws Exception {
+		return fabric("host-mc26-1", "1", Map.of("META-INF/jars/inner.jar", fabric("inner", "1", Map.of(), "")),
+				",\"depends\":{\"minecraft\":\">=26.1 <=26.1.2\"}");
+	}
+	private Path mods() throws Exception { Path mods = root.resolve("mods"); Files.createDirectories(mods); return mods; }
+	private Path install(String name, byte[] bytes) throws Exception { Path path = mods().resolve(name); Files.write(path, bytes); return path; }
+	private static Set<String> nestedIds(NestedCandidatePlan plan) {
+		return plan.nestedFiles().stream().flatMap(p -> plan.inventory().nodes().get(p).claim().modIds().stream()).collect(Collectors.toSet());
+	}
+	private static Path only(NestedCandidatePlan plan, String id) {
+		List<Path> matches = plan.inventory().nodes().values().stream().filter(n -> n.claim() != null && n.claim().modIds().contains(id))
+				.map(NestedCandidateInventory.Node::path).toList();
+		assertEquals(1, matches.size(), id);
+		return matches.getFirst();
+	}
+	private static List<String> jijLines(String log) {
+		return log.lines().filter(line -> line.contains("[Forbric/JiJ] nested")).map(line -> line.substring(line.indexOf("[Forbric/JiJ]"))).toList();
+	}
+	private interface Body { void run() throws Exception; }
+	private static String capture(Body body) throws Exception {
+		PrintStream out = System.out, err = System.err;
+		ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+		PrintStream sink = new PrintStream(buffer, true, StandardCharsets.UTF_8);
+		System.setOut(sink); System.setErr(sink);
+		try { body.run(); } finally { System.setOut(out); System.setErr(err); }
+		return buffer.toString(StandardCharsets.UTF_8);
+	}
+	/** A NeoForge mod whose JarJar metadata declares {@code declared}; the other children are only in its directories. */
+	private static byte[] neo(String id, Map<String, byte[]> children, List<String> declared) throws Exception {
+		return neo(id, children, declared, "");
+	}
+	/** As above; {@code toml} is appended to its neoforge.mods.toml (its dependencies). */
+	private static byte[] neo(String id, Map<String, byte[]> children, List<String> declared, String toml) throws Exception {
+		Map<String, byte[]> all = new LinkedHashMap<>(children);
+		all.put("META-INF/neoforge.mods.toml", ("modLoader=\"javafml\"\nloaderVersion=\"[1,)\"\nlicense=\"MIT\"\n[[mods]]\nmodId=\""
+				+ id + "\"\nversion=\"1\"\n" + toml).getBytes(StandardCharsets.UTF_8));
+		List<String> entries = new ArrayList<>();
+		for (String path : declared) {
+			String artifact = path.substring(path.lastIndexOf('/') + 1).replace(".jar", "");
+			entries.add("{\"path\":\"" + path + "\",\"identifier\":{\"group\":\"example\",\"artifact\":\"" + artifact
+					+ "\"},\"version\":{\"range\":\"[1,)\",\"artifactVersion\":\"1\"}}");
+		}
+		all.put("META-INF/jarjar/metadata.json", ("{\"jars\":[" + String.join(",", entries) + "]}").getBytes(StandardCharsets.UTF_8));
+		return zip(all);
+	}
+	private static Set<String> ids(FabricModDiscovery discovery) {
+		return discovery.getContainers().stream().map(c -> c.getMetadata().getId()).collect(Collectors.toSet());
+	}
+	private static byte[] fabric(String id, String version, Map<String, byte[]> children, String extra) throws Exception {
+		Map<String, byte[]> all = new LinkedHashMap<>(children);
+		String jars = String.join(",", children.keySet().stream().map(name -> "{\"file\":\"" + name + "\"}").toList());
+		all.put("fabric.mod.json", ("{\"schemaVersion\":1,\"id\":\"" + id + "\",\"version\":\"" + version + "\",\"jars\":[" + jars + "]" + extra + "}")
+				.getBytes(StandardCharsets.UTF_8));
+		return zip(all);
+	}
+	private static byte[] zip(Map<String, byte[]> all) throws Exception {
+		ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+		try (ZipOutputStream zip = new ZipOutputStream(bytes)) {
+			for (var entry : new TreeMap<>(all).entrySet()) {
+				ZipEntry part = new ZipEntry(entry.getKey()); part.setTime(0); zip.putNextEntry(part); zip.write(entry.getValue()); zip.closeEntry();
+			}
+		}
+		return bytes.toByteArray();
+	}
+}
