@@ -298,3 +298,303 @@ public final class MixinAtWidenedCall {
 		Member member = parse(target);
 		if (member == null) return null;
 
+		Set<String> candidates = new LinkedHashSet<>();
+		for (AbstractInsnNode insn : body.instructions) {
+			if (!(insn instanceof MethodInsnNode call)) continue;
+			if (!call.owner.equals(member.owner()) || !call.name.equals(member.name())) continue;
+			// The named call is really here: the point resolves on its own and must not be moved.
+			if (call.desc.equals(member.descriptor())) return null;
+			if (widens(member.descriptor(), call.desc)) candidates.add(call.desc);
+		}
+		if (candidates.size() != 1) return null;
+		return new Member(member.owner(), member.name(), candidates.iterator().next()).render();
+	}
+
+	/**
+	 * Rewrites every eligible {@code @At(INVOKE…)} in {@code mixin} whose named call the carrier widened.
+	 *
+	 * @param targets resolves an internal class name to its merged-base node WITH instructions
+	 * @return how many injection points were moved
+	 */
+	public static int widen(ClassNode mixin, Function<String, ClassNode> targets) {
+		if (!enabled() || mixin == null || mixin.methods == null || targets == null) return 0;
+
+		List<MethodNode> declared = new ArrayList<>();
+		for (String targetName : MixinOverloadPin.targetsOf(mixin)) {
+			ClassNode target = targets.apply(targetName);
+			if (target != null && target.methods != null) declared.addAll(target.methods);
+		}
+		if (declared.isEmpty()) return 0;
+
+		int widened = 0;
+		List<MethodNode> wrappers = new ArrayList<>();
+		for (MethodNode method : new ArrayList<>(mixin.methods)) {
+			for (AnnotationNode injector : annotationsOf(method)) {
+				List<MethodNode> bodies = movable(method, injector, declared);
+				if (bodies == null) continue;
+				List<String[]> moves = new ArrayList<>();
+				widened += widenOne(mixin.name, method, injector, injector, bodies, moves);
+				// A redirect's handler mirrors the call, so the call it now names needs a handler of that shape.
+				if (REDIRECT.equals(injector.desc) && moves.size() == 1) wrappers.add(redirectWrapper(mixin, method, injector,
+						moves.getFirst()[0], moves.getFirst()[1]));
+			}
+		}
+		mixin.methods.addAll(wrappers);
+		return widened;
+	}
+
+	/**
+	 * The handler renamed aside, and in its place a method of its name, access and injector annotation shaped for the
+	 * widened static call: it takes the call's arguments, then the target arguments the handler captured, and hands the
+	 * original the named call's arguments and those captures.
+	 */
+	private static MethodNode redirectWrapper(ClassNode mixin, MethodNode handler, AnnotationNode injector, String named,
+			String moved) {
+		Type[] own = Type.getArgumentTypes(parse(named).descriptor());
+		Type[] wide = Type.getArgumentTypes(parse(moved).descriptor());
+		Type[] params = Type.getArgumentTypes(handler.desc);
+		Type[] outerParams = new Type[wide.length + params.length - own.length];
+		System.arraycopy(wide, 0, outerParams, 0, wide.length);
+		System.arraycopy(params, own.length, outerParams, wide.length, params.length - own.length);
+		Type returned = Type.getReturnType(handler.desc);
+		boolean isStatic = (handler.access & Opcodes.ACC_STATIC) != 0;
+		MethodNode outer = new MethodNode(Opcodes.ASM9, handler.access, handler.name,
+				Type.getMethodDescriptor(returned, outerParams), null,
+				handler.exceptions == null ? null : handler.exceptions.toArray(new String[0]));
+		boolean visible = handler.visibleAnnotations != null && handler.visibleAnnotations.remove(injector);
+		if (!visible && handler.invisibleAnnotations != null) handler.invisibleAnnotations.remove(injector);
+		if (visible) outer.visibleAnnotations = new ArrayList<>(List.of(injector));
+		else outer.invisibleAnnotations = new ArrayList<>(List.of(injector));
+
+		int[] slots = new int[outerParams.length + 1];
+		int slot = isStatic ? 0 : 1;
+		for (int i = 0; i < outerParams.length; i++) {
+			slots[i] = slot;
+			slot += outerParams[i].getSize();
+		}
+		int stack = 0;
+		if (!isStatic) {
+			outer.instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));
+			stack++;
+		}
+		for (int i = 0; i < outerParams.length; i++) {
+			if (i >= own.length && i < wide.length) continue;    // the carrier's appended arguments
+			outer.instructions.add(new VarInsnNode(outerParams[i].getOpcode(Opcodes.ILOAD), slots[i]));
+			stack += outerParams[i].getSize();
+		}
+		String aside = MixinHandlerShim.asideName(mixin.name, handler.name, REDIRECT_SUFFIX);
+		outer.instructions.add(MixinHandlerShim.callOwn(mixin, isStatic, aside, handler.desc));
+		outer.instructions.add(new InsnNode(returned.getOpcode(Opcodes.IRETURN)));
+		outer.maxLocals = slot;
+		outer.maxStack = Math.max(stack, returned.getSize());
+		handler.name = aside;
+		return outer;
+	}
+
+	/**
+	 * Where {@link #widen} will point one {@code @At(atValue, target)} of {@code handler}'s {@code injector}, or null
+	 * when it leaves that point as compiled. The rewrite's own decision, for {@link MixinFit}: the verdict and the move
+	 * cannot disagree. {@code declared} is the target class's methods WITH instructions.
+	 */
+	public static String wouldMove(MethodNode handler, AnnotationNode injector, List<MethodNode> declared, String atValue,
+			String target) {
+		if (!enabled() || handler == null || injector == null || declared == null || atValue == null || target == null) return null;
+		List<MethodNode> bodies = movable(handler, injector, declared);
+		return bodies == null ? null : decide(handler, injector, bodies, atValue, target);
+	}
+
+	/**
+	 * The bodies an injector's points may move within, or null when none of its points moves: a handler in a
+	 * {@code @Group} (the group is the mod's own statement that some of these points are meant to miss), an injector
+	 * whose handler describes the call, or a selector naming nothing.
+	 */
+	private static List<MethodNode> movable(MethodNode handler, AnnotationNode injector, List<MethodNode> declared) {
+		if (!annotationsOf(handler).contains(injector) || inGroup(handler)) return null;
+		if (!ARGUMENT_BLIND.contains(injector.desc) && !MODIFY_ARG.equals(injector.desc)
+				&& !(REDIRECT.equals(injector.desc) && redirectEnabled())) return null;
+		List<MethodNode> bodies = selected(injector, declared);
+		return bodies.isEmpty() ? null : bodies;
+	}
+
+	/** Whether {@code handler} is one alternative of a callback {@code @Group}, which no point of it moves out of. */
+	static boolean inGroup(MethodNode handler) {
+		for (AnnotationNode annotation : annotationsOf(handler)) {
+			if (GROUP_DESC.equals(annotation.desc)) return true;
+		}
+		return false;
+	}
+
+	/**
+	 * Both lists together: {@code @Group} and {@code @Inject} are on the same handler but a compiler may put them in
+	 * different retention buckets, and checking one list at a time would miss the group half the time.
+	 */
+	private static List<AnnotationNode> annotationsOf(MethodNode handler) {
+		List<AnnotationNode> annotations = new ArrayList<>();
+		if (handler.visibleAnnotations != null) annotations.addAll(handler.visibleAnnotations);
+		if (handler.invisibleAnnotations != null) annotations.addAll(handler.invisibleAnnotations);
+		return annotations;
+	}
+
+	/** The moved target for one point of an injector that {@link #movable} allowed, or null. */
+	private static String decide(MethodNode handler, AnnotationNode injector, List<MethodNode> bodies, String atValue,
+			String target) {
+		boolean blind = ARGUMENT_BLIND.contains(injector.desc);
+		if (CALL_SITES.contains(atValue)) {
+			String moved = widenedAcross(bodies, target);
+			if (moved == null) return null;
+			if (REDIRECT.equals(injector.desc)) {
+				return "INVOKE".equals(atValue) && staticRedirect(handler, bodies, target, moved) ? moved : null;
+			}
+			return blind || singleArgumentAtFixedIndex(handler, injector, target) ? moved : null;
+		}
+		if ("NEW".equals(atValue) && blind && target.startsWith("(")) return widenedNewAcross(bodies, target);
+		return null;
+	}
+
+	/**
+	 * A redirect of {@code named} the wrapper can serve at {@code moved}: a {@link #REDIRECTABLE} row, every widened call in
+	 * the bodies an {@code invokestatic}, and a handler that takes the named call's arguments first and returns its type.
+	 */
+	private static boolean staticRedirect(MethodNode handler, List<MethodNode> bodies, String named, String moved) {
+		Member call = parse(moved), own = parse(named);
+		if (call == null || own == null || redirectable(moved) == null) return false;
+		int calls = 0;
+		for (MethodNode body : bodies) {
+			if (body.instructions == null) continue;
+			for (AbstractInsnNode insn : body.instructions) {
+				if (!(insn instanceof MethodInsnNode site) || !site.owner.equals(call.owner()) || !site.name.equals(call.name())
+						|| !site.desc.equals(call.descriptor())) continue;
+				if (site.getOpcode() != Opcodes.INVOKESTATIC) return false;
+				calls++;
+			}
+		}
+		if (calls == 0 || !Type.getReturnType(handler.desc).equals(Type.getReturnType(own.descriptor()))) return false;
+		Type[] wanted = Type.getArgumentTypes(own.descriptor());
+		Type[] params = Type.getArgumentTypes(handler.desc);
+		if (params.length < wanted.length) return false;
+		for (int i = 0; i < wanted.length; i++) if (!params[i].equals(wanted[i])) return false;
+		return true;
+	}
+
+	/** A fixed prefix argument keeps its index/type when the carrier appends arguments. A full-arguments
+	 * handler or inferred index does not have this proof and is left unchanged. */
+	private static boolean singleArgumentAtFixedIndex(MethodNode handler, AnnotationNode injector, String target) {
+		Object rawIndex = MixinFit.value(injector, "index");
+		if (!(rawIndex instanceof Integer index) || index < 0) return false;
+		Member member = parse(target);
+		if (member == null) return false;
+		Type[] parameters = Type.getArgumentTypes(member.descriptor());
+		Type[] captured = Type.getArgumentTypes(handler.desc);
+		return index < parameters.length && captured.length == 1 && captured[0].equals(parameters[index])
+				&& Type.getReturnType(handler.desc).equals(parameters[index]);
+	}
+
+	/** The target methods this injector's {@code method} selectors name, matched exactly as written. */
+	private static List<MethodNode> selected(AnnotationNode injector, List<MethodNode> declared) {
+		Set<String> selectors = new LinkedHashSet<>();
+		collectSelectors(injector, selectors);
+		if (selectors.isEmpty()) return List.of();
+
+		List<MethodNode> bodies = new ArrayList<>();
+		for (MethodNode body : declared) {
+			for (String selector : selectors) {
+				if (selector.equals(body.name) || selector.equals(body.name + body.desc)) {
+					bodies.add(body);
+					break;
+				}
+			}
+		}
+		return bodies;
+	}
+
+	private static void collectSelectors(AnnotationNode annotation, Set<String> out) {
+		if (annotation == null || annotation.values == null) return;
+		for (int i = 0; i + 1 < annotation.values.size(); i += 2) {
+			if ("method".equals(annotation.values.get(i)) && annotation.values.get(i + 1) instanceof List<?> entries) {
+				for (Object entry : entries) {
+					if (entry instanceof String selector) out.add(selector);
+				}
+			}
+		}
+	}
+
+	/** Walks the injector's values — {@code @At} sits nested inside it, sometimes in a list. */
+	private static int widenOne(String mixinName, MethodNode handler, AnnotationNode injector, AnnotationNode annotation,
+			List<MethodNode> bodies, List<String[]> moves) {
+		if (annotation == null || annotation.values == null) return 0;
+
+		int widened = 0;
+		boolean isAt = AT_DESC.equals(annotation.desc);
+		String atValue = null;
+		if (isAt) {
+			for (int i = 0; i + 1 < annotation.values.size(); i += 2) {
+				if ("value".equals(annotation.values.get(i)) && annotation.values.get(i + 1) instanceof String v) {
+					atValue = v;
+				}
+			}
+		}
+		for (int i = 0; i + 1 < annotation.values.size(); i += 2) {
+			Object name = annotation.values.get(i);
+			Object value = annotation.values.get(i + 1);
+			if (isAt && "target".equals(name) && value instanceof String target && CALL_SITES.contains(atValue)) {
+				String moved = decide(handler, injector, bodies, atValue, target);
+				if (moved != null) {
+					annotation.values.set(i + 1, moved);
+					widened++;
+					moves.add(new String[] {target, moved});
+					if (REDIRECT.equals(injector.desc)) {
+						ForbricLog.info("[Forbric/Mixin] %s: @Redirect %s names the vanilla signature of a static call, and "
+								+ "nothing in the method it selects calls that — pointed at %s, the same call with the "
+								+ "parameters the surviving carrier appended; %s takes them and hands its original the "
+								+ "arguments it was written for, replacing the call as it replaces vanilla's",
+								mixinName.replace('/', '.'), target, moved, handler.name);
+					} else {
+						ForbricLog.info("[Forbric/Mixin] %s: injection point %s names the vanilla signature, and nothing "
+								+ "in the method it selects calls that — pointed at %s, the same call with the "
+								+ "parameters the surviving carrier appended", mixinName.replace('/', '.'), target, moved);
+					}
+				}
+			} else if (isAt && "target".equals(name) && value instanceof String target && "NEW".equals(atValue)) {
+				String moved = decide(handler, injector, bodies, atValue, target);
+				if (moved != null) {
+					annotation.values.set(i + 1, moved);
+					widened++;
+					ForbricLog.info("[Forbric/Mixin] %s: injection point NEW %s names the vanilla constructor, and nothing in "
+							+ "the method it selects constructs that — pointed at %s, the same construction with the "
+							+ "arguments the surviving carrier appended", mixinName.replace('/', '.'), target, moved);
+				}
+			} else if (value instanceof AnnotationNode nested) {
+				widened += widenOne(mixinName, handler, injector, nested, bodies, moves);
+			} else if (value instanceof List<?> list) {
+				for (Object item : new ArrayList<>(list)) {
+					if (item instanceof AnnotationNode nested) widened += widenOne(mixinName, handler, injector, nested, bodies, moves);
+				}
+			}
+		}
+		return widened;
+	}
+
+	/** The one widened form across every selected body, or {@code null} if any body calls the named one as written. */
+	private static String widenedAcross(List<MethodNode> bodies, String target) {
+		Set<String> moved = new LinkedHashSet<>();
+		for (MethodNode body : bodies) {
+			String one = widenedIn(body, target);
+			if (one == null && callsExactly(body, target)) return null;
+			if (one != null) moved.add(one);
+		}
+		return moved.size() == 1 ? moved.iterator().next() : null;
+	}
+
+	/** The one widened construction across every selected body, or {@code null} if any body builds the named one. */
+	private static String widenedNewAcross(List<MethodNode> bodies, String target) {
+		Set<String> moved = new LinkedHashSet<>();
+		Type method = Type.getMethodType(target);
+		String named = Type.getMethodDescriptor(Type.VOID_TYPE, method.getArgumentTypes());
+		for (MethodNode body : bodies) {
+			if (body.instructions != null) for (AbstractInsnNode insn : body.instructions) {
+				if (insn instanceof MethodInsnNode call && call.getOpcode() == Opcodes.INVOKESPECIAL && call.name.equals("<init>")
+						&& call.owner.equals(method.getReturnType().getInternalName()) && call.desc.equals(named)) return null;
+			}
+			String one = widenedNewIn(body, target);
+			if (one != null) moved.add(one);
+		}
