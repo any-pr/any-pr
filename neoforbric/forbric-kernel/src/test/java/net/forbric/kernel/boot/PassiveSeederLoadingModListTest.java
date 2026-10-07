@@ -298,3 +298,17 @@ class PassiveSeederLoadingModListTest {
 				+ "displayName=\"" + displayName + "\"\n";
 		try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(jar))) {
 			put(zip, "META-INF/neoforge.mods.toml", toml);
+			if (alsoFabric) {
+				put(zip, "fabric.mod.json", "{\"schemaVersion\":1,\"id\":\"" + modId + "\",\"version\":\""
+						+ version + "\",\"name\":\"" + displayName + "\"}");
+			}
+		}
+	}
+
+	static void put(ZipOutputStream zip, String name, String content) throws IOException {
+		zip.putNextEntry(new ZipEntry(name));
+		OutputStream out = zip;
+		out.write(content.getBytes(StandardCharsets.UTF_8));
+		zip.closeEntry();
+	}
+}
