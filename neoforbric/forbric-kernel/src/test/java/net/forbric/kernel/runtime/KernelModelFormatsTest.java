@@ -298,3 +298,133 @@ class KernelModelFormatsTest {
 
 	/**
 	 * {@code CuboidModel.GSON}'s shape with the stand-in: NeoForge's deserializer as the hierarchy adapter for
+	 * {@code UnbakedModel}, the stand-in as the exact adapter for {@code CuboidModel}. One NeoForge loader
+	 * ({@code neotest:fmt}) and one Fabric deserializer ({@code fabrictest:backpack}) are registered the way their
+	 * mods register them.
+	 */
+	private static final class Game implements AutoCloseable {
+		final URLClassLoader loader;
+		final List<String> fabricSaw = new ArrayList<>();
+		final List<String> cuboidSaw = new ArrayList<>();
+		final List<String> cuboidLoaders = new ArrayList<>();
+		private final Object gson;
+		private final Method fromJson;
+		private final Class<?> unbakedModel;
+		private final java.lang.reflect.Constructor<?> cuboidModel;
+		private final Method identifier;
+		private final Method parent;
+
+		Game(URLClassLoader loader, boolean fabricApiInstalled) throws Exception {
+			this.loader = loader;
+			unbakedModel = type("net.minecraft.client.resources.model.UnbakedModel");
+			Class<?> identifier = type("net.minecraft.resources.Identifier");
+			Method parse = identifier.getMethod("parse", String.class);
+			this.identifier = parse;
+			Class<?> cuboid = type("net.minecraft.client.resources.model.cuboid.CuboidModel");
+			cuboidModel = cuboid.getConstructor(type("net.minecraft.client.resources.model.geometry.UnbakedGeometry"),
+					type("net.minecraft.client.resources.model.UnbakedModel$GuiLight"), Boolean.class,
+					type("net.minecraft.client.resources.model.cuboid.ItemTransforms"),
+					type("net.minecraft.client.resources.model.sprite.TextureSlots$Data"), identifier);
+			this.parent = cuboid.getMethod("parent");
+			Class<?> jsonDeserializer = type("com.google.gson.JsonDeserializer");
+			Class<?> jsonObject = type("com.google.gson.JsonObject");
+			Method getAsJsonObject = type("com.google.gson.JsonElement").getMethod("getAsJsonObject");
+			Method getAsString = type("net.minecraft.util.GsonHelper")
+					.getMethod("getAsString", jsonObject, String.class, String.class);
+			Class<?> parseException = type("com.google.gson.JsonParseException");
+
+			// NeoForge's loader table, as UnbakedModelParser.init() leaves it after RegisterLoaders.
+			Class<?> neoLoader = type("net.neoforged.neoforge.client.model.UnbakedModelLoader");
+			Object neo = Proxy.newProxyInstance(loader, new Class<?>[] {neoLoader},
+					(proxy, method, args) -> "read".equals(method.getName()) ? model("neo") : null);
+			Field loaders = type("net.neoforged.neoforge.client.model.UnbakedModelParser").getDeclaredField("LOADERS");
+			loaders.setAccessible(true);
+			loaders.set(null, type("com.google.common.collect.ImmutableMap").getMethod("of", Object.class, Object.class)
+					.invoke(null, parse.invoke(null, "neotest:fmt"), neo));
+
+			// A Fabric mod's deserializer, registered through fabric-model-loading's own API.
+			if (fabricApiInstalled) {
+				Class<?> fabricApi = type("net.fabricmc.fabric.api.client.model.loading.v1.UnbakedModelDeserializer");
+				Object fabric = Proxy.newProxyInstance(loader, new Class<?>[] {fabricApi}, (proxy, method, args) -> {
+					if (!"deserialize".equals(method.getName())) return null;
+					fabricSaw.add(String.valueOf(args[0]));
+					return model("fabric");
+				});
+				fabricApi.getMethod("register", identifier, fabricApi).invoke(null, parse.invoke(null, "fabrictest:backpack"), fabric);
+				// One compiled against another base: its first call into the game does not link.
+				Object broken = Proxy.newProxyInstance(loader, new Class<?>[] {fabricApi}, (proxy, method, args) -> {
+					if (!"deserialize".equals(method.getName())) return null;
+					throw new NoSuchMethodError("'void net.minecraft.client.renderer.block.model.BlockModel.<init>()'");
+				});
+				fabricApi.getMethod("register", identifier, fabricApi).invoke(null, parse.invoke(null, "fabrictest:broken"), broken);
+			}
+
+			// The vanilla cuboid deserializer and what sits on it — see the class javadoc.
+			Object standIn = Proxy.newProxyInstance(loader, new Class<?>[] {jsonDeserializer}, (proxy, method, args) -> {
+				if (!"deserialize".equals(method.getName())) return null;
+				Object json = getAsJsonObject.invoke(args[0]);
+				cuboidSaw.add(String.valueOf(json));
+				String id = (String) invoke(getAsString, null, json, "loader", null);
+				if (id == null) return model("plain");
+				cuboidLoaders.add(id);
+				if ("fusion:model".equals(id)) return model("fusion");
+				if ("brokenfmt:model".equals(id)) throw new NoClassDefFoundError("net/minecraftforge/client/model/Gone");
+				throw (Throwable) parseException.getConstructor(String.class).newInstance(
+						"Model loader '" + id + "' not found. Registered loaders: forge:obj");
+			});
+
+			Class<?> builder = type("com.google.gson.GsonBuilder");
+			Object gsonBuilder = builder.getConstructor().newInstance();
+			builder.getMethod("registerTypeHierarchyAdapter", Class.class, Object.class)
+					.invoke(gsonBuilder, unbakedModel, type(DESERIALIZER).getConstructor().newInstance());
+			builder.getMethod("registerTypeAdapter", java.lang.reflect.Type.class, Object.class)
+					.invoke(gsonBuilder, cuboid, standIn);
+			gson = builder.getMethod("create").invoke(gsonBuilder);
+			fromJson = gson.getClass().getMethod("fromJson", String.class, Class.class);
+		}
+
+		/** Which model the JSON became: "neo", "fabric", "fusion" or "plain". */
+		String parse(String json) throws Exception {
+			try {
+				Object model = fromJson.invoke(gson, json, unbakedModel);
+				return String.valueOf(parent.invoke(model)).replace("marker:", "");
+			} catch (InvocationTargetException e) {
+				throw new AssertionError("expected a model from " + json, e.getCause());
+			}
+		}
+
+		/** The exception parsing {@code json} ends in. */
+		Throwable fail(String json) {
+			InvocationTargetException thrown = assertThrows(InvocationTargetException.class,
+					() -> fromJson.invoke(gson, json, unbakedModel), json);
+			Throwable cause = thrown.getCause();
+			assertInstanceOf(RuntimeException.class, cause);
+			return cause;
+		}
+
+		/**
+		 * A real {@code CuboidModel} whose parent names it: Gson checks that an adapter asked for a
+		 * {@code CuboidModel} returned one, as it does for fusion's hook in the game.
+		 */
+		private Object model(String name) throws Exception {
+			return cuboidModel.newInstance(null, null, null, null, null, identifier.invoke(null, "marker:" + name));
+		}
+
+		private static Object invoke(Method method, Object receiver, Object... args) throws Throwable {
+			try {
+				return method.invoke(receiver, args);
+			} catch (InvocationTargetException e) {
+				throw e.getCause();
+			}
+		}
+
+		private Class<?> type(String name) throws ClassNotFoundException {
+			return Class.forName(name, true, loader);
+		}
+
+		@Override
+		public void close() throws IOException {
+			loader.close();
+		}
+	}
+}
