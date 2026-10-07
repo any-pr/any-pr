@@ -298,3 +298,287 @@ class FabricHooksCallTest {
 		// Fabric one binds, so the group is satisfied and the Quilt miss is not a miss.
 		MixinFit.Result fits = MixinFit.evaluate(mixin, name -> "net/minecraft/server/Main.class".equals(name) ? after : null);
 		assertEquals(MixinFit.Verdict.FIT, fits.verdict(), fits.unresolved().toString());
+	}
+
+	/** Judged member by member, as before, the Quilt alternative keeps the mixin PARTIAL -- what the live run showed. */
+	@Test
+	void switchedOffGroupsTheQuiltAlternativeKeepsItPartial() {
+		System.setProperty("forbric.mixinFit.groups", "off");
+		byte[] after = LifecycleHookInjector.forServer().transform(LifecycleHookInjector.SERVER_MAIN, serverMain(), null);
+
+		MixinFit.Result partial = MixinFit.evaluate(owoShapedMainMixin(),
+				name -> "net/minecraft/server/Main.class".equals(name) ? after : null);
+		assertEquals(MixinFit.Verdict.PARTIAL, partial.verdict());
+		assertEquals(List.of("@At(INVOKE) org.quiltmc.loader.impl.game.minecraft.Hooks.startServer in Main.main"),
+				partial.unresolved());
+	}
+
+	/**
+	 * owo-lib 0.13.1's own {@code MainMixin} and {@code MinecraftMixin}, against the real merged {@code Main} and
+	 * {@code Minecraft} as the kernel transforms them: both FIT. Before the group was read, both stayed PARTIAL on
+	 * their Quilt alternative after the Fabric call was put in -- a SUSPECTED finding on every boot.
+	 */
+	@Test
+	void owosOwnFreezeMixinsFitTheRealGameOnBothSides() throws Exception {
+		byte[] main = mergedBase("net/minecraft/server/Main.class");
+		byte[] minecraft = mergedBase("net/minecraft/client/Minecraft.class");
+		TestFixtures.require(Fixture.THIRD_PARTY, Files.isRegularFile(OWO), "sweep pack absent");
+
+		byte[] server = LifecycleHookInjector.forServer().transform(LifecycleHookInjector.SERVER_MAIN, main, null);
+		byte[] client = new ClientEntrypointHookInjector().transform("net.minecraft.client.Minecraft", minecraft, ctx());
+		try (ZipFile owo = new ZipFile(OWO.toFile())) {
+			MixinFit.Result mainMixin = MixinFit.evaluate(entry(owo, "io/wispforest/owo/mixin/MainMixin.class"),
+					name -> "net/minecraft/server/Main.class".equals(name) ? server : null);
+			assertEquals(MixinFit.Verdict.FIT, mainMixin.verdict(), mainMixin.unresolved().toString());
+			MixinFit.Result minecraftMixin = MixinFit.evaluate(entry(owo, "io/wispforest/owo/mixin/MinecraftMixin.class"),
+					name -> "net/minecraft/client/Minecraft.class".equals(name) ? client : null);
+			assertEquals(MixinFit.Verdict.FIT, minecraftMixin.verdict(), minecraftMixin.unresolved().toString());
+		}
+	}
+
+	// --- fixtures -------------------------------------------------------------------------------------------------
+
+	/** {@code main(String[])}: {@code if (args.length == 0) ServerModLoader.load(false);} — the merged base's shape. */
+	private static byte[] serverMain() {
+		ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+		cw.visit(Opcodes.V21, Opcodes.ACC_PUBLIC, "net/minecraft/server/Main", null, "java/lang/Object", null);
+		MethodVisitor mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "main", "([Ljava/lang/String;)V",
+				null, null);
+		mv.visitCode();
+		Label skip = new Label();
+		mv.visitVarInsn(Opcodes.ALOAD, 0);
+		mv.visitInsn(Opcodes.ARRAYLENGTH);
+		mv.visitJumpInsn(Opcodes.IFNE, skip);
+		mv.visitInsn(Opcodes.ICONST_0);
+		mv.visitMethodInsn(Opcodes.INVOKESTATIC, SERVER_MOD_LOADER, "load", "(Z)V", false);
+		mv.visitLabel(skip);
+		mv.visitInsn(Opcodes.RETURN);
+		mv.visitMaxs(0, 0);
+		mv.visitEnd();
+		cw.visitEnd();
+		return cw.toByteArray();
+	}
+
+	/** {@code main(String[])}: NeoForge's {@code ServerModLoader.load(false)} and then Forge's {@code load()}. */
+	private static byte[] serverMainBothForms() {
+		ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+		cw.visit(Opcodes.V21, Opcodes.ACC_PUBLIC, "net/minecraft/server/Main", null, "java/lang/Object", null);
+		MethodVisitor mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "main", "([Ljava/lang/String;)V",
+				null, null);
+		mv.visitCode();
+		Label skip = new Label();
+		mv.visitVarInsn(Opcodes.ALOAD, 0);
+		mv.visitInsn(Opcodes.ARRAYLENGTH);
+		mv.visitJumpInsn(Opcodes.IFNE, skip);
+		mv.visitInsn(Opcodes.ICONST_0);
+		mv.visitMethodInsn(Opcodes.INVOKESTATIC, SERVER_MOD_LOADER, "load", "(Z)V", false);
+		mv.visitMethodInsn(Opcodes.INVOKESTATIC, "net/minecraftforge/server/loading/ServerModLoader", "load", "()V",
+				false);
+		mv.visitLabel(skip);
+		mv.visitInsn(Opcodes.RETURN);
+		mv.visitMaxs(0, 0);
+		mv.visitEnd();
+		cw.visitEnd();
+		return cw.toByteArray();
+	}
+
+	/** {@code client.main.Main.main}: {@code ClientModLoader.begin()}. */
+	private static byte[] clientMain() {
+		ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_MAXS);
+		cw.visit(Opcodes.V21, Opcodes.ACC_PUBLIC, "net/minecraft/client/main/Main", null, "java/lang/Object", null);
+		MethodVisitor mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "main", "([Ljava/lang/String;)V",
+				null, null);
+		mv.visitCode();
+		mv.visitMethodInsn(Opcodes.INVOKESTATIC, "net/neoforged/neoforge/client/loading/ClientModLoader", "begin", "()V",
+				false);
+		mv.visitInsn(Opcodes.RETURN);
+		mv.visitMaxs(0, 0);
+		mv.visitEnd();
+		cw.visitEnd();
+		return cw.toByteArray();
+	}
+
+	/**
+	 * What the injector did before the Fabric hook existed: retarget the trigger's owner and name, write with
+	 * {@code ClassWriter(0)}. The switch must reproduce these bytes exactly.
+	 */
+	private static byte[] redirectOnly(byte[] in) {
+		ClassNode node = read(in);
+		for (MethodNode m : node.methods) {
+			for (AbstractInsnNode insn : m.instructions) {
+				if (insn instanceof MethodInsnNode call && SERVER_MOD_LOADER.equals(call.owner)) {
+					call.owner = KERNEL_LIFECYCLE;
+					call.name = "onServerModLoading";
+				}
+			}
+		}
+		ClassWriter writer = new ClassWriter(0);
+		node.accept(writer);
+		return writer.toByteArray();
+	}
+
+	/**
+	 * {@code Minecraft.<init>()}: assign the singleton and (optionally) the game directory, then
+	 * {@code this.options = new Options(this, <dir>)}.
+	 */
+	private static byte[] minecraft(boolean withGameDirectory) {
+		ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_MAXS);
+		cw.visit(Opcodes.V21, Opcodes.ACC_PUBLIC, MINECRAFT, null, "java/lang/Object", null);
+		cw.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC, "instance", "L" + MINECRAFT + ";", null, null).visitEnd();
+		if (withGameDirectory) {
+			cw.visitField(Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL, "gameDirectory", "Ljava/io/File;", null, null).visitEnd();
+		}
+		cw.visitField(Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL, "options", "L" + OPTIONS + ";", null, null).visitEnd();
+
+		MethodVisitor mv = cw.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null);
+		mv.visitCode();
+		mv.visitVarInsn(Opcodes.ALOAD, 0);
+		mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false);
+		mv.visitVarInsn(Opcodes.ALOAD, 0);
+		mv.visitFieldInsn(Opcodes.PUTSTATIC, MINECRAFT, "instance", "L" + MINECRAFT + ";");
+		if (withGameDirectory) {
+			mv.visitVarInsn(Opcodes.ALOAD, 0);
+			mv.visitTypeInsn(Opcodes.NEW, "java/io/File");
+			mv.visitInsn(Opcodes.DUP);
+			mv.visitLdcInsn(".");
+			mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/io/File", "<init>", "(Ljava/lang/String;)V", false);
+			mv.visitFieldInsn(Opcodes.PUTFIELD, MINECRAFT, "gameDirectory", "Ljava/io/File;");
+		}
+		mv.visitVarInsn(Opcodes.ALOAD, 0);
+		mv.visitTypeInsn(Opcodes.NEW, OPTIONS);
+		mv.visitInsn(Opcodes.DUP);
+		mv.visitVarInsn(Opcodes.ALOAD, 0);
+		if (withGameDirectory) {
+			mv.visitVarInsn(Opcodes.ALOAD, 0);
+			mv.visitFieldInsn(Opcodes.GETFIELD, MINECRAFT, "gameDirectory", "Ljava/io/File;");
+		} else {
+			mv.visitInsn(Opcodes.ACONST_NULL);
+		}
+		mv.visitMethodInsn(Opcodes.INVOKESPECIAL, OPTIONS, "<init>", "(L" + MINECRAFT + ";Ljava/io/File;)V", false);
+		mv.visitFieldInsn(Opcodes.PUTFIELD, MINECRAFT, "options", "L" + OPTIONS + ";");
+		mv.visitInsn(Opcodes.RETURN);
+		mv.visitMaxs(0, 0);
+		mv.visitEnd();
+		cw.visitEnd();
+		return cw.toByteArray();
+	}
+
+	/**
+	 * owo's {@code MainMixin}, as compiled: {@code afterFabricHook} and {@code afterQuiltHook}, each
+	 * {@code @Inject(method = "main", at = @At(value = "INVOKE", remap = false, target = <loader>.Hooks.startServer,
+	 * shift = AFTER))} in the one {@code @Group(name = "serverFreezeHooks", min = 1, max = 1)}.
+	 */
+	private static byte[] owoShapedMainMixin() {
+		ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_MAXS);
+		cw.visit(Opcodes.V21, Opcodes.ACC_PUBLIC, "test/MainMixin", null, "java/lang/Object", null);
+		AnnotationVisitor mixin = cw.visitAnnotation("Lorg/spongepowered/asm/mixin/Mixin;", false);
+		AnnotationVisitor targets = mixin.visitArray("targets");
+		targets.visit(null, "net/minecraft/server/Main");
+		targets.visitEnd();
+		mixin.visitEnd();
+		freezeHook(cw, "afterFabricHook", HOOKS);
+		freezeHook(cw, "afterQuiltHook", QUILT_HOOKS);
+		cw.visitEnd();
+		return cw.toByteArray();
+	}
+
+	private static void freezeHook(ClassWriter cw, String name, String hooks) {
+		MethodVisitor mv = cw.visitMethod(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC, name,
+				"(Lorg/spongepowered/asm/mixin/injection/callback/CallbackInfo;)V", null, null);
+		AnnotationVisitor inject = mv.visitAnnotation("Lorg/spongepowered/asm/mixin/injection/Inject;", true);
+		AnnotationVisitor method = inject.visitArray("method");
+		method.visit(null, "main");
+		method.visitEnd();
+		AnnotationVisitor ats = inject.visitArray("at");
+		AnnotationVisitor at = ats.visitAnnotation(null, "Lorg/spongepowered/asm/mixin/injection/At;");
+		at.visit("value", "INVOKE");
+		at.visit("remap", false);
+		at.visit("target", "L" + hooks + ";startServer" + HOOK_DESC);
+		at.visitEnum("shift", "Lorg/spongepowered/asm/mixin/injection/At$Shift;", "AFTER");
+		at.visitEnd();
+		ats.visitEnd();
+		inject.visitEnd();
+		AnnotationVisitor group = mv.visitAnnotation("Lorg/spongepowered/asm/mixin/injection/Group;", false);
+		group.visit("name", "serverFreezeHooks");
+		group.visit("min", 1);
+		group.visit("max", 1);
+		group.visitEnd();
+		mv.visitCode();
+		mv.visitInsn(Opcodes.RETURN);
+		mv.visitMaxs(0, 0);
+		mv.visitEnd();
+	}
+
+	private static TransformContext ctx() {
+		return new TransformContext(EnvType.CLIENT, false, "intermediary");
+	}
+
+	/** Defines the class alone in a throwaway loader and initialises it: linking verifies it, max stack included. */
+	private static void verify(String binaryName, byte[] bytes) throws Exception {
+		final class OneClass extends ClassLoader {
+			OneClass() {
+				super(FabricHooksCallTest.class.getClassLoader());
+			}
+
+			Class<?> define() {
+				return defineClass(binaryName, bytes, 0, bytes.length);
+			}
+		}
+		OneClass loader = new OneClass();
+		Class<?> defined = loader.define();
+		Class.forName(defined.getName(), true, loader);
+	}
+
+	private static ClassNode read(byte[] bytes) {
+		ClassNode node = new ClassNode();
+		new ClassReader(bytes).accept(node, 0);
+		return node;
+	}
+
+	private static MethodNode method(byte[] bytes, String name) {
+		for (MethodNode m : read(bytes).methods) {
+			if (m.name.equals(name)) return m;
+		}
+		throw new AssertionError("no method " + name);
+	}
+
+	/** The method's instructions without labels, line numbers and frames — the ones that execute. */
+	private static List<AbstractInsnNode> real(MethodNode m) {
+		List<AbstractInsnNode> out = new ArrayList<>();
+		for (AbstractInsnNode insn : m.instructions) {
+			if (insn.getOpcode() >= 0) out.add(insn);
+		}
+		return out;
+	}
+
+	private static int indexOfCall(List<AbstractInsnNode> code, String owner, String name) {
+		for (int i = 0; i < code.size(); i++) {
+			if (code.get(i) instanceof MethodInsnNode call && call.owner.equals(owner) && call.name.equals(name)) return i;
+		}
+		return -1;
+	}
+
+	private static int indexOfNew(List<AbstractInsnNode> code, String type) {
+		for (int i = 0; i < code.size(); i++) {
+			if (code.get(i) instanceof TypeInsnNode t && t.getOpcode() == Opcodes.NEW && t.desc.equals(type)) return i;
+		}
+		throw new AssertionError("no NEW " + type);
+	}
+
+	private static MethodInsnNode callTo(MethodNode m, String owner, String name) {
+		for (AbstractInsnNode insn : m.instructions) {
+			if (insn instanceof MethodInsnNode call && call.owner.equals(owner) && call.name.equals(name)) return call;
+		}
+		return null;
+	}
+
+	private static byte[] entry(ZipFile zip, String name) throws Exception {
+		try (InputStream in = zip.getInputStream(zip.getEntry(name))) {
+			return in.readAllBytes();
+		}
+	}
+
+	private static byte[] mergedBase(String entry) {
+		return TestFixtures.requireEntry(Fixture.STAGED, MERGED_BASE, entry);
+	}
+}
