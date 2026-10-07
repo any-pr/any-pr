@@ -298,3 +298,80 @@ final class Http {
 				lastByteAt[0] = now;
 				if (now - lastReport >= REPORT_INTERVAL_NANOS) {
 					info(PROGRESS + progressLine(name, done, total));
+					lastReport = now;
+					reported = true;
+				}
+			}
+		} finally {
+			watchdog.shutdownNow();
+		}
+
+		// Land on a finished line rather than whatever fraction the last tick happened to catch. Skipped for a
+		// download small enough that nothing was ever reported -- there is nothing to correct.
+		if (reported) info(PROGRESS + progressLine(name, done, total < 0 ? done : total));
+		return done;
+	}
+
+	private static String progressLine(String name, long done, long total) {
+		if (total > 0) {
+			long pct = Math.min(100, done * 100 / total);
+			return String.format("  %s  %3d%%  %s / %s", name, pct, human(done), human(total));
+		}
+		return "  " + name + "  " + human(done);
+	}
+
+	private static String human(long bytes) {
+		if (bytes < 1024) return bytes + " B";
+		if (bytes < 1024 * 1024) return String.format("%.0f KB", bytes / 1024.0);
+		return String.format("%.1f MB", bytes / (1024.0 * 1024.0));
+	}
+
+	/** Last path segment of a URL, for labelling progress. Falls back to the whole URL. */
+	private static String fileName(String url) {
+		int q = url.indexOf('?');
+		String path = q >= 0 ? url.substring(0, q) : url;
+		int slash = path.lastIndexOf('/');
+		String name = slash >= 0 && slash + 1 < path.length() ? path.substring(slash + 1) : path;
+		return name.isEmpty() ? url : name;
+	}
+
+	private <T> HttpResponse<T> send(HttpRequest req, HttpResponse.BodyHandler<T> handler) throws IOException {
+		try {
+			return http.send(req, handler);
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+			throw new IOException("interrupted while contacting " + req.uri(), e);
+		} catch (IOException e) {
+			throw new IOException("could not reach " + req.uri().getHost() + " — offline? Cause: " + e, e);
+		}
+	}
+
+	private static boolean isEmpty(Path p) {
+		try {
+			return !Files.isRegularFile(p) || Files.size(p) == 0;
+		} catch (IOException e) {
+			return true;
+		}
+	}
+
+	private static void move(Path src, Path dest) throws IOException {
+		try {
+			Files.move(src, dest, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+		} catch (AtomicMoveNotSupportedException e) {
+			Files.move(src, dest, StandardCopyOption.REPLACE_EXISTING);
+		}
+	}
+
+	private static void deleteQuietly(Path p) {
+		try {
+			Files.deleteIfExists(p);
+		} catch (IOException ignored) {
+			// best-effort cleanup
+		}
+	}
+
+	/** Emit a line to whoever is showing the install log, if anyone is. */
+	private void info(String line) {
+		if (log != null) log.accept(line);
+	}
+}
