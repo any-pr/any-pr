@@ -298,3 +298,111 @@ public final class NestedCandidateInventory {
 			}
 			var resolution = NestedFabricRequirements.resolve(candidates, leftOut, List.of());
 			// Only Fabric's rule is settled here: a jar it left out is excluded, one it kept back is not.
+			for (Node node : List.copyOf(nodes.values())) {
+				boolean out = resolution.leftOut().containsKey(node.path());
+				if ((out || leftOut.containsKey(node.path())) && node.excluded() != out) {
+					nodes.put(node.path(), new Node(node.path(), node.digest(), node.claim(), node.root(), out));
+				}
+			}
+			leftOut.clear();
+			leftOut.putAll(resolution.leftOut());
+			for (var entry : resolution.leftOut().entrySet()) {
+				NestedFabricRequirements.log(fabricManifest(entry.getKey()), parentName(entry.getKey(), parentsOf), entry.getValue());
+			}
+			for (var entry : resolution.keptBack().entrySet()) {
+				NestedFabricRequirements.logKeptBack(fabricManifest(entry.getKey()), parentName(entry.getKey(), parentsOf), entry.getValue());
+			}
+			return resolution.keptBack();
+		}
+
+		private Path parentName(Path child, Map<Path, List<Path>> parentsOf) {
+			Path parent = leftOutParent.get(child);
+			if (parent == null) parent = parentsOf.getOrDefault(child, List.of()).stream().findFirst().orElse(child);
+			return parent.getFileName();
+		}
+
+		private KernelModMetadata fabricManifest(Path jar) {
+			KernelModMetadata known = fabricManifests.get(jar);
+			if (known != null) return known;
+			try (ZipFile zip = new ZipFile(jar.toFile())) {
+				ZipEntry manifest = zip.getEntry("fabric.mod.json"); if (manifest == null) return null;
+				try (InputStream in = zip.getInputStream(manifest)) {
+					KernelModMetadata metadata = FabricModMetadataParser.read(in); fabricManifests.put(jar, metadata); return metadata;
+				}
+			} catch (Exception unreadable) { return null; }
+		}
+
+		/** Streams one nested entry through SHA-256; a large native bundle is never held in memory whole. */
+		private String hash(ZipFile zip, ZipEntry entry) throws IOException {
+			MessageDigest sha;
+			try { sha = MessageDigest.getInstance("SHA-256"); } catch (java.security.NoSuchAlgorithmException impossible) { throw new AssertionError(impossible); }
+			long size = 0;
+			try (InputStream in = zip.getInputStream(entry)) {
+				byte[] buffer = new byte[65536];
+				for (int n; (n = in.read(buffer)) >= 0;) {
+					if ((size += n) > ENTRY_BYTES) throw new BoundReached("nested archive exceeds the " + (ENTRY_BYTES >> 20) + " MB scan bound");
+					sha.update(buffer, 0, n);
+				}
+			}
+			if ((extractedBytes += size) > TOTAL_BYTES) throw new BoundReached("nested archives exceed the " + (TOTAL_BYTES >> 30) + " GB scan bound");
+			return HexFormat.of().formatHex(sha.digest());
+		}
+
+		private Path materialize(String hash, String entry, ZipFile zip, ZipEntry source) throws IOException {
+			String name = entry.substring(entry.lastIndexOf('/') + 1).replaceAll("[^A-Za-z0-9._+() -]", "_");
+			name = name.replaceAll("[. ]+$", "_");
+			if (name.matches("(?i)(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\\..*)?")) name = "_" + name;
+			if (name.isBlank() || name.equals(".") || name.equals("..")) name = "nested.jar";
+			Path directory = cache.resolve(hash); Files.createDirectories(directory);
+			Path target = directory.resolve(name).toAbsolutePath().normalize();
+			if (Files.isRegularFile(target) && hash.equals(digest(target))) {
+				try (ZipFile ignored = new ZipFile(target.toFile())) { }
+				return target;
+			}
+			Path temporary = Files.createTempFile(directory, ".candidate-", ".jar");
+			try {
+				try (InputStream in = zip.getInputStream(source)) { Files.copy(in, temporary, StandardCopyOption.REPLACE_EXISTING); }
+				try (ZipFile ignored = new ZipFile(temporary.toFile())) { }
+				try {
+					try { Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING); }
+					catch (AtomicMoveNotSupportedException unsupported) { Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING); }
+				} catch (IOException concurrentOrLocked) {
+					if (!Files.isRegularFile(target) || !hash.equals(digest(target))) throw concurrentOrLocked;
+				}
+				if (!hash.equals(digest(target))) throw new IOException("nested candidate changed while extracting: " + target);
+			} finally { Files.deleteIfExists(temporary); }
+			return target;
+		}
+
+		private boolean excludedBySide(Path child) {
+			if (side == null || MultiLoaderArbiter.ownerOf(child) != Ecosystem.FABRIC) return false;
+			try (ZipFile zip = new ZipFile(child.toFile())) {
+				ZipEntry manifest = zip.getEntry("fabric.mod.json"); if (manifest == null) return false;
+				try (InputStream in = zip.getInputStream(manifest)) { return !FabricModMetadataParser.read(in).getEnvironment().matches(side); }
+			} catch (Exception unreadable) { return false; }
+		}
+
+		private static boolean sameIdentityPayload(DuplicateModArbiter.Claim parent, DuplicateModArbiter.Claim child) {
+			if (parent == null || child == null || parent.ecosystem() != child.ecosystem() || child.modIds().isEmpty()) return false;
+			Set<String> parentIds = new HashSet<>(); for (String id : parent.modIds()) parentIds.add(JointCandidateSelector.key(id));
+			return child.modIds().stream().map(JointCandidateSelector::key).allMatch(parentIds::contains);
+		}
+
+		private static Map<String, Coordinate> coordinates(ZipFile zip) throws IOException {
+			ZipEntry entry = zip.getEntry("META-INF/jarjar/metadata.json"); if (entry == null) return Map.of();
+			Map<String, Coordinate> result = new LinkedHashMap<>();
+			try (Reader in = new InputStreamReader(zip.getInputStream(entry), java.nio.charset.StandardCharsets.UTF_8)) {
+				var metadata = com.electronwill.nightconfig.json.JsonFormat.fancyInstance().createParser().parse(in);
+				List<? extends com.electronwill.nightconfig.core.UnmodifiableConfig> children = metadata.getOrElse("jars", List.of());
+				for (var child : children) {
+					com.electronwill.nightconfig.core.UnmodifiableConfig id = child.get("identifier"), version = child.get("version");
+					String path = child.get("path"); if (path == null || id == null || version == null) continue;
+					String group = id.getOrElse("group", ""), artifact = id.getOrElse("artifact", "");
+					if (artifact.isBlank()) continue;
+					result.put(path, new Coordinate(group + ":" + artifact, version.getOrElse("range", "*"), version.getOrElse("artifactVersion", "")));
+				}
+			}
+			return result;
+		}
+	}
+}
