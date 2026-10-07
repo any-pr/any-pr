@@ -1,2 +1,0 @@
-submit-pr refactor smoke test
-line 2
