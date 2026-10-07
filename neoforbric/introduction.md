@@ -1198,3 +1198,86 @@ developer reaches for:
 **Mixin**
 
 | Property | Effect |
+| --- | --- |
+| `forbric.relaxGuestMixins` | `off`: guest configs are not relaxed |
+| `forbric.relaxMixinOverwrites` | csv (`*` glob) of configs to relax |
+| `forbric.mixinDiagnostics` | keep injection requirements strict to surface every misfit |
+| `forbric.mixinFit` | `strict`: also drop `PARTIAL` mixins |
+| `forbric.mixinFit.liveness` | `off`: injectors on uncalled methods count as resolved |
+| `forbric.mixinFit.nativeAbsent` | `off`: an injector target the mod's own platform lacks too counts as a missing anchor again |
+| `forbric.mixinFit.nativeAbsent.base` | `<digest>`: the merged-base members digest `native-only-methods.txt` is trusted for instead of its own (fixture games in tests) |
+| `forbric.mixinOverlapLint` | `off`: no cross-mod overlap findings at boot (§7.6) |
+| `forbric.guestMixinAdapter` | `off`: no derived drops, only the hand list |
+| `forbric.mergedBaseCompat` | `off`: drop the built-in incompatibility lists |
+| `forbric.disableMixinConfigs`, `forbric.enableMixinConfigs` | csv of configs to disable / force on |
+| `forbric.suppressMixins`, `forbric.keepMixins` | csv of `config:Mixin` to drop / keep |
+
+**Diagnostics and test drivers**
+
+| Property | Effect |
+| --- | --- |
+| `forbric.clientSmoke` (+ `clientSmokeWorld`, `clientSmokeReadyTicks`, `clientSmokeDisconnectTicks`, …) | unattended client run: enter a world, live, leave, exit |
+| `forbric.eventChainAudit` | report file for the cross-bus audit |
+| `forbric.definedClassEvidence` | directory for a content-addressed record of every defined class |
+| `forbric.traceClassDefine` | csv of binary names; log a stack the first time each is defined |
+| `forbric.tickSampler` | `off`: no server tick-time sampling |
+
+**Selected repair switches** — `forbric.commonNetworkInterop`, `forbric.playPayloadFallThrough`, `forbric.chunkExecutorGuard`,
+`forbric.forgeCapabilities`, `forbric.forgeWorldgen`, `forbric.transferBridge`, `forbric.hopperFabricStorage`,
+`forbric.clientResourcePreload`, `forbric.earlyConfigs`, `forbric.fabricHooks`, `forbric.fabricImpl`,
+`forbric.kernelBundledFirst`, `forbric.modDataPacks`, `forbric.modMenuStandIn`. `forbric.kernel.registryRedirect=true` enables an
+experimental registry-wrapper redirect.
+
+## 18. Invariants
+
+Break one and the failure usually surfaces far from the cause.
+
+1. **Boot code names no game type.** It reaches the game side by string, and every such string is in
+   `KernelRuntimeClasses`. Anything shared across the boundary is `ALWAYS_PARENT`; anything game-side is
+   `ALWAYS_GAME`. One copy of each per JVM.
+2. **`MIXIN` is terminal.** Nothing registers into it through `TransformChain`; Mixin is served pre-Mixin bytes;
+   the post-Mixin stage order is fixed.
+3. **Loader identity exists before the first class reaches the Mixin transformer.** Seeding after that point
+   lets a guest plugin's `<clinit>` decide MinecraftForge's `dist` forever.
+4. **One registration window, one freeze.** Content registration happens between `unfreeze` and
+   `closeRegistrationWindow`; the client reopens once, for its entrypoints, and re-freezes.
+5. **The lifecycle trigger is redirected or the kernel does not boot.**
+6. **Game buses start before setup phases; the payload phase closes after them.**
+7. **Arbitration decides once.** The pre-scan's plan is consumed by both discoveries; later passes verify, never
+   re-choose. Selection is bounded by work, not time.
+8. **A repair that stands down says so** — `AnchorSet`/`AnchorLedger`, `EventBridges.verify`, a WARN per switch.
+9. **Attribution never changes an outcome.** Error handlers and reports record; Mixin's decision and a mod's
+   failure are left as they were. `CompatibilityDecision` never exits the JVM; only the launch boundary does.
+10. **Nothing carrying Mojang, MinecraftForge or NeoForge bytes is committed or shipped.** The game side links
+    against staged jars `compileOnly`; the installer builds them on the player's machine.
+
+## 19. Current state and known boundaries
+
+- **Minecraft 26.2 only**, Mojmap identity namespace. There is no remapping step: a jar compiled against another
+  namespace is not translated (`kernel/mapping/` is carried over from the weld and is not on the boot path).
+- **The merged base is NeoForge's game with MinecraftForge spliced in.** Where both patched a method, one body
+  survived (1 000 method conflicts in the committed report); what the loser's mods lose is repaired case by case —
+  transformers, adapters, bridges — and what is not repaired is reported by `DeadEventAudit`,
+  `HookCallSiteCensus`, `FieldDriftAudit`, `AbiLinkAudit`, `CapabilityUseAudit`. Structural conflicts (two real
+  superclasses for `Entity`) have no bytecode-level resolution; MinecraftForge capabilities are composed back in by
+  transformer.
+- **`PARTIAL` mixins apply by default** — half-application is kept, visible, in preference to dropping working
+  hooks.
+- **One class, one copy.** When two ecosystems' builds of a mod compete, one wins; the losing ecosystem sees a
+  presence alias, not the mod's own platform glue.
+- **Measured, not promised.** `MOD_TEST_FAILURES.md` records a per-mod test (each jar alone with its required
+  dependencies, into a world, screenshot, exit) on three fresh random Modrinth sets against the current `main`
+  code: 89.0 % loaded without failure lines on average (91.8 % reached the world; 79.1 % with nothing reported
+  DEGRADED in the load report), against 80.5 % for release v0.2.0 on the same jars.
+- **Versions.** `forbric-kernel/build.gradle` says `0.1.0-SNAPSHOT`; the installer is `0.3.1-beta2`. `net.forbric.api`
+  is internal and changes without notice.
+
+## 20. Further reading
+
+- [`forbric-kernel/README.md`](forbric-kernel/README.md) — the kernel's own summary and gate notes
+- [`forbric-kernel/run/compat/PROTOCOL.md`](forbric-kernel/run/compat/PROTOCOL.md) — the compatibility sweep procedure
+- [`forbric-loader/README.md`](forbric-loader/README.md), [`forbric-loader/run/README.md`](forbric-loader/run/README.md) — the first generation and the artifact pipeline
+- [`forbric-loader/CREDITS.md`](forbric-loader/CREDITS.md), [`forbric-loader/MAPPINGS.md`](forbric-loader/MAPPINGS.md) — the clean-room boundary and mapping position
+- The class javadoc. Almost every class under `net.forbric.kernel` opens with the failure it exists for.
+
+Forbric is not affiliated with Mojang, FabricMC, MinecraftForge or NeoForged.
