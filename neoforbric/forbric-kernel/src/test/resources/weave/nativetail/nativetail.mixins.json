@@ -1,0 +1,1 @@
+{"required": true, "package": "fixture.nativetail.mixin", "compatibilityLevel": "JAVA_21", "mixins": ["IndexTypeMixin"], "injectors": {"defaultRequire": 1}}
