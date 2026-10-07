@@ -3,6 +3,7 @@
 
 pub mod kggc;
 pub mod kwsc;
+pub mod playsc;
 
 use axum::routing::get;
 use axum::Router;
@@ -11,4 +12,5 @@ pub fn router() -> Router {
     Router::new()
         .route("/kggc.php", get(kggc::get))
         .route("/kwsc.php", get(kwsc::get))
+        .route("/playsc.php", get(playsc::get))
 }
