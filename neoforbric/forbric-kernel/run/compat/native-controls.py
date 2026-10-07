@@ -298,3 +298,303 @@ def run_control(family, engine, timeout):
     if (instance / "probe.json").exists():
         copy_file(instance / "probe.json", result_dir / "probe.json")
         try:
+            proof = json.loads((result_dir / "probe.json").read_text())
+        except ValueError as failure:
+            error += str(failure)
+    inputs = before["sources"] + before["modSet"] + before["carriers"]
+    drift = [item["path"] for item in inputs if not Path(item["path"]).is_file() or sha(item["path"]) != item["sha256"]]
+    checks = {
+        "startup": bool(re.search(r"Done \(", text)), "commandSent": command_sent, "stopSent": stop_sent,
+        "cleanExit": process.returncode == 0, "noTimeout": not timed_out, "noInputDrift": not drift,
+        "freshProof": bool(proof and proof.get("token") == token and proof.get("family") == family),
+        "lifecycle": bool(proof and proof.get("initialized") == proof.get("started") == proof.get("commandRegistrations") == 1 and proof.get("ticks", 0) >= 20),
+        "worldActions": bool(proof and proof.get("pass") is True and proof.get("actions") == proof.get("expectedActions") == 3 and proof.get("seed") == SEED and proof.get("observedBlock") == f"nativecontrol{family}:probe"),
+        "passMarker": f"[NativeControl] PASS family={family}" in text,
+        "noFailMarker": "[NativeControl] FAIL" not in text,
+    }
+    result = {"schemaVersion": 1, "engine": engine, "family": family, "loaderVersion": VERSIONS[family], "minecraft": "26.2",
+              "pass": all(checks.values()) and not error, "checks": checks, "exitCode": process.returncode,
+              "timedOut": timed_out, "error": error, "inputDrift": drift, "seconds": round(time.monotonic() - started_at, 3),
+              "proof": proof, "inputs": record(result_dir / "inputs.json"), "log": record(log), "instance": str(instance)}
+    write_json(result_dir / "result.json", result)
+    print(json.dumps({"family": family, "engine": engine, "pass": result["pass"], "checks": checks, "result": str(result_dir / "result.json")}, indent=2))
+    return result["pass"]
+
+
+def compare(paths):
+    native, forbric = [json.loads(Path(p).read_text()) for p in paths]
+    if native["engine"] != "native" or forbric["engine"] != "forbric" or native["family"] != forbric["family"]:
+        raise RuntimeError("compare requires a native and Forbric result from the same ecology")
+    inputs = [json.loads(Path(result["inputs"]["path"]).read_text()) for result in (native, forbric)]
+    mods = [{Path(item["path"]).name: item["sha256"] for item in arm["modSet"]} for arm in inputs]
+    same = mods[0] == mods[1] and inputs[0]["seed"] == inputs[1]["seed"] and inputs[0]["actions"] == inputs[1]["actions"]
+    verdict = "INPUT_MISMATCH" if not same else ("MATCHED_PASS" if native["pass"] and forbric["pass"] else "FORBRIC_FAILURE" if native["pass"] else "NATIVE_FAILURE_INCONCLUSIVE")
+    print(json.dumps({"family": native["family"], "verdict": verdict, "native": native["checks"], "forbric": forbric["checks"], "sameModHashesSeedActions": same}, indent=2))
+    return verdict == "MATCHED_PASS"
+
+
+# --- mod sets: the same jars on a native loader and on Forbric, server side -----------------------------------------
+
+DONE, CRASH, FAILED_TO_START, STALL = "DONE", "CRASH", "FAILED_TO_START", "STALL"
+SERVER_OUTCOMES = (DONE, CRASH, FAILED_TO_START, STALL)
+# control-diff.sh's Done-detection and its two start failures, so the two tools cannot disagree about a log.
+_DONE = re.compile(r"Done \(")
+_START_FAILED = re.compile(r'Failed to start the minecraft server|Exception in thread "main"|\[Forbric/Compatibility\] launch stopped')
+# What ends a running server: its crash report, the run loop's catch, an exception escaping the server or main thread,
+# a failed stop, the JVM's own fatal error. A mod that logs a caught exception and keeps ticking is not a crash, and
+# neither is a worker thread dying (counted as evidence, not as an outcome).
+_CRASHED = re.compile(r'---- Minecraft Crash Report ----|Encountered an unexpected exception|Exception in thread "(?:Server thread|main)"'
+                      r'|Exception stopping the server|A fatal error has been detected by the Java Runtime Environment')
+_OTHER_THREAD = re.compile(r'Exception in thread "(?!Server thread"|main")[^"]*"')
+# 26.2 answers "The game time is 2 tick(s)"; earlier versions "The time is 2".
+_GAMETIME = re.compile(r"The (?:game )?time is (\d+)")
+_STOP_ACK = "Stopping the server"
+
+
+def server_outcome(log, ticks=0, exit_code=None):
+    """DONE, CRASH, FAILED_TO_START or STALL for one server session's console.
+
+    exit_code is the status of a process that ended on its own, None when the runner had to kill it (a timeout, or
+    a JVM a non-daemon thread kept alive after the server had stopped). ticks > 0 also requires that many game
+    ticks between the first and last `time query gametime` answers after Done.
+    """
+    done = _DONE.search(log)
+    if not done:
+        ended = exit_code is not None or _START_FAILED.search(log) or _CRASHED.search(log)
+        return FAILED_TO_START if ended else STALL
+    after = log[done.end():]
+    if _CRASHED.search(after):
+        return CRASH
+    times = [int(value) for value in _GAMETIME.findall(after)]
+    reached = ticks <= 0 or (times and max(times) - times[0] >= ticks)
+    if exit_code is not None and (_STOP_ACK not in after or not reached):
+        # The JVM went away by itself before this runner's stop finished the session.
+        return CRASH if exit_code != 0 or not reached else DONE
+    return DONE if reached and _STOP_ACK in after else STALL
+
+
+def other_thread_failures(log):
+    """Uncaught exceptions of threads other than the server and main threads: evidence only."""
+    return sorted(set(_OTHER_THREAD.findall(log)))
+
+
+def mod_set(paths):
+    """Name, size and SHA-256 of each jar, and one SHA-256 over the sorted jar digests: the set's identity by bytes."""
+    rows = sorted(({"name": Path(p).name, "bytes": Path(p).stat().st_size, "sha256": sha(p)} for p in paths), key=lambda r: r["name"])
+    digest = hashlib.sha256("\n".join(sorted(r["sha256"] for r in rows)).encode()).hexdigest()
+    return rows, digest
+
+
+def _raise_interrupt(signum, frame):
+    raise KeyboardInterrupt(f"signal {signum}")
+
+
+def free_port():
+    import socket
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def kernel_jar():
+    """Build this checkout's kernel jar the way launch-kernel-server.sh does, and return it."""
+    build = subprocess.run([str(KERNEL / "gradlew"), "--offline", "-q", "-p", str(KERNEL), "jar"], capture_output=True, text=True)
+    if build.returncode:
+        raise RuntimeError("kernel jar build failed: " + build.stdout[-2000:] + build.stderr[-2000:])
+    found = sorted((KERNEL / "build/libs").glob("forbric-kernel-*.jar"))
+    if not found:
+        raise RuntimeError("kernel jar build produced no jar")
+    return found[0]
+
+
+SET_EVIDENCE = ["crash-reports/*.txt", "hs_err_pid*.log", ".forbric-kernel/compatibility-report.json", ".forbric-kernel/load-report.txt",
+                ".forbric-kernel/crash-analysis.txt", ".forbric-kernel/merge-report.txt", "forbric-mods.txt"]
+
+
+def run_set(engine, family, mods, ticks=200, timeout=900, xmx="3G", level_type="minecraft:normal", policy="strict", keep=False):
+    """One fresh server with exactly these jars; returns the result dict also written to results/<run>/result.json."""
+    mods = [Path(m).resolve() for m in mods]
+    missing = [str(m) for m in mods if not m.is_file()]
+    if missing:
+        raise RuntimeError("missing mod jars: " + ", ".join(missing))
+    if len({m.name for m in mods}) != len(mods):
+        raise RuntimeError("two mod jars share a file name")
+    run_id = f"{time.strftime('%Y%m%d-%H%M%S')}-set-{engine}-{family}-{uuid.uuid4().hex[:8]}"
+    instance, result_dir = BASE / "instances" / run_id, BASE / "results" / run_id
+    instance.mkdir(parents=True); result_dir.mkdir(parents=True)
+    (instance / ".native-control-owned").write_text(run_id + "\n")
+    for mod in mods:
+        copy_file(mod, instance / "mods" / mod.name)
+    rows, digest = mod_set(instance / "mods" / m.name for m in mods)
+    if digest != mod_set(mods)[1]:
+        raise RuntimeError("copied mod set differs from its source")
+    (instance / "eula.txt").write_text("eula=true\n")
+    port = free_port()
+    (instance / "server.properties").write_text(f"server-ip=127.0.0.1\nserver-port={port}\nonline-mode=false\nlevel-name=world\nlevel-seed={SEED}\n"
+                                                f"level-type={level_type.replace(':', chr(92) + ':')}\nmax-tick-time=-1\nview-distance=3\n"
+                                                "simulation-distance=3\npause-when-empty-seconds=0\nspawn-protection=0\nsync-chunk-writes=false\n")
+    java_args = ["-Xms256M", f"-Xmx{xmx}", "-Djava.awt.headless=true"]
+    env = os.environ.copy()
+    if engine == "native":
+        image = BASE / "native" / family
+        if not (image / "installation.json").is_file():
+            raise RuntimeError(f"prepare --family {family} before running a native set")
+        for rel in ("libraries", ".fabric/server"):
+            if (image / rel).exists():
+                shutil.copytree(image / rel, instance / rel)
+        for path in image.glob("*.jar"):
+            copy_file(path, instance / path.name)
+        if family != "fabric":
+            for path in sorted((image / "libraries").rglob("unix_args.txt")):
+                copy_file(path, instance / path.relative_to(image))
+        command = native_command(family, image, java_args)
+        identity = {"loader": VERSIONS[family], "launcher": {k: v for k, v in record(instance / FABRIC_LAUNCHER).items() if k != "path"}
+                    if family == "fabric" else json.loads((image / "installation.json").read_text()).get("installer")}
+        watched = []
+    else:
+        jar = kernel_jar()
+        command = [str(KERNEL / "run/launch-kernel-server.sh")]
+        env["RUNDIR"] = str(instance)
+        env["FORBRIC_OLD"] = str(ORIGINAL / "forbric-loader")
+        # A dedicated server has no window to ask on, so the product default (ask) refuses exactly like strict.
+        env["FORBRIC_COMPAT_POLICY"] = policy
+        env["FORBRIC_JVM"] = " ".join(java_args) + " " + env.get("FORBRIC_JVM", "")
+        old = ORIGINAL / "forbric-loader/run"
+        carriers = {"merged": Path(env.get("MERGED", old / "merged-base/patched-mc-merged-26.2.jar")),
+                    "forgeRuntime": Path(env.get("FORGE_RT", old / "merged-base/forge-runtime-interop.jar")),
+                    "neoRuntime": Path(env.get("NEO_RT", old / "neoforge-runtime/neoforge-runtime.jar"))}
+        identity = {"kernel": {"name": jar.name, "bytes": jar.stat().st_size, "sha256": sha(jar)},
+                    "carriers": {k: {"name": v.name, "sha256": sha(v)} for k, v in carriers.items()}, "policy": policy}
+        watched = [jar]
+    inputs = {"engine": engine, "family": family, "modSet": rows, "modSetSha256": digest, "identity": identity, "ticks": ticks,
+              "seed": SEED, "levelType": level_type, "xmx": xmx, "command": command, "instance": str(instance),
+              "java": subprocess.check_output(["java", "-version"], stderr=subprocess.STDOUT, text=True).strip()}
+    write_json(result_dir / "inputs.json", inputs)
+    log = result_dir / "server.log"
+    # The server runs in its own session so it can be killed as a group; a runner stopped by SIGTERM (a timeout
+    # wrapper, a driver's cancel) must take it along instead of orphaning a JVM that keeps ticking.
+    import threading
+    previous = signal.signal(signal.SIGTERM, _raise_interrupt) if threading.current_thread() is threading.main_thread() else None
+    started = time.monotonic(); stop_sent = timed_out = killed = lingered = False
+    done_at = failed_at = crash_at = None; last_query = 0.0
+    with log.open("w") as output:
+        process = subprocess.Popen(command, cwd=instance, env=env, stdin=subprocess.PIPE, stdout=output, stderr=subprocess.STDOUT,
+                                   text=True, start_new_session=True)
+
+        def send(line):
+            try:
+                process.stdin.write(line + "\n"); process.stdin.flush()
+            except (BrokenPipeError, ValueError, OSError):
+                pass
+        try:
+            while process.poll() is None:
+                now = time.monotonic()
+                text = log.read_text(errors="replace")
+                done = _DONE.search(text)
+                if done and done_at is None:
+                    done_at = now
+                if not done and _START_FAILED.search(text) and failed_at is None:
+                    failed_at = now
+                if done and _CRASHED.search(text[done.end():]) and crash_at is None:
+                    crash_at = now
+                if (failed_at and now - failed_at > 20) or (crash_at and now - crash_at > 30):
+                    terminate_owned(process); killed = True; break
+                if done and not stop_sent and not crash_at:
+                    times = [int(v) for v in _GAMETIME.findall(text[done.end():])]
+                    if times and max(times) - times[0] >= ticks:
+                        send("save-all flush"); send("stop"); stop_sent = now
+                    elif now - last_query >= 2:
+                        send("time query gametime"); last_query = now
+                if stop_sent and now - stop_sent > 90:
+                    # The server stopped (or not) but the JVM stays: a non-daemon thread outlived it.
+                    lingered = _STOP_ACK in text[done.end():] if done else False
+                    terminate_owned(process); killed = True; break
+                if now - started > timeout:
+                    timed_out = True
+                    send("stop")
+                    try:
+                        process.wait(30)
+                    except subprocess.TimeoutExpired:
+                        terminate_owned(process); killed = True
+                    break
+                time.sleep(0.5)
+        except BaseException:
+            terminate_owned(process); killed = True
+            raise
+        finally:
+            try:
+                process.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
+            process.wait()
+            if previous is not None:
+                signal.signal(signal.SIGTERM, previous)
+    text = log.read_text(errors="replace")
+    exit_code = None if killed or timed_out else process.returncode
+    outcome = server_outcome(text, ticks, exit_code)
+    for pattern in SET_EVIDENCE:
+        for path in sorted(instance.glob(pattern)):
+            copy_file(path, result_dir / path.relative_to(instance))
+    drift = [m.name for m in mods if sha(instance / "mods" / m.name) != next(r["sha256"] for r in rows if r["name"] == m.name)]
+    drift += [p.name for p in watched if sha(p) != identity["kernel"]["sha256"]]
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "mac"))
+    import ddmin_core
+    crash_texts = [p.read_text(errors="replace") for p in sorted((result_dir / "crash-reports").glob("*.txt"))]
+    report = result_dir / ".forbric-kernel/compatibility-report.json"
+    signature = None if outcome == DONE else ddmin_core.signature(text, crash_texts[0] if crash_texts else "",
+                                                                    report.read_text() if report.is_file() else "", process.returncode)
+    done = _DONE.search(text)
+    times = [int(v) for v in _GAMETIME.findall(text[done.end():])] if done else []
+    result = {"schemaVersion": 1, "engine": engine, "family": family, "outcome": outcome, "signature": signature,
+              "exitCode": process.returncode, "exitedOnItsOwn": exit_code is not None, "timedOut": timed_out,
+              "lingeredAfterStop": lingered, "seconds": round(time.monotonic() - started, 1),
+              "secondsToDone": round(done_at - started, 1) if done_at else None,
+              "ticksRequested": ticks, "gametime": [times[0], max(times)] if times else None,
+              "otherThreadFailures": other_thread_failures(text), "crashReports": len(crash_texts), "inputDrift": drift,
+              "modSetSha256": digest, "jars": len(rows), "identity": identity, "inputs": str(result_dir / "inputs.json"),
+              "log": str(log), "result": str(result_dir / "result.json")}
+    write_json(result_dir / "result.json", result)
+    if not keep and outcome == DONE:
+        shutil.rmtree(instance, ignore_errors=True)
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="action", required=True)
+    prepare = sub.add_parser("prepare"); prepare.add_argument("--family", choices=["all", *VERSIONS], default="all")
+    sub.add_parser("build")
+    run = sub.add_parser("run"); run.add_argument("--engine", choices=["native", "forbric"], default="native"); run.add_argument("--family", choices=["all", *VERSIONS], default="all"); run.add_argument("--timeout", type=int, default=300)
+    diff = sub.add_parser("compare"); diff.add_argument("results", nargs=2)
+    run_set_parser = sub.add_parser("run-set", help="one fresh server with exactly the given jars")
+    run_set_parser.add_argument("--engine", choices=["native", "forbric"], required=True)
+    run_set_parser.add_argument("--family", choices=["fabric"], default="fabric")
+    run_set_parser.add_argument("--mods", nargs="+", required=True)
+    run_set_parser.add_argument("--ticks", type=int, default=200)
+    run_set_parser.add_argument("--timeout", type=int, default=900)
+    run_set_parser.add_argument("--xmx", default="3G")
+    run_set_parser.add_argument("--level-type", default="minecraft:normal")
+    run_set_parser.add_argument("--keep", action="store_true", help="keep the instance directory")
+    run_set_parser.add_argument("--policy", choices=["strict", "continue", "ask"], default="strict",
+                                help="Forbric arm only: -Dforbric.compatibilityPolicy (continue shows what a refused launch would do)")
+    args = parser.parse_args(); BASE.mkdir(parents=True, exist_ok=True)
+    if args.action == "prepare":
+        for family in VERSIONS if args.family == "all" else [args.family]:
+            install(family)
+    elif args.action == "build":
+        compile_canaries()
+    elif args.action == "run":
+        # Evaluate every declared arm even if the first fails. No scope reduction turns a failed set green.
+        outcomes = []
+        for family in VERSIONS:
+            if args.family != "all" and family != args.family:
+                continue
+            try:
+                outcomes.append(run_control(family, args.engine, args.timeout))
+            except Exception as failure:
+                failed = BASE / "results" / f"{time.strftime('%Y%m%d-%H%M%S')}-{args.engine}-{family}-infrastructure-{uuid.uuid4().hex[:8]}.json"
+                write_json(failed, {"schemaVersion": 1, "engine": args.engine, "family": family, "pass": False,
+                                   "error": repr(failure), "startup": False, "actions": 0,
+                                   "expectedActions": 3, "sources": sources()})
+                print(f"{family} infrastructure failure, retained {failed}: {failure}", file=sys.stderr)
+                outcomes.append(False)
