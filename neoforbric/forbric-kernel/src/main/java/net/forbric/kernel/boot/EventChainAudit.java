@@ -298,3 +298,4 @@ public final class EventChainAudit {
 		}
 		return out.append('"').toString();
 	}
+}
