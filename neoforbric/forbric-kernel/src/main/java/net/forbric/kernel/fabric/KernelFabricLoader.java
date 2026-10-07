@@ -298,3 +298,303 @@ public final class KernelFabricLoader implements FabricLoader {
 		fabricStorageSeededBy = this;
 	}
 
+	/**
+	 * Takes back what mods did to Fabric Loader's entrypoint storage: every key's entrypoints become exactly what the
+	 * storage lists, IN THE STORAGE'S ORDER. An entry a mod added becomes an entrypoint of the mod it names, built by
+	 * the adapter it was given; one it removed is gone; nothing is re-sorted.
+	 *
+	 * <p>Not re-sorting is the point. Core Lib appends its {@code RegistryEntryPoints} to the END of {@code main},
+	 * because that entrypoint flushes the registrations every SuperMartijn642 mod queued in its own
+	 * {@code onInitialize}. Sorting it back into mod order would put it at Core Lib's own place, ahead of every one of
+	 * those mods whose id sorts after {@code supermartijn642corelib}, and each of them would then throw "Cannot
+	 * register new entries after mod initialization!" from its own {@code onInitialize}.
+	 *
+	 * <p>A no-op until a mod has reached for the storage, and under {@code -Dforbric.fabricImpl=off}. Called after
+	 * {@code preLaunch} and again before the {@code main}, {@code server} and {@code client} phases. An entry added
+	 * under a key whose phase has already run is reported: it never runs, as on Fabric.
+	 *
+	 * @param alreadyRan the entrypoint keys whose phase has run
+	 * @return the entries this call adopted, as {@code key:modId->definition}
+	 */
+	public synchronized List<String> adoptFabricStorage(Set<String> alreadyRan) {
+		if (!FabricLoaderInternals.enabled()) return List.of();
+
+		Map<String, List<EntrypointStorage.Entry>> storage = new LinkedHashMap<>();
+		synchronized (FABRIC_ENTRY_MAP) {
+			if (fabricStorageSeededBy != this) return List.of();
+			for (Map.Entry<String, List<EntrypointStorage.Entry>> key : FABRIC_ENTRY_MAP.entrySet()) {
+				if (key.getKey() != null && key.getValue() != null) {
+					storage.put(key.getKey(), new ArrayList<>(key.getValue()));
+				}
+			}
+		}
+
+		Map<EntrypointStorage.Entry, Entrypoint> known = new IdentityHashMap<>();
+		for (List<Entrypoint> entries : entrypointsByKey.values()) {
+			for (Entrypoint entry : entries) known.put(entry.storageEntry(), entry);
+		}
+
+		Map<String, List<Entrypoint>> rebuilt = new LinkedHashMap<>();
+		List<String> adopted = new ArrayList<>();
+		Map<String, Map<String, Integer>> addedByMod = new LinkedHashMap<>();
+		Map<String, Set<String>> definitionsByMod = new LinkedHashMap<>();
+
+		for (Map.Entry<String, List<EntrypointStorage.Entry>> key : storage.entrySet()) {
+			List<Entrypoint> entries = new ArrayList<>(key.getValue().size());
+			for (EntrypointStorage.Entry stored : key.getValue()) {
+				if (stored == null) continue;
+				Entrypoint entry = known.get(stored);
+				if (entry == null) {
+					entry = adopt(key.getKey(), stored);
+					if (entry == null) continue;
+					known.put(stored, entry);
+					String id = entry.provider().getMetadata().getId();
+					adopted.add(key.getKey() + ":" + id + "->" + entry.definition());
+					addedByMod.computeIfAbsent(id, k -> new LinkedHashMap<>()).merge(key.getKey(), 1, Integer::sum);
+					definitionsByMod.computeIfAbsent(id, k -> new LinkedHashSet<>()).add(entry.definition());
+					if (alreadyRan.contains(key.getKey())) {
+						ForbricLog.warn("[Forbric/Fabric] %s added a '%s' entrypoint (%s) through Fabric Loader's "
+								+ "internal EntrypointStorage after that phase ran — it will not run, as on Fabric",
+								id, key.getKey(), entry.definition());
+					}
+				}
+				entries.add(entry);
+			}
+			rebuilt.put(key.getKey(), entries);
+		}
+
+		if (sameEntrypoints(rebuilt)) return adopted;
+
+		int removed = 0;
+		for (Map.Entry<String, List<Entrypoint>> key : entrypointsByKey.entrySet()) {
+			List<Entrypoint> now = rebuilt.getOrDefault(key.getKey(), List.of());
+			for (Entrypoint entry : key.getValue()) {
+				if (!containsIdentity(now, entry)) removed++;
+			}
+		}
+		// In place rather than clear-and-refill, so a concurrent reader never sees the index empty: a key the storage
+		// kept is re-pointed (not a structural change), a dropped key goes, a new one is appended.
+		entrypointsByKey.keySet().retainAll(rebuilt.keySet());
+		entrypointsByKey.putAll(rebuilt);
+
+		addedByMod.forEach((id, keys) -> {
+			StringBuilder counts = new StringBuilder();
+			keys.forEach((k, n) -> counts.append(counts.length() == 0 ? "" : " + ").append(n).append(' ').append(k));
+			ForbricLog.info("[Forbric/Fabric] %s added %s entrypoint(s) through Fabric Loader's internal "
+					+ "EntrypointStorage (%s) — they run where it put them, after every declared one, as on Fabric "
+					+ "(-D%s=off to go back)", id, counts, String.join(", ", definitionsByMod.get(id)),
+					FabricLoaderInternals.SWITCH);
+		});
+		if (removed > 0) {
+			ForbricLog.info("[Forbric/Fabric] %d entrypoint(s) were removed through Fabric Loader's internal "
+					+ "EntrypointStorage — honoured, as on Fabric", removed);
+		}
+		if (adopted.isEmpty() && removed == 0) {
+			ForbricLog.info("[Forbric/Fabric] entrypoints were reordered through Fabric Loader's internal "
+					+ "EntrypointStorage — the new order is kept, as on Fabric");
+		}
+		return adopted;
+	}
+
+	/** The kernel entrypoint for an entry a mod put in the storage itself, or null if it names no mod known here. */
+	private Entrypoint adopt(String key, EntrypointStorage.Entry stored) {
+		ModContainerImpl mod;
+		try {
+			mod = stored.getModContainer();
+		} catch (Throwable unreadable) {
+			mod = null;
+		}
+		if (!(mod instanceof KernelModContainer provider)) {
+			ForbricLog.warn("[Forbric/Fabric] an entry added to '%s' through Fabric Loader's internal EntrypointStorage "
+					+ "(%s) names no mod this loader knows — skipped", key, String.valueOf(stored));
+			return null;
+		}
+		return new Entrypoint(key, provider, stored);
+	}
+
+	private boolean sameEntrypoints(Map<String, List<Entrypoint>> rebuilt) {
+		if (!rebuilt.keySet().equals(entrypointsByKey.keySet())) return false;
+		for (Map.Entry<String, List<Entrypoint>> key : rebuilt.entrySet()) {
+			List<Entrypoint> current = entrypointsByKey.get(key.getKey());
+			if (current.size() != key.getValue().size()) return false;
+			for (int i = 0; i < current.size(); i++) {
+				if (current.get(i) != key.getValue().get(i)) return false;
+			}
+		}
+		return true;
+	}
+
+	private static boolean containsIdentity(List<Entrypoint> entries, Entrypoint wanted) {
+		for (Entrypoint entry : entries) {
+			if (entry == wanted) return true;
+		}
+		return false;
+	}
+
+	/** Forgets the process-wide instance and the storage it filled — for tests. */
+	static void resetForTests() {
+		synchronized (KernelFabricLoader.class) {
+			instance = null;
+		}
+		synchronized (FABRIC_ENTRY_MAP) {
+			FABRIC_ENTRY_MAP.clear();
+			fabricStorageSeededBy = null;
+		}
+	}
+
+	/** Whether any mod declared an entrypoint under {@code key} (cheap pre-check for the kernel's own drivers). */
+	public boolean hasEntrypoints(String key) {
+		List<Entrypoint> entries = entrypointsByKey.get(key);
+		return entries != null && !entries.isEmpty();
+	}
+
+	/**
+	 * What each mod DECLARED under {@code key}, as {@code modId -> declared value}, without constructing anything.
+	 *
+	 * <p>{@link #getEntrypointContainers} cannot answer this. Its containers expose only the constructed instance
+	 * and the providing mod, and the thing a cross-ecosystem consumer needs is the class NAME as written: Sodium's
+	 * NeoForge config loader takes a {@code String} and does its own {@code Class.forName}, type check and
+	 * construction, with its own three warning paths for each failure. Handing it an instance the kernel built
+	 * would take those over and answer for a class Sodium never accepted.
+	 *
+	 * <p>Ordered by declaration, one entry per declaring mod; a mod declaring several under one key keeps only its
+	 * first, which is what every consumer of a "which class handles this" key expects.
+	 */
+	public Map<String, String> declaredEntrypoints(String key) {
+		List<Entrypoint> entries = entrypointsByKey.get(key);
+		if (entries == null || entries.isEmpty()) return Map.of();
+
+		Map<String, String> declared = new LinkedHashMap<>();
+		for (Entrypoint entry : entries) {
+			String modId = entry.provider() == null ? null : entry.provider().getMetadata().getId();
+			String value = entry.definition();
+			if (modId == null || value == null || value.isBlank()) continue;
+			declared.putIfAbsent(modId, value);
+		}
+		return declared;
+	}
+
+	@Override
+	public <T> List<T> getEntrypoints(String key, Class<T> type) {
+		List<T> out = new ArrayList<>();
+
+		for (EntrypointContainer<T> container : getEntrypointContainers(key, type)) {
+			out.add(container.getEntrypoint());
+		}
+
+		return out;
+	}
+
+	@Override
+	public <T> List<EntrypointContainer<T>> getEntrypointContainers(String key, Class<T> type) {
+		List<Entrypoint> entries = entrypointsByKey.get(key);
+		if (entries == null) return List.of();
+
+		List<EntrypointContainer<T>> out = new ArrayList<>(entries.size());
+
+		for (Entrypoint entry : entries) {
+			// Type-filter before construction: a mod may register several entrypoint types under one key (Fabric's
+			// own `main` key carries only ModInitializer, but custom keys are routinely polymorphic).
+			if (!entry.provides(type)) continue;
+
+			out.add(new TypedContainer<>(entry, type));
+		}
+
+		return out;
+	}
+
+	@Override
+	public <T> void invokeEntrypoints(String key, Class<T> type, Consumer<? super T> invoker) {
+		RuntimeException failure = null;
+
+		for (EntrypointContainer<T> container : getEntrypointContainers(key, type)) {
+			try {
+				invoker.accept(container.getEntrypoint());
+			} catch (Throwable t) {
+				// Contract: run every entrypoint, then report. One bad mod must not silently skip the rest.
+				if (failure == null) {
+					failure = new RuntimeException("failed to invoke entrypoint '" + key + "'", t);
+				} else {
+					failure.addSuppressed(t);
+				}
+			}
+		}
+
+		if (failure != null) throw failure;
+	}
+
+	@Override
+	public ObjectShare getObjectShare() {
+		return objectShare;
+	}
+
+	@Override
+	public MappingResolver getMappingResolver() {
+		return mappingResolver;
+	}
+
+	@Override
+	public Optional<ModContainer> getModContainer(String id) {
+		return Optional.ofNullable(modsById.get(id));
+	}
+
+	@Override
+	public Collection<ModContainer> getAllMods() {
+		return Collections.unmodifiableList(mods);
+	}
+
+	@Override
+	public boolean isModLoaded(String id) {
+		return modsById.containsKey(id);
+	}
+
+	@Override
+	public boolean isDevelopmentEnvironment() {
+		return false;
+	}
+
+	@Override
+	public EnvType getEnvironmentType() {
+		return envType;
+	}
+
+	@Override
+	public String getRawGameVersion() {
+		return rawGameVersion;
+	}
+
+	@Override
+	@Deprecated
+	public Object getGameInstance() {
+		return gameInstance;
+	}
+
+	@Override
+	public Path getGameDir() {
+		return gameDir;
+	}
+
+	@Override
+	@Deprecated
+	public File getGameDirectory() {
+		return gameDir.toFile();
+	}
+
+	@Override
+	public Path getConfigDir() {
+		return configDir;
+	}
+
+	@Override
+	@Deprecated
+	public File getConfigDirectory() {
+		return configDir.toFile();
+	}
+
+	@Override
+	public String[] getLaunchArguments(boolean sanitize) {
+		return sanitize ? sanitized(launchArguments) : launchArguments.clone();
+	}
+
+	/**
+	 * The launch arguments with the player's credentials removed.
