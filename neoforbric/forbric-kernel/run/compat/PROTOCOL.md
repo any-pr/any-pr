@@ -598,3 +598,29 @@ disposable instance, with the strict compatibility policy and short limits.
   `config:Entry` (the rest into `-Dforbric.suppressMixins`). Configs are read as each loader declares them
   (`fabric.mod.json` `mixins`, `[[mixins]]` in either `mods.toml`, a manifest's `MixinConfigs`), in nested jars too;
   a server-only config or a config's `server` list is left out. With every config off first: a failure that survives
+  that needs none of them, and the result says so. `--narrow` owns those two properties; passing either in `--jvm`
+  is refused.
+
+`<out>/ddmin/ddmin-result.json` has the overall `status` (`MINIMISED`, `PASSED`, `BUDGET` or `NOT_REPRODUCED`;
+exit 0 for the first two), the kernel, manifest and closure SHA-256, the settings, launches and cache hits, and per
+round the reference, the seeds, every session with its verdict and signature (and winner differences), and
+`minimal` (the candidates) with `closed` (what to install to see the failure).
+
+Known answer, for the owner to run on the Mac (it needs the installed profile; nothing in CI or the tool tests
+launches a game): the 2026-10-01 sweep100 mixed pack (`reports/2026-10-01-sweep100/mixed-manifest.json`, 88
+subjects, 109 jars, with that sweep's data directory, whose `closure.json` is the one committed beside it) must
+reduce to `minimal` = {`chloride-NEOFORGE-mc26.2-v1.8.1.jar`, `cwb-4.1.0+26.2.jar`} and `closed` = those plus
+`sodium-neoforge-0.9.2+mc26.2.jar`, the pair Sodium refuses with `Multiple overrides for option
+'sodium:general.fullscreen_mode'! Sources: chloride and cwb`:
+
+    PERMOD_DATA=build/sweep100-mac-network PERMOD_MC=<isolated root> FORBRIC_VERSION=<profile> \
+      FORBRIC_JAVA=<java 25> python3 run/compat/mac/ddmin.py \
+      --manifest run/compat/reports/2026-10-01-sweep100/mixed-manifest.json --out build/sweep100-ddmin
+
+Against the fake game below that takes four launches with seeds (the pack, the seed pair with Sodium, each of the
+pair alone with its closure) and 30 with `--no-seeds`. On the game the count also depends on which jars the
+reference's evidence seeds (a subject whose row is not OK is seeded too). Both mods are in every configuration that
+FAILs, since only a session with both loaded can carry a signature that names both. It has not been run on the game
+yet.
+`mac/test_ddmin_driver.py` runs exactly this pack and closure, plus the cache, kernel refusal, arbitration, budget,
+`--iterate`, `--narrow` and command-line wiring, against a fake game behind `mixed.run` (no game files).
