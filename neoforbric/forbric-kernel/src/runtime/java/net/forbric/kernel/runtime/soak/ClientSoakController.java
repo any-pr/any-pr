@@ -298,3 +298,30 @@ public final class ClientSoakController {
 		}
 	}
 	private List<Map<String, Object>> weakEvidence() {
+		long now = System.nanoTime(); List<Map<String, Object>> result = new ArrayList<>();
+		for (Retired entry : retired) { IntegratedServer server = entry.reference().get(); result.add(fields("server", entry.serial(), "ageNanos", now - entry.at(), "alive", server != null, "stopped", server == null || server.isStopped())); }
+		return result;
+	}
+	private synchronized void write(String type, Map<String, Object> values) throws IOException {
+		Map<String, Object> event = fields("type", type, "nonce", nonce, "pid", ProcessHandle.current().pid(), "sequence", ++sequence,
+				"utc", Instant.now().toString(), "nano", System.nanoTime(), "elapsedNanos", System.nanoTime() - started);
+		event.putAll(values);
+		event.put("heapUsed", ManagementFactory.getMemoryMXBean().getHeapMemoryUsage().getUsed());
+		event.put("heapCommitted", ManagementFactory.getMemoryMXBean().getHeapMemoryUsage().getCommitted());
+		event.put("threads", ManagementFactory.getThreadMXBean().getThreadCount());
+		event.put("gcCollections", ManagementFactory.getGarbageCollectorMXBeans().stream().mapToLong(bean -> Math.max(0, bean.getCollectionCount())).sum());
+		event.put("oldServers", weakEvidence());
+		Files.writeString(output.resolve("telemetry.jsonl"), SoakJson.encode(event) + "\n", StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+	}
+	private void dumpThreads(String name) throws IOException {
+		StringBuilder text = new StringBuilder();
+		for (var entry : Thread.getAllStackTraces().entrySet()) { text.append(entry.getKey().getName()).append(" state=").append(entry.getKey().getState()).append('\n'); for (StackTraceElement frame : entry.getValue()) text.append("  ").append(frame).append('\n'); }
+		Files.writeString(output.resolve("threads-" + name + ".txt"), text, StandardCharsets.UTF_8);
+	}
+	private void owner(Path marker) throws IOException { if (!Files.readString(marker).strip().equals(nonce)) throw new IllegalStateException("ownership marker mismatch: " + marker); }
+	private static String required(String key) { String value = System.getProperty(key); if (value == null || value.isBlank()) throw new IllegalArgumentException("missing " + key); return value; }
+	private static long number(String key, long defaultValue) { return Long.parseLong(System.getProperty("forbric.soak." + key, Long.toString(defaultValue))); }
+	private static List<Boolean> booleans(boolean[] values) { List<Boolean> list = new ArrayList<>(); for (boolean value : values) list.add(value); return list; }
+	private static List<Long> longs(long[] values) { List<Long> list = new ArrayList<>(); for (long value : values) list.add(value); return list; }
+	private static Map<String, Object> fields(Object... values) { Map<String, Object> map = new LinkedHashMap<>(); for (int i = 0; i < values.length; i += 2) map.put((String) values[i], values[i + 1]); return map; }
+}
