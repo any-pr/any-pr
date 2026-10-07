@@ -298,3 +298,194 @@ def proxy_m3u8(url):
 
 
 # ---------------------------------------------------------------- HTTP 服务
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
+    server_version = 'MgTvApi/1.0'
+
+    def log_message(self, fmt, *args):
+        sys.stderr.write('[%s] %s\n' % (time.strftime('%H:%M:%S'), fmt % args))
+
+    # ----- helpers -------------------------------------------------------
+
+    def send_json(self, obj, status=200):
+        body = json.dumps(obj, ensure_ascii=False, indent=2).encode('utf-8')
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def send_redir(self, location):
+        self.send_response(302)
+        self.send_header('Location', location)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Content-Length', '0')
+        self.end_headers()
+
+    def query(self):
+        qs = urllib.parse.urlparse(self.path).query
+        return {k: v[0] for k, v in urllib.parse.parse_qs(qs).items()}
+
+    # ----- routes --------------------------------------------------------
+
+    def do_GET(self):
+        try:
+            path = urllib.parse.urlparse(self.path).path
+            if path == '/parse':
+                return self.route_parse()
+            if path == '/play':
+                return self.route_play()
+            if path in ('/proxy',) or path.startswith('/proxy/'):
+                return self.route_proxy()
+            if path == '/episodes':
+                return self.route_episodes()
+            if path in ('/', '/index.html', ''):
+                return self.route_index()
+            self.send_json({'error': f'未知路径 {path}'}, 404)
+        except ApiError as e:
+            self.send_json({'error': str(e)}, e.status)
+        except urllib.error.HTTPError as e:
+            try:
+                detail = e.read()[:200].decode('utf-8', 'replace')
+            except Exception:
+                detail = ''
+            self.send_json({'error': f'上游 HTTP {e.code}', 'detail': detail}, 502)
+        except Exception as e:
+            self.send_json({'error': f'{type(e).__name__}: {e}'}, 500)
+
+    def route_parse(self):
+        q = self.query()
+        backend = (q.get('backend') or 'local').lower()
+        if backend in ('telecom', 'external'):
+            video_id, cid = parse_target(q.get('url'))
+            if not video_id:
+                video_id = first_episode_of(cid)
+            if not cid:
+                # telecom 需要真实的 title(collection_id);缺失时从本地链路补
+                info, _ = fetch_streams(video_id)
+                cid = info.get('collection_id') or ''
+            hdcn = q.get('hdcn') or os.environ.get('MGTV_HDCN', '')
+            result = resolve_streams_telecom(video_id, cid, hdcn=hdcn, qua=q.get('qua'))
+            result['backend'] = 'telecom'
+            self.send_json(result)
+            return
+        result = resolve_streams(q.get('url'), q.get('def'))
+        result['backend'] = 'local'
+        self.send_json(result)
+
+    def route_play(self):
+        q = self.query()
+        backend = (q.get('backend') or 'local').lower()
+        if backend in ('telecom', 'external'):
+            video_id, cid = parse_target(q.get('url'))
+            if not video_id:
+                video_id = first_episode_of(cid)
+            if not cid:
+                info, _ = fetch_streams(video_id)
+                cid = info.get('collection_id') or ''
+            hdcn = q.get('hdcn') or os.environ.get('MGTV_HDCN', '')
+            result = resolve_streams_telecom(video_id, cid, hdcn=hdcn, qua=q.get('qua'))
+        else:
+            result = resolve_streams(q.get('url'), q.get('def'))
+        sel = result.get('selected')
+        if not sel:
+            raise ApiError('无可播放流(该视频全部画质都需要会员)', 403)
+        self.send_redir(sel['m3u8'])
+
+    def route_proxy(self):
+        u = self.query().get('u')
+        if not u:
+            raise ApiError('缺少 u 参数')
+        if u.split('?')[0].endswith('.m3u8') or 'm3u8' in urllib.parse.urlparse(u).path:
+            body = proxy_m3u8(u)
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/vnd.apple.mpegurl')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        # ts / 其他媒体分片:流式转发,透传 Range
+        fwd = {'User-Agent': UA, 'Referer': 'https://www.mgtv.com/'}
+        if 'Range' in self.headers:
+            fwd['Range'] = self.headers['Range']
+        resp = http_get(u, headers=fwd, timeout=30)
+        status = resp.status
+        self.send_response(status if status != 206 or 'Range' in self.headers else 200)
+        for h in ('Content-Type', 'Content-Length', 'Content-Range', 'Accept-Ranges'):
+            if resp.headers.get(h):
+                self.send_header(h, resp.headers[h])
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.end_headers()
+        while True:
+            chunk = resp.read(64 * 1024)
+            if not chunk:
+                break
+            self.wfile.write(chunk)
+
+    def route_episodes(self):
+        q = self.query()
+        cid = q.get('cid')
+        if not cid or not cid.isdigit():
+            raise ApiError('缺少 cid(collection_id)参数')
+        page, size = q.get('page', '1'), q.get('size', '50')
+        r = http_get_json(f'{EPISODE_URL}?collection_id={cid}&page={page}&size={size}')
+        if r.get('code') != 200:
+            raise ApiError(f'episode/list 返回 {r.get("code")}: {r.get("msg")}', 502)
+        d = r.get('data') or {}
+        eps = [{
+            'video_id': e.get('video_id'),
+            'title': e.get('t2'),
+            'subtitle': e.get('t3'),
+            'isvip': e.get('isvip') == '1',
+            'duration': e.get('t4'),
+            'image': e.get('img'),
+            'page_url': 'https://www.mgtv.com' + e.get('url', ''),
+        } for e in d.get('list') or []]
+        self.send_json({'collection_id': cid, 'total': d.get('total'),
+                        'total_page': d.get('total_page'), 'episodes': eps})
+
+    def route_index(self):
+        html = '''<!doctype html><meta charset="utf-8">
+<title>芒果TV取流接口</title><body style="font-family:system-ui;max-width:760px;margin:40px auto;line-height:1.7">
+<h2>芒果TV取流接口(免Cookie)</h2>
+<ul>
+<li><code>GET /parse?url=&lt;链接或video_id&gt;&amp;def=3</code> — 解析,返回各清晰度 m3u8(默认自动选超清)</li>
+<li><code>GET /play?url=&lt;...&gt;</code> — 302 直跳 m3u8,可直接投给 PotPlayer/VLC/ffmpeg</li>
+<li><code>GET /proxy/seg.m3u8?u=&lt;urlencode(m3u8)&gt;</code> — 代理播放(自动带 Referer,hls.js 可直连)</li>
+<li><code>GET /episodes?cid=&lt;collection_id&gt;</code> — 剧集列表</li>
+<li><code>&amp;backend=telecom</code> — 改用第三方公开接口;<code>&amp;hdcn=凭据</code> 解锁其会员画质(或环境变量 MGTV_HDCN)</li>
+</ul>
+<p>示例:<a href="/parse?url=https://www.mgtv.com/b/335313/12281642.html">/parse?url=https://www.mgtv.com/b/335313/12281642.html</a></p>
+<p style="color:#888">免登录返回游客权限流:免费内容全片,VIP内容为试看片段。仅供学习研究。</p>
+</body>'''
+        body = html.encode('utf-8')
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def main():
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    ap = argparse.ArgumentParser(description='芒果TV取流接口(免Cookie)')
+    ap.add_argument('--port', type=int, default=8899)
+    ap.add_argument('--host', default='0.0.0.0')
+    args = ap.parse_args()
+
+    srv = ThreadingHTTPServer((args.host, args.port), Handler)
+    print(f'芒果TV取流接口已启动: http://127.0.0.1:{args.port}/  (Ctrl+C 退出)')
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        print('\n已停止')
+
+
+if __name__ == '__main__':
+    main()
