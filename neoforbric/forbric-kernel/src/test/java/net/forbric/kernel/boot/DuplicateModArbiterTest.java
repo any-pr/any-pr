@@ -298,3 +298,138 @@ class DuplicateModArbiterTest {
 
 		// The off switch is checked in the scanning entry point, which is what a boot calls.
 		Decision d = DuplicateModArbiter.arbitrate(Path.of("/nonexistent/mods"), null);
+
+		assertTrue(d.suppressedJars().isEmpty());
+	}
+
+	@Test
+	void aDedicatedDupePreferenceOverridesTheSharedOne() {
+		// The two arbitrations answer different questions and must be separable: the shared knob still governs
+		// per-jar multiloader ownership while cross-jar ties resolve the other way. Merging the two real packs is
+		// exactly this case — Fabric wins duplicate ids, but the NeoForge pack's universal jars stay NeoForge.
+		System.setProperty("forbric.multiLoaderPreference", "neoforge,minecraftforge,fabric");
+		System.setProperty("forbric.dupeIdPreference", "fabric,neoforge,minecraftforge");
+
+		Decision d = DuplicateModArbiter.arbitrate(List.of(
+				claim("/mods/sodium-fabric.jar", Ecosystem.FABRIC, "sodium"),
+				claim("/mods/sodium-neoforge.jar", Ecosystem.NEOFORGE, "sodium")));
+
+		assertTrue(d.suppressed(Path.of("/mods/sodium-neoforge.jar")), "the dedicated knob must win");
+	}
+
+	@Test
+	void theDupePreferenceFallsBackToTheSharedOneWhenUnset() {
+		System.setProperty("forbric.multiLoaderPreference", "fabric,neoforge,minecraftforge");
+
+		Decision d = DuplicateModArbiter.arbitrate(List.of(
+				claim("/mods/sodium-fabric.jar", Ecosystem.FABRIC, "sodium"),
+				claim("/mods/sodium-neoforge.jar", Ecosystem.NEOFORGE, "sodium")));
+
+		assertTrue(d.suppressed(Path.of("/mods/sodium-neoforge.jar")));
+	}
+
+	@Test
+	void theLosingEcosystemGetsAPresenceAlias() {
+		// The A/B/C case: C ships a Fabric jar and a NeoForge jar, A is Fabric-only and B is NeoForge-only, both
+		// depend on C. Only one C jar survives — but the two builds are 98–100% the same classes, so B still links.
+		// What B loses is C's IDENTITY on its side, and that is what the alias restores.
+		System.setProperty("forbric.dupeIdPreference", "fabric,neoforge,minecraftforge");
+
+		Decision d = DuplicateModArbiter.arbitrate(List.of(
+				new Claim(Path.of("/mods/c-fabric.jar"), Ecosystem.FABRIC, List.of("c"), Map.of("c", "1.2.3")),
+				new Claim(Path.of("/mods/c-neoforge.jar"), Ecosystem.NEOFORGE, List.of("c"), Map.of("c", "1.2.3"))));
+
+		assertEquals(1, d.aliases().size());
+		assertEquals(new DuplicateModArbiter.Alias("c", Ecosystem.NEOFORGE, "1.2.3"), d.aliases().get(0));
+		assertEquals(1, d.aliasesFor(Ecosystem.NEOFORGE).size());
+		assertTrue(d.aliasesFor(Ecosystem.FABRIC).isEmpty(), "the winning side needs no alias");
+	}
+
+	@Test
+	void anAliasCarriesTheWinnersVersionNotTheLosers() {
+		// A dependency range is checked against whatever the alias reports, so it must describe the jar actually
+		// present — reporting the suppressed jar's version would answer for code that is not there.
+		System.setProperty("forbric.dupeIdPreference", "fabric,neoforge,minecraftforge");
+
+		Decision d = DuplicateModArbiter.arbitrate(List.of(
+				new Claim(Path.of("/mods/c-fabric.jar"), Ecosystem.FABRIC, List.of("c"), Map.of("c", "2.0.0")),
+				new Claim(Path.of("/mods/c-neoforge.jar"), Ecosystem.NEOFORGE, List.of("c"), Map.of("c", "1.0.0"))));
+
+		assertEquals("2.0.0", d.aliases().get(0).version());
+	}
+
+	@Test
+	void aContestAliasesTheLosingEcosystem() {
+		System.setProperty("forbric.dupeIdPreference", "neoforge,fabric");
+
+		Decision d = DuplicateModArbiter.arbitrate(List.of(
+				claim("/mods/x-fabric.jar", Ecosystem.FABRIC, "x"),
+				claim("/mods/x-neoforge.jar", Ecosystem.NEOFORGE, "x")));
+
+		assertEquals(1, d.aliases().size());
+		assertEquals(1, d.aliasesFor(Ecosystem.FABRIC).size());
+	}
+
+	@Test
+	void aSameEcosystemTieNeedsNoAlias() {
+		// Both jars are NeoForge, so nothing lost its identity — the surviving jar already provides it.
+		Decision d = DuplicateModArbiter.arbitrate(List.of(
+				claim("/mods/architectury-21.0.2.jar", Ecosystem.NEOFORGE, "architectury"),
+				claim("/mods/architectury-21.0.6.jar", Ecosystem.NEOFORGE, "architectury")));
+
+		assertTrue(d.aliases().isEmpty());
+	}
+
+	@Test
+	void aMissingModsDirectoryIsNotAnError() {
+		Decision d = DuplicateModArbiter.arbitrate(Path.of("/nonexistent/mods"), null);
+
+		assertTrue(d.suppressedJars().isEmpty());
+		assertFalse(d.suppressed(Path.of("/nonexistent/mods/anything.jar")));
+	}
+
+	// ---------------------------------------------------------------- universal jars
+
+	@Test
+	void aUniversalJarHandsItsLosingIdentityBackEvenWithNoDuplicatesAtAll() {
+		// The common case: nothing is contested, so the cross-jar pass has nothing to say — but the file still
+		// declared two loaders and is loaded as one, and the other side has to be able to answer isModLoaded.
+		Decision decision = DuplicateModArbiter.arbitrate(
+				List.of(new Claim(Path.of("iris-neoforge.jar"), Ecosystem.NEOFORGE, List.of("iris"))),
+				List.of(new DuplicateModArbiter.Alias("iris", Ecosystem.FABRIC, "1.11.2")));
+
+		assertTrue(decision.suppressedJars().isEmpty(), "a universal jar is never suppressed — it is one file");
+		assertEquals(List.of("iris"), aliasIds(decision, Ecosystem.FABRIC));
+	}
+
+	@Test
+	void aUniversalJarsAliasUsesTheLosingManifestsOwnId() {
+		// JourneyMap declares journeymap to NeoForge and journeymap-wrongloader to Fabric, the latter a deliberate
+		// marker so stock Fabric ignores the file. Aliasing the WINNER's id into Fabric would answer a question
+		// nobody asked and leave the real one unanswered.
+		Decision decision = DuplicateModArbiter.arbitrate(
+				List.of(new Claim(Path.of("journeymap-neoforge.jar"), Ecosystem.NEOFORGE, List.of("journeymap"))),
+				List.of(new DuplicateModArbiter.Alias("journeymap-wrongloader", Ecosystem.FABRIC, "6.0.1")));
+
+		assertEquals(List.of("journeymap-wrongloader"), aliasIds(decision, Ecosystem.FABRIC));
+	}
+
+	@Test
+	void universalAliasesSurviveAlongsideCrossJarOnes() {
+		Decision decision = DuplicateModArbiter.arbitrate(
+				List.of(new Claim(Path.of("sodium-fabric.jar"), Ecosystem.FABRIC, List.of("sodium")),
+						new Claim(Path.of("sodium-neoforge.jar"), Ecosystem.NEOFORGE, List.of("sodium"))),
+				List.of(new DuplicateModArbiter.Alias("iris", Ecosystem.FABRIC, "1.11.2")));
+
+		// Two aliases in total: iris from the universal jar, and sodium handed back to whichever side lost it.
+		assertEquals(2, decision.aliases().size());
+		assertTrue(aliasIds(decision, Ecosystem.FABRIC).contains("iris"),
+				"the universal alias must not be lost when a cross-jar duplicate also exists");
+		assertEquals(1, aliasIds(decision, Ecosystem.FABRIC).size() + aliasIds(decision, Ecosystem.NEOFORGE).size()
+				- 1, "exactly one side loses sodium");
+	}
+
+	private static List<String> aliasIds(Decision decision, Ecosystem ecosystem) {
+		return decision.aliasesFor(ecosystem).stream().map(DuplicateModArbiter.Alias::modId).sorted().toList();
+	}
+}
