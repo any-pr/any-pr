@@ -1,0 +1,300 @@
+[
+ {
+  "kind": "popular",
+  "slug": "forgiving-void",
+  "project_id": "1vkzEZjE",
+  "loader": "fabric",
+  "version": "26.2.0.2+fabric-26.2",
+  "version_id": "rGLo1kRe",
+  "version_type": "release",
+  "loaders": [
+   "fabric"
+  ],
+  "filename": "forgivingvoid-fabric-26.2-26.2.0.2.jar",
+  "source_filename": "forgivingvoid-fabric-26.2-26.2.0.2.jar",
+  "url": "https://cdn.modrinth.com/data/1vkzEZjE/versions/rGLo1kRe/forgivingvoid-fabric-26.2-26.2.0.2.jar",
+  "size": 175173,
+  "sha1": "0365c5d62ea2bbc9c1a6bbb5c0f22d0fb1918f66",
+  "needed_by": "",
+  "sha1_ok": true
+ },
+ {
+  "kind": "popular",
+  "slug": "stoneworks",
+  "project_id": "FzyTKtVF",
+  "loader": "fabric",
+  "version": "26.2.0",
+  "version_id": "c9YWwjPp",
+  "version_type": "release",
+  "loaders": [
+   "fabric"
+  ],
+  "filename": "Stoneworks-v26.2.0-mc26.2.x-Fabric.jar",
+  "source_filename": "Stoneworks-v26.2.0-mc26.2.x-Fabric.jar",
+  "url": "https://cdn.modrinth.com/data/FzyTKtVF/versions/c9YWwjPp/Stoneworks-v26.2.0-mc26.2.x-Fabric.jar",
+  "size": 2398861,
+  "sha1": "35ce35ddc61aa2da86f527101a5f2dbbda3a1dd0",
+  "needed_by": "",
+  "sha1_ok": true
+ },
+ {
+  "kind": "popular",
+  "slug": "azurelib",
+  "project_id": "7zlUOZvb",
+  "loader": "fabric",
+  "version": "4.0.0",
+  "version_id": "fIjnqpJe",
+  "version_type": "release",
+  "loaders": [
+   "fabric"
+  ],
+  "filename": "azurelib-fabric-26.2-4.0.0.jar",
+  "source_filename": "azurelib-fabric-26.2-4.0.0.jar",
+  "url": "https://cdn.modrinth.com/data/7zlUOZvb/versions/fIjnqpJe/azurelib-fabric-26.2-4.0.0.jar",
+  "size": 780453,
+  "sha1": "ae271ac6268121027d5ba14fa96bb6f7abe5b5af",
+  "needed_by": "",
+  "sha1_ok": true
+ },
+ {
+  "kind": "popular",
+  "slug": "lithostitched",
+  "project_id": "XaDC71GB",
+  "loader": "fabric",
+  "version": "1.8.0-fabric-26.2",
+  "version_id": "sGGUpIGT",
+  "version_type": "release",
+  "loaders": [
+   "fabric"
+  ],
+  "filename": "lithostitched-1.8.0-fabric-26.2.jar",
+  "source_filename": "lithostitched-1.8.0-fabric-26.2.jar",
+  "url": "https://cdn.modrinth.com/data/XaDC71GB/versions/sGGUpIGT/lithostitched-1.8.0-fabric-26.2.jar",
+  "size": 1022295,
+  "sha1": "9de54ca37ead8701e533a1b6ae17c529a5322d0b",
+  "needed_by": "",
+  "sha1_ok": true
+ },
+ {
+  "kind": "popular",
+  "slug": "packet-fixer",
+  "project_id": "c7m1mi73",
+  "loader": "fabric",
+  "version": "3.3.6",
+  "version_id": "V1pYl7hL",
+  "version_type": "release",
+  "loaders": [
+   "fabric",
+   "quilt"
+  ],
+  "filename": "PacketFixer-fabric-3.3.6.jar",
+  "source_filename": "PacketFixer-fabric-3.3.6.jar",
+  "url": "https://cdn.modrinth.com/data/c7m1mi73/versions/V1pYl7hL/PacketFixer-fabric-3.3.6.jar",
+  "size": 31156,
+  "sha1": "f127ee3839b315d496ea605fe9e427325f0745e8",
+  "needed_by": "",
+  "sha1_ok": true
+ },
+ {
+  "kind": "popular",
+  "slug": "enchanting-infuser",
+  "project_id": "ePv85y52",
+  "loader": "fabric",
+  "version": "26.2.0",
+  "version_id": "C0FU8WvB",
+  "version_type": "release",
+  "loaders": [
+   "fabric"
+  ],
+  "filename": "EnchantingInfuser-v26.2.0-mc26.2.x-Fabric.jar",
+  "source_filename": "EnchantingInfuser-v26.2.0-mc26.2.x-Fabric.jar",
+  "url": "https://cdn.modrinth.com/data/ePv85y52/versions/C0FU8WvB/EnchantingInfuser-v26.2.0-mc26.2.x-Fabric.jar",
+  "size": 188076,
+  "sha1": "6d92062e46357bfb36fc17b131d58fba915bd6a9",
+  "needed_by": "",
+  "sha1_ok": true
+ },
+ {
+  "kind": "popular",
+  "slug": "travelersbackpack",
+  "project_id": "rlloIFEV",
+  "loader": "fabric",
+  "version": "26.2-11.3.3",
+  "version_id": "I6Fg8UrJ",
+  "version_type": "release",
+  "loaders": [
+   "fabric"
+  ],
+  "filename": "travelersbackpack-fabric-26.2-11.3.3.jar",
+  "source_filename": "travelersbackpack-fabric-26.2-11.3.3.jar",
+  "url": "https://cdn.modrinth.com/data/rlloIFEV/versions/I6Fg8UrJ/travelersbackpack-fabric-26.2-11.3.3.jar",
+  "size": 1515465,
+  "sha1": "52cf9b206d0a4237c1a17d7381360f5adba66d48",
+  "needed_by": "",
+  "sha1_ok": true
+ },
+ {
+  "kind": "popular",
+  "slug": "sound-physics-remastered",
+  "project_id": "qyVF9oeo",
+  "loader": "fabric",
+  "version": "fabric-1.5.1+26.2",
+  "version_id": "d8iioMMp",
+  "version_type": "beta",
+  "loaders": [
+   "fabric",
+   "quilt"
+  ],
+  "filename": "sound-physics-remastered-fabric-1.5.1+26.2.jar",
+  "source_filename": "sound-physics-remastered-fabric-1.5.1+26.2.jar",
+  "url": "https://cdn.modrinth.com/data/qyVF9oeo/versions/d8iioMMp/sound-physics-remastered-fabric-1.5.1%2B26.2.jar",
+  "size": 201669,
+  "sha1": "63657ef05768d2a7a102549bc8ef5f5fc04e2fc4",
+  "needed_by": "",
+  "sha1_ok": true
+ },
+ {
+  "kind": "popular",
+  "slug": "cobweb",
+  "project_id": "dQcfqGbl",
+  "loader": "fabric",
+  "version": "1.4.0",
+  "version_id": "IPHT5hIY",
+  "version_type": "release",
+  "loaders": [
+   "fabric"
+  ],
+  "filename": "cobweb-fabric-26.2-1.4.0.jar",
+  "source_filename": "cobweb-fabric-26.2-1.4.0.jar",
+  "url": "https://cdn.modrinth.com/data/dQcfqGbl/versions/IPHT5hIY/cobweb-fabric-26.2-1.4.0.jar",
+  "size": 75998,
+  "sha1": "3adfa22711c830e3937bfd63e1fd4536ee8bd50d",
+  "needed_by": "",
+  "sha1_ok": true
+ },
+ {
+  "kind": "popular",
+  "slug": "waystones",
+  "project_id": "LOpKHB2A",
+  "loader": "fabric",
+  "version": "26.2.0.12+fabric-26.2",
+  "version_id": "HUacBshD",
+  "version_type": "release",
+  "loaders": [
+   "fabric"
+  ],
+  "filename": "waystones-fabric-26.2-26.2.0.12.jar",
+  "source_filename": "waystones-fabric-26.2-26.2.0.12.jar",
+  "url": "https://cdn.modrinth.com/data/LOpKHB2A/versions/HUacBshD/waystones-fabric-26.2-26.2.0.12.jar",
+  "size": 1220789,
+  "sha1": "17bca5a638585cbcb4888745902829278edcae2e",
+  "needed_by": "",
+  "sha1_ok": true
+ },
+ {
+  "kind": "popular",
+  "slug": "supermartijn642s-config-lib",
+  "project_id": "LN9BxssP",
+  "loader": "fabric",
+  "version": "1.1.8a-fabric-mc26.2",
+  "version_id": "iInTTGso",
+  "version_type": "release",
+  "loaders": [
+   "fabric",
+   "quilt"
+  ],
+  "filename": "supermartijn642configlib-1.1.8a-fabric-mc26.2.jar",
+  "source_filename": "supermartijn642configlib-1.1.8a-fabric-mc26.2.jar",
+  "url": "https://cdn.modrinth.com/data/LN9BxssP/versions/iInTTGso/supermartijn642configlib-1.1.8a-fabric-mc26.2.jar",
+  "size": 206152,
+  "sha1": "32c0220d9f22d16615f350cdfbb8cdffd19ca5aa",
+  "needed_by": "",
+  "sha1_ok": true
+ },
+ {
+  "kind": "popular",
+  "slug": "midnightlib",
+  "project_id": "codAaoxh",
+  "loader": "fabric",
+  "version": "1.9.3+26.2-fabric",
+  "version_id": "3uBvRFE9",
+  "version_type": "release",
+  "loaders": [
+   "fabric",
+   "quilt"
+  ],
+  "filename": "midnightlib-fabric-1.9.3+26.2.jar",
+  "source_filename": "midnightlib-fabric-1.9.3+26.2.jar",
+  "url": "https://cdn.modrinth.com/data/codAaoxh/versions/3uBvRFE9/midnightlib-fabric-1.9.3%2B26.2.jar",
+  "size": 60027,
+  "sha1": "150ef19c168ef022b554b4c05bc0fdac13fcb2c3",
+  "needed_by": "",
+  "sha1_ok": true
+ },
+ {
+  "kind": "popular",
+  "slug": "notenoughcrashes",
+  "project_id": "yM94ont6",
+  "loader": "fabric",
+  "version": "4.4.9+26.2-fabric",
+  "version_id": "3oHxOFPT",
+  "version_type": "release",
+  "loaders": [
+   "fabric",
+   "quilt"
+  ],
+  "filename": "notenoughcrashes-fabric-4.4.9+26.2.jar",
+  "source_filename": "notenoughcrashes-fabric-4.4.9+26.2.jar",
+  "url": "https://cdn.modrinth.com/data/yM94ont6/versions/3oHxOFPT/notenoughcrashes-fabric-4.4.9%2B26.2.jar",
+  "size": 605655,
+  "sha1": "18cdf7a4a325f943113c84a2ae37f743b6db3445",
+  "needed_by": "",
+  "sha1_ok": true
+ },
+ {
+  "kind": "popular",
+  "slug": "animal_feeding_trough",
+  "project_id": "bRFWnJ87",
+  "loader": "fabric",
+  "version": "1.2.1+26.2",
+  "version_id": "HIUVmKsY",
+  "version_type": "release",
+  "loaders": [
+   "fabric"
+  ],
+  "filename": "animal_feeding_trough-1.2.1+26.2.jar",
+  "source_filename": "animal_feeding_trough-1.2.1+26.2.jar",
+  "url": "https://cdn.modrinth.com/data/bRFWnJ87/versions/HIUVmKsY/animal_feeding_trough-1.2.1%2B26.2.jar",
+  "size": 274232,
+  "sha1": "726a59744768847c05000c98486b4cc74e672bc9",
+  "needed_by": "",
+  "sha1_ok": true
+ },
+ {
+  "kind": "popular",
+  "slug": "lmd",
+  "project_id": "vE2FN5qn",
+  "loader": "fabric",
+  "version": "1.26.9.1",
+  "version_id": "UgYCue3W",
+  "version_type": "release",
+  "loaders": [
+   "fabric",
+   "quilt"
+  ],
+  "filename": "letmedespawn-fabric-26.2-1.26.9.1.jar",
+  "source_filename": "letmedespawn-fabric-26.2-1.26.9.1.jar",
+  "url": "https://cdn.modrinth.com/data/vE2FN5qn/versions/UgYCue3W/letmedespawn-fabric-26.2-1.26.9.1.jar",
+  "size": 23791,
+  "sha1": "6f870c19e1da924330766e053214bfd398653353",
+  "needed_by": "",
+  "sha1_ok": true
+ },
+ {
+  "kind": "popular",
+  "slug": "tree-harvester",
+  "project_id": "abooMhox",
+  "loader": "fabric",
+  "version": "26.2.0-9.5-fabric+forge+neo",
+  "version_id": "7BmBWXgo",
+  "version_type": "release",
