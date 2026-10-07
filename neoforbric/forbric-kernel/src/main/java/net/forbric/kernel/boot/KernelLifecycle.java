@@ -298,3 +298,303 @@ public final class KernelLifecycle {
 		// handlers live in a Dist.CLIENT @EventBusSubscriber that step 2c2 rightly skips on a server.
 		if (side.isClient()) invokeNetworkSetup(cl,
 				"net.neoforged.neoforge.client.network.registration.ClientNetworkRegistry");
+	}
+
+	/** Runs a NeoForge {@code *NetworkRegistry.setup()} — it posts its Register*PayloadHandlersEvent via ModLoader. */
+	private static void invokeNetworkSetup(ClassLoader cl, String registryClass) {
+		try {
+			Class<?> registry = Class.forName(registryClass, false, cl);
+			registry.getMethod("setup").invoke(null);
+			ForbricLog.info("[Forbric/Lifecycle] %s.setup() — payload handlers registered%s",
+					registryClass.substring(registryClass.lastIndexOf('.') + 1), describePayloadRegistrations(registry));
+		} catch (Throwable t) {
+			ForbricLog.warn("[Forbric/Lifecycle] " + registryClass + ".setup() failed — NeoForge payloads incomplete "
+					+ "(join may fail 'No Handler for …')", unwrap(t));
+		}
+	}
+
+	/**
+	 * "; N payload type(s) registered {CONFIGURATION=a, PLAY=b}, NeoForge's own included: yes/no" — or "" when the
+	 * class has no {@code PAYLOAD_REGISTRATIONS} (the client registry). Logged with the setup line because the one
+	 * thing that line used to certify — "payload handlers registered" — was false for two months on every dedicated
+	 * server the kernel ever booted: {@code setup()} had run, and had registered nothing of NeoForge's, because the
+	 * event it posts fans out over {@code ModList} and the baseline container was not in it (see
+	 * {@link #publishModBusDelivery}). Zero gates saw it, since singleplayer never encodes a packet. A count that
+	 * says {@code PLAY=10, NeoForge's own included: no} would have.
+	 */
+	private static String describePayloadRegistrations(Class<?> registry) {
+		try {
+			java.lang.reflect.Field f = registry.getDeclaredField("PAYLOAD_REGISTRATIONS");
+			f.setAccessible(true);
+			java.util.Map<?, ?> byProtocol = (java.util.Map<?, ?>) f.get(null);
+			java.util.Map<String, Integer> counts = new java.util.TreeMap<>();
+			boolean natives = false;
+			int total = 0;
+			for (java.util.Map.Entry<?, ?> e : byProtocol.entrySet()) {
+				java.util.Map<?, ?> ids = (java.util.Map<?, ?>) e.getValue();
+				counts.put(String.valueOf(e.getKey()), ids.size());
+				total += ids.size();
+				for (Object id : ids.keySet()) {
+					if (String.valueOf(id).startsWith("neoforge:")) natives = true;
+				}
+				// The registered half of the channel census. Recorded here because this is the one walk over
+				// PAYLOAD_REGISTRATIONS anywhere, and a second one would be a second thing to keep in step.
+				net.forbric.kernel.interop.NetworkChannelCensus.registered(
+						net.forbric.api.Ecosystem.NEOFORGE, ids.keySet());
+			}
+			return "; " + total + " payload type(s) registered " + counts + ", NeoForge's own included: "
+					+ (natives ? "yes" : "NO");
+		} catch (NoSuchFieldException clientRegistry) {
+			return "";
+		} catch (Throwable t) {
+			return "; (could not read PAYLOAD_REGISTRATIONS: " + t + ")";
+		}
+	}
+
+	/**
+	 * Marks NeoForge's {@code VANILLA_SYNC_REGISTRIES} (item/block/fluid/recipe_serializer/…) as client-syncing via
+	 * {@code BaseMappedRegistry.setSync(true)}, so the play-phase registry-ID codecs
+	 * ({@code ByteBufCodecs.getSyncableRegistryOrThrow}) accept them instead of throwing "non-synced built-in
+	 * registry". Best-effort; a failure only degrades registry-ID sync (logged, not fatal).
+	 */
+	private static void markVanillaRegistriesSynced(ClassLoader cl) {
+		try {
+			Class<?> setupCls = Class.forName("net.neoforged.neoforge.registries.NeoForgeRegistriesSetup", false, cl);
+			java.lang.reflect.Field f = setupCls.getDeclaredField("VANILLA_SYNC_REGISTRIES");
+			f.setAccessible(true);
+			java.util.Set<?> regs = (java.util.Set<?>) f.get(null);
+			Class<?> baseMapped = Class.forName("net.neoforged.neoforge.registries.BaseMappedRegistry", false, cl);
+			java.lang.reflect.Method setSync = baseMapped.getDeclaredMethod("setSync", boolean.class);
+			setSync.setAccessible(true);
+			int n = 0;
+			for (Object reg : regs) {
+				if (baseMapped.isInstance(reg)) {
+					setSync.invoke(reg, true);
+					n++;
+				}
+			}
+			ForbricLog.info("[Forbric/Lifecycle] marked %d vanilla registr(ies) client-syncing (doesSync=true)", n);
+		} catch (Throwable t) {
+			ForbricLog.warn("[Forbric/Lifecycle] could not mark vanilla registries synced (registry-ID sync may fail)",
+					unwrap(t));
+		}
+	}
+
+	/**
+	 * Loads NeoForge's STARTUP/COMMON (and, on the client, CLIENT) config specs — registered by the baselines and by
+	 * the mods constructed just before this — from the config dir, so {@code ModConfigSpec.ConfigValue.get()} reads
+	 * work later in the lifecycle. Loading a spec is also what posts {@code ModConfigEvent.Loading}, which is how a
+	 * config framework layered on NeoForge (Balm, for one) learns that a mod's config now has values; skip it and
+	 * such a mod reads null forever.
+	 *
+	 * <p>SERVER is deliberately absent: it is per-world and belongs to {@code
+	 * ServerLifecycleHooks.handleServerAboutToStart}, which the kernel does not excise.
+	 *
+	 * <p>Missing files are fine — NeoForge writes defaults. Best-effort per type; a failure is logged, not fatal.
+	 */
+	private static void loadEarlyConfigs(ClassLoader cl, Side side) {
+		if ("off".equalsIgnoreCase(System.getProperty("forbric.earlyConfigs", "on"))) {
+			ForbricLog.warn("[Forbric/Lifecycle] early config loading DISABLED (-Dforbric.earlyConfigs=off) — "
+					+ "COMMON/CLIENT configs are not opened by the kernel; mods may keep "
+					+ "defaults or read unloaded values");
+			return;
+		}
+		// STARTUP is deliberately absent — see the game side, which explains what naming it would cost.
+		List<String> types = side.isClient() ? List.of("COMMON", "CLIENT") : List.of("COMMON");
+		try {
+			configClass(cl).getMethod("loadEarly", List.class).invoke(null, types);
+		} catch (Throwable t) {
+			ForbricLog.warn("[Forbric/Lifecycle] could not load NeoForge configs", unwrap(t));
+		}
+	}
+
+	/** The game-side half of config loading. */
+	private static Class<?> configClass(ClassLoader cl) throws ClassNotFoundException {
+		return Class.forName("net.forbric.kernel.runtime.KernelConfigLoad", true, cl);
+	}
+
+	/**
+	 * Opens NeoForge configs that were registered after {@link #loadEarlyConfigs} had already run.
+	 *
+	 * <p>The early pass happens once, before mod content registration. A Fabric mod registering a config from a
+	 * CLIENT entrypoint is therefore too late for it, and nothing else opens a non-STARTUP config — the carrier's
+	 * {@code registerConfig} eagerly opens STARTUP only. The mod then reads a config that was registered and never
+	 * loaded, and what it gets is not an empty config but "Cannot get config value before config is loaded",
+	 * thrown from wherever it first asked. ShoulderSurfing asks from a mixin in {@code Minecraft.<init>}.
+	 *
+	 * <p>General on purpose: it fixes any late registrar, not the one that exposed it, and it cannot double-open
+	 * because it opens only what has no loaded config yet. {@code ConfigTracker.loadConfigs} would have been the
+	 * obvious call and is the wrong one — it re-opens every config of the type, and the carrier's second open
+	 * warns and installs a SECOND file watcher, so every later edit of that file fires the reload twice.
+	 *
+	 * <p>Never SERVER: those are per-world and belong to the server-about-to-start hook, which loads them from the
+	 * world directory. Opening them here would load them from the wrong place and overwrite them from the right
+	 * one a moment later.
+	 */
+	private static void openLateConfigs(ClassLoader cl, Side side, String when) {
+		if ("off".equalsIgnoreCase(System.getProperty("forbric.earlyConfigs", "on"))) return;
+		try {
+			Object result = configClass(cl).getMethod("openLate", List.class)
+					.invoke(null, lateConfigTypes(side));
+			if (result instanceof List<?> opened && !opened.isEmpty()) {
+				ForbricLog.info("[Forbric/Lifecycle] opened %d late-registered NeoForge config(s) after %s %s — "
+						+ "they were registered after the early pass, and nothing else would have loaded them",
+						opened.size(), when, opened);
+			}
+		} catch (Throwable t) {
+			ForbricLog.warn("[Forbric/Lifecycle] could not open late-registered NeoForge configs", unwrap(t));
+		}
+	}
+
+	/**
+	 * Which config types {@link #openLateConfigs} may open, for a side.
+	 *
+	 * <p>SERVER is absent from both, and that absence is load-bearing rather than an oversight: a SERVER config is
+	 * per-world and is loaded from the world directory by the server-about-to-start hook. Opening one here would
+	 * load it from the global config directory, and the carrier's own warning for that ("Overwriting non-null
+	 * config") is asserted absent by two gates.
+	 */
+	static List<String> lateConfigTypes(Side side) {
+		return side.isClient() ? List.of("STARTUP", "COMMON", "CLIENT") : List.of("STARTUP", "COMMON");
+	}
+
+	/**
+	 * Starts NeoForge's global game bus so game-event listeners dispatch.
+	 *
+	 */
+	private static void startGameBuses(ClassLoader cl, Side side) {
+		startBus(cl, "net.neoforged.neoforge.common.NeoForge", "EVENT_BUS",
+				"net.neoforged.bus.api.IEventBus", "start", "NeoForge.EVENT_BUS");
+	}
+
+	/**
+	 * Resolves one family's game bus and opens it, reporting absence and failure differently.
+	 *
+	 * @param holder the class holding the bus as a static field, {@code field} the field, {@code api} the type
+	 *               declaring the start method, {@code start} that method, {@code label} what to call it in the log
+	 */
+	private static void startBus(ClassLoader cl, String holder, String field, String api, String start,
+			String label) {
+		Object bus;
+		try {
+			bus = Class.forName(holder, false, cl).getField(field).get(null);
+		} catch (ClassNotFoundException | NoSuchFieldException | LinkageError absent) {
+			ForbricLog.debug("[Forbric/Lifecycle] no %s on this runtime — nothing to start", label);
+			return;
+		} catch (Throwable t) {
+			ForbricLog.warn("[Forbric/Lifecycle] could not read " + label + " — every game-event listener of that "
+					+ "family is on a bus nothing will dispatch", unwrap(t));
+			return;
+		}
+		try {
+			Class.forName(api, false, cl).getMethod(start).invoke(bus);
+			ForbricLog.info("[Forbric/Lifecycle] started %s (game events now dispatch)", label);
+		} catch (Throwable t) {
+			ForbricLog.warn("[Forbric/Lifecycle] " + label + " is present but did NOT start — every game-event "
+					+ "listener of that family, in every mod, is now on a bus nothing dispatches", unwrap(t));
+		}
+	}
+
+	/**
+	 * The NeoForge mod buses the registry events go to, each once: every constructed mod's, then every
+	 * declared-only mod's.
+	 *
+	 * <p>Deduped by IDENTITY: a NeoForge mod has ONE bus shared by all its {@code @Mod} classes (balm ships
+	 * NeoForgeBalm + NeoForgeBalmClient, FallingTree the same), so a per-entry list would fire RegisterEvent twice
+	 * on that bus and register the mod's content twice.
+	 *
+	 * <p>The declared-only mods — a {@code [[mods]]} entry with no {@code @Mod} class, see
+	 * {@link KernelModLoader#classlessNeoMods()} — had nothing constructed, but FML posts the registry events to
+	 * every container it lists, and for such a mod an {@code @EventBusSubscriber} registering its content from
+	 * RegisterEvent is the whole of its code.
+	 */
+	static List<Object> registrationBuses(List<KernelModLoader.ConstructedMod> mods,
+			java.util.Collection<KernelModLoader.NeoIdentity> classless) {
+		List<Object> buses = new ArrayList<>();
+		java.util.Set<Object> seenBuses = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+		for (KernelModLoader.ConstructedMod m : mods) {
+			if (m.bus() != null && seenBuses.add(m.bus())) buses.add(m.bus());
+		}
+		for (KernelModLoader.NeoIdentity identity : classless) {
+			if (identity.bus() != null && seenBuses.add(identity.bus())) buses.add(identity.bus());
+		}
+		return buses;
+	}
+
+	/**
+	 * Constructs NeoForge's baseline mod ({@code NeoForgeMod}) on a fresh mod-event bus — which registers its
+	 * {@code DeferredRegister}s — then fires {@code RegisterEvent} per registry so those DeferredRegisters flush
+	 * their default content (the empty/water/lava FluidTypes, default attributes, …). A single unfreeze/freeze
+	 * window surrounds the registration; because the kernel drives ONE pass (no dual-ecosystem refreeze), the
+	 * "Tags not bound" wall of the old weld does not arise.
+	 */
+	private static void registerNeoForgeContent(ClassLoader cl, Side side) {
+		// Whether the registration window was opened, and so whether the finally below owes it a close.
+		boolean closeWindow = false;
+		try {
+			Class<?> distClass = Class.forName(ForeignType.DIST.binary(Ecosystem.NEOFORGE), false, cl);
+			Object dist = Enum.valueOf(distClass.asSubclass(Enum.class), side.distName());
+
+			// The NeoForge baseline mod on its own bus. Captured so the client step can add ClientNeoForgeMod to
+			// the same bus + route the game's mod-bus events to its container.
+			Object bus = KernelBusSupport.makeModBus(cl);
+			Object container = KernelModContainerFactory.create(cl, "neoforge", bus);
+			baselineBus = bus;
+			baselineContainer = container;
+			Class<?> neoForgeMod = Class.forName("net.neoforged.neoforge.common.NeoForgeMod", false, cl);
+			Class<?> iEventBus = Class.forName("net.neoforged.bus.api.IEventBus", false, cl);
+			Class<?> modContainer = Class.forName(ForeignType.MOD_CONTAINER.binary(Ecosystem.NEOFORGE), false, cl);
+			neoForgeMod.getConstructor(iEventBus, distClass, modContainer)
+					.newInstance(bus, dist, container);
+			ForbricLog.info("[Forbric/Lifecycle] constructed NeoForge baseline mod on a native bus (dist=%s)",
+					side.distName());
+			Object baselineBus = bus;
+
+			// Real Forge-family @Mods, each on its own bus.
+			List<KernelModLoader.ConstructedMod> mods =
+					KernelModLoader.constructMods(cl, modJars, side);
+
+			// Load the config specs those constructors just registered, BEFORE any RegisterEvent fires. Genuine
+			// NeoForge loads STARTUP/COMMON right after construction and only then posts the registry events, and
+			// mods rely on that: Mob Champions' MobChampionsEffects.<clinit> runs from its RegisterEvent listener
+			// and reads a config value, so with the load still pending it threw "Cannot get config value before
+			// config is loaded" — which, before the isolation below, aborted the whole window and left even the
+			// NeoForge baseline unregistered (later surfacing as an unbound neoforge:fluid_type/water). Re-run after
+			// the client baseline in driveNativeRegistration too, for specs registered later; loading twice is
+			// harmless (each type is attempted independently and a redundant load is swallowed).
+			// Wire every mod's @EventBusSubscriber classes NOW, while the registration window is still ahead of
+			// them. Genuine FML does this inside ModContainer.constructMod(), i.e. before registry init, so a
+			// subscriber-declared handler is attached by the time any registration event is posted. The kernel used
+			// to do it much later, after registerNeoForgeContent had already returned, and the cost was silent:
+			// earthmobsmod and bagus_lib declare their EntityAttributeCreationEvent handlers on a class-level
+			// @EventBusSubscriber, so CommonHooks.modifyAttributes below posted to an empty bus and every one of
+			// their entities came out attribute-less — 2250 "Entity <id> has no attributes" errors per freeze, and
+			// mobs that cannot spawn. The same was true of any RegisterEvent handler declared that way.
+			//
+			// AFTER loadEarlyConfigs, not before: this class-loads every subscriber, and a <clinit> that reads a
+			// config value must not run ahead of the specs. Still strictly later than genuine NeoForge, which loads
+			// these classes during construction — so nothing that survives real NeoForge can fail for being early
+			// here. Both game buses stay unstarted until startGameBuses, so early registration is buffered, not lost.
+			//
+			// Isolated: this now sits inside registerNeoForgeContent's try, and an escape would abort the whole
+			// registration window and be reported as "could not register ecosystem content", blaming the wrong
+			// thing entirely.
+			try {
+				KernelEventSubscribers.registerAll(cl, modJars, side);
+			} catch (Throwable t) {
+				ForbricLog.warn("[Forbric/Lifecycle] could not wire guest @EventBusSubscriber classes — mods that "
+						+ "declare their registry or attribute handlers there will not be reached", unwrap(t));
+			}
+
+			// FMLConstructModEvent, the phase genuine FML posts to each container the moment it is built. The
+			// kernel constructed the mods and went straight on, so anything a mod does there — and it is the
+			// earliest mod-bus phase there is — never happened. Posted after the subscribers are wired, so a
+			// handler declared on an @EventBusSubscriber receives it too.
+			fireSetupPhase(cl, KernelModLoader.publishedNeoMods(), ForeignType.FML_CONSTRUCT_MOD_EVENT, "construct");
+
+			// The mods' RegisterEvent stream runs inside the one unfreeze/freeze window below.
+			List<Object> buses = new ArrayList<>();
+			buses.add(baselineBus);
+			buses.addAll(registrationBuses(mods, KernelModLoader.classlessNeoMods().values()));
+
+			// Capture the post-Bootstrap vanilla registry state for NEOFORGE only, before the window opens. NeoForge's
