@@ -298,3 +298,62 @@ final class GameArtifacts {
 		} catch (IOException unreadable) {
 			return null;
 		}
+	}
+
+	/** A hint at what a wrong file actually is, when that is recognisable — the usual mistake is a swap. */
+	private static String looksLike(ZipFile zip, String notThis) {
+		if (!"NeoForge".equals(notThis) && zip.getEntry(NEO_CORE) != null) return " (it looks like NeoForge instead)";
+		if (zip.getEntry(MINECRAFT_CLIENT) != null) return " (it looks like Minecraft instead)";
+		return "";
+	}
+
+	/**
+	 * The installer a player most plausibly downloaded instead, or null. Loader installers share one layout and
+	 * are told apart by the version id they would install; anything with an {@code install_profile.json} that is
+	 * not recognisably NeoForge's is still named as a loader's installer, which is refusal enough.
+	 */
+	private static String installerName(ZipFile zip) {
+		if (zip.getEntry("install_profile.json") != null) {
+			String id = versionId(zip);
+			String lower = id == null ? "" : id.toLowerCase(Locale.ROOT);
+			if (lower.contains("neoforge")) return "the NeoForge installer";
+			return "a mod loader's installer";
+		}
+		if (zip.stream().anyMatch(e -> e.getName().startsWith("net/fabricmc/installer/"))) {
+			return "the Fabric installer";
+		}
+		return null;
+	}
+
+	/** The {@code id} in a jar's {@code version.json}, or null when it has none that reads as one. */
+	private static String versionId(ZipFile zip) {
+		ZipEntry entry = zip.getEntry("version.json");
+		if (entry == null) return null;
+		try (InputStream in = zip.getInputStream(entry)) {
+			Object parsed = Json.parse(new String(in.readAllBytes(), StandardCharsets.UTF_8));
+			return parsed instanceof Map<?, ?> map && map.get("id") instanceof String id ? id : null;
+		} catch (IOException | RuntimeException unreadable) {
+			return null;
+		}
+	}
+
+	private static boolean contains(byte[] haystack, byte[] needle) {
+		outer:
+		for (int i = 0, last = haystack.length - needle.length; i <= last; i++) {
+			for (int j = 0; j < needle.length; j++) {
+				if (haystack[i + j] != needle[j]) continue outer;
+			}
+			return true;
+		}
+		return false;
+	}
+
+	/** coordinate (without version) → located file. */
+	Map<String, Path> all() {
+		return found;
+	}
+
+	Path get(String coordinate) {
+		return found.get(coordinate);
+	}
+}
