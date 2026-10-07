@@ -298,3 +298,192 @@ public final class DependencyDialog {
 
 	/**
 	 * Why no window can be shown on this run, or null when one can: the same three guards {@link #offer} applies,
+	 * in the same order, for a caller that has its own question to ask.
+	 */
+	public static String noWindow(boolean isClient) {
+		if (!isClient) return "not the client";
+		if ("off".equalsIgnoreCase(System.getProperty(SWITCH, "on"))) return "-D" + SWITCH + "=off";
+		if (java.awt.GraphicsEnvironment.isHeadless() && !net.forbric.kernel.boot.MacAwtBootstrap.usesHeadlessFonts()) {
+			return "headless";
+		}
+		return launcherProblem();
+	}
+
+	/**
+	 * The crash-suspects offer, in the same forked child: {@link DependencyDialogMain#WITHOUT},
+	 * {@link DependencyDialogMain#QUIT}, or {@link DependencyDialogMain#CONTINUE} for everything else — a closed
+	 * window, a timeout, a child that could not draw. Fail-open like the notice: no answer switches nothing off.
+	 * Ask {@link #noWindow} first; this only honours the dry run.
+	 */
+	public static int isolate(DependencyReport.Isolation isolation) throws Exception {
+		boolean dryRun = DRY_RUN.equalsIgnoreCase(System.getProperty(SWITCH, "on"));
+		int answer = askIsolation(isolation, dryRun ? List.of("-Djava.awt.headless=true") : List.of());
+		if (dryRun) {
+			ForbricLog.info("[Forbric/Deps] -D%s=dryRun — forked the crash-suspects offer with no display; it answered "
+					+ "%d without drawing anything", SWITCH, answer);
+		}
+		return answer;
+	}
+
+	static int askIsolation(DependencyReport.Isolation isolation, List<String> extraJvmArgs) throws Exception {
+		Path report = Files.createTempFile("forbric-isolation", ".tsv");
+		try {
+			DependencyReport.writeIsolation(report, isolation);
+			return fork(report, extraJvmArgs, Kind.ISOLATION);
+		} finally {
+			Files.deleteIfExists(report);
+		}
+	}
+
+	static int ask(List<DependencyReport.Row> rows) throws Exception {
+		return ask(rows, List.of(), List.of());
+	}
+
+	static int ask(List<DependencyReport.Row> rows, List<String> extraJvmArgs) throws Exception {
+		return ask(rows, List.of(), extraJvmArgs);
+	}
+
+	static int ask(List<DependencyReport.Row> rows, List<DependencyReport.MixinRow> mixins,
+			List<String> extraJvmArgs) throws Exception {
+		return ask(rows, mixins, List.of(), extraJvmArgs);
+	}
+
+	/**
+	 * Runs the child and reads its exit code.
+	 *
+	 * @param extraJvmArgs additional flags for the child JVM. Package-visible and exists so a test can drive
+	 *                     THIS method — the real fork, the real child, the real exit code — with
+	 *                     {@code -Djava.awt.headless=true} instead of a copy of it that proves nothing
+	 */
+	static int ask(List<DependencyReport.Row> rows, List<DependencyReport.MixinRow> mixins,
+			List<DependencyReport.CompatibilityRow> suspected, List<String> extraJvmArgs) throws Exception {
+		Path report = Files.createTempFile("forbric-deps", ".tsv");
+		try {
+			DependencyReport.write(report, rows, mixins, suspected);
+			return fork(report, extraJvmArgs, Kind.NOTICE);
+		} finally {
+			Files.deleteIfExists(report);
+		}
+	}
+
+	/** The same child process and layout, with a separate, fail-closed confirmation contract. */
+	static int askCompatibility(List<DependencyReport.CompatibilityRow> rows, List<String> extraJvmArgs) throws Exception {
+		return askConfirmation(new DependencyReport.Confirmation(rows, List.of(), List.of(), List.of(), List.of()),
+				extraJvmArgs);
+	}
+
+	static int askConfirmation(DependencyReport.Confirmation confirmation, List<String> extraJvmArgs) throws Exception {
+		Path report = Files.createTempFile("forbric-compatibility", ".tsv");
+		try {
+			DependencyReport.writeConfirmation(report, confirmation);
+			return fork(report, extraJvmArgs, Kind.CONFIRMATION);
+		} finally {
+			Files.deleteIfExists(report);
+		}
+	}
+
+	/** Which of the child's three windows, and so which contract its exit code is read under. */
+	private enum Kind {
+		/** Fail-open: anything but quit launches. */
+		NOTICE(null),
+		/** Fail-closed: only an explicit continue approves. */
+		CONFIRMATION("--compatibility"),
+		/** Fail-open: anything but the two explicit buttons starts with every mod. */
+		ISOLATION("--isolation");
+
+		final String flag;
+
+		Kind(String flag) {
+			this.flag = flag;
+		}
+	}
+
+	private static int fork(Path report, List<String> extraJvmArgs, Kind kind) throws Exception {
+		try {
+			List<String> command = new ArrayList<>();
+			command.add(Path.of(System.getProperty("java.home"), "bin", "java").toString());
+			command.addAll(extraJvmArgs);
+			// A child JVM inherits its parent's environment, and so its OS locale, but NOT its -D flags. The
+			// common case therefore needs nothing forwarded at all; a deliberate -Dforbric.dialogLanguage does,
+			// or the switch would be unreachable from the one process the player actually reads.
+			String language = System.getProperty(DialogLang.SWITCH);
+			if (language != null && !language.isBlank()) {
+				command.add("-D" + DialogLang.SWITCH + "=" + language);
+			}
+			command.add("-cp");
+			command.add(ownJar());
+			command.add(DependencyDialogMain.class.getName());
+			command.add(report.toString());
+			if (kind.flag != null) command.add(kind.flag);
+
+			Process child = new ProcessBuilder(command)
+					.redirectOutput(ProcessBuilder.Redirect.INHERIT)
+					.redirectError(ProcessBuilder.Redirect.INHERIT)
+					.start();
+			// A forked process does not die with its parent. If the kernel goes down while the dialog is open --
+			// crash, kill, the player quitting the launcher -- the window would otherwise sit on their desktop
+			// belonging to nothing. Seen for real: children of a test JVM outlived it during development.
+			Thread reaper = new Thread(child::destroyForcibly, "forbric-deps-dialog-reaper");
+			Runtime.getRuntime().addShutdownHook(reaper);
+			try {
+				return await(child, kind);
+			} finally {
+				if (child.isAlive()) child.destroyForcibly();
+				try {
+					Runtime.getRuntime().removeShutdownHook(reaper);
+				} catch (IllegalStateException alreadyShuttingDown) {
+					// Removing a hook during shutdown is not allowed and not needed -- it is about to run.
+				}
+			}
+		} finally {
+			try {
+				Files.deleteIfExists(report);
+			} catch (Throwable ignored) {
+				// A leftover temp file is not worth a second failure on the way out of a warning.
+			}
+		}
+	}
+
+	private static int await(Process child, Kind kind) throws InterruptedException {
+		if (!child.waitFor(TIMEOUT_MINUTES, java.util.concurrent.TimeUnit.MINUTES)) {
+			child.destroy();
+			ForbricLog.warn("[Forbric/Deps] the dialog did not answer within %d minutes — %s", TIMEOUT_MINUTES,
+					switch (kind) {
+						case CONFIRMATION -> "nobody answered it, so nothing is approved and the game asks instead";
+						case ISOLATION -> "starting with every mod";
+						case NOTICE -> "launching anyway";
+					});
+			return kind == Kind.CONFIRMATION ? DependencyDialogMain.UNSHOWN : DependencyDialogMain.CONTINUE;
+		}
+		int exit = child.exitValue();
+		return switch (kind) {
+			case CONFIRMATION -> confirmationAnswer(exit);
+			case ISOLATION -> exit == DependencyDialogMain.WITHOUT || exit == DependencyDialogMain.QUIT
+					? exit : DependencyDialogMain.CONTINUE;
+			case NOTICE -> exit;
+		};
+	}
+
+	/**
+	 * What the confirmation child's exit code means. 0 is the one consent and {@link DependencyDialogMain#REFUSED} the
+	 * player's refusal or a closed window, read back as {@link DependencyDialogMain#QUIT}. Anything else -- the
+	 * child's own "could not draw", the {@code java} launcher's 1 when it could not start the child, a child that died
+	 * -- is nobody having answered, and approves nothing.
+	 */
+	static int confirmationAnswer(int exit) {
+		if (exit == DependencyDialogMain.CONTINUE) return DependencyDialogMain.CONTINUE;
+		return exit == DependencyDialogMain.REFUSED ? DependencyDialogMain.QUIT : DependencyDialogMain.UNSHOWN;
+	}
+
+	/**
+	 * The jar this class was loaded from, which is the only classpath the child needs.
+	 *
+	 * <p>Resolved from the code source rather than from {@code java.class.path}: the kernel is launched with a
+	 * classpath holding the whole game, and handing a child JVM all of it to show a dialog would make the child's
+	 * startup depend on everything the game depends on.
+	 */
+	private static String ownJar() throws Exception {
+		return Path.of(DependencyDialog.class.getProtectionDomain().getCodeSource().getLocation().toURI())
+				.toString();
+	}
+}
