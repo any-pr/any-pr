@@ -298,3 +298,108 @@ public final class ForgeModRemapper {
 	private static void pruneDanglingServiceProviders(FileSystem fs, String modId) throws IOException {
 		Path servicesDir = fs.getPath("META-INF", "services");
 		if (!Files.isDirectory(servicesDir)) return;
+
+		List<Path> serviceFiles;
+		try (java.util.stream.Stream<Path> list = Files.list(servicesDir)) {
+			serviceFiles = list.filter(Files::isRegularFile).collect(java.util.stream.Collectors.toList());
+		}
+
+		for (Path serviceFile : serviceFiles) {
+			List<String> lines = Files.readAllLines(serviceFile, StandardCharsets.UTF_8);
+			List<String> kept = new java.util.ArrayList<>(lines.size());
+			int dropped = 0;
+
+			for (String line : lines) {
+				String provider = line.strip();
+				int comment = provider.indexOf('#');
+				if (comment >= 0) provider = provider.substring(0, comment).strip();
+
+				if (provider.isEmpty() || Files.exists(fs.getPath(provider.replace('.', '/') + ".class"))) {
+					kept.add(line);
+				} else {
+					dropped++;
+				}
+			}
+
+			if (dropped == 0) continue;
+
+			boolean anyProviderLeft = kept.stream().anyMatch(l -> {
+				String s = l.strip();
+				return !s.isEmpty() && !s.startsWith("#");
+			});
+
+			if (anyProviderLeft) {
+				Files.write(serviceFile, kept, StandardCharsets.UTF_8);
+			} else {
+				Files.delete(serviceFile);
+			}
+			ForbricLog.info("[Forbric] " + modId + ": pruned " + dropped + " dangling service provider(s) from "
+					+ serviceFile.getFileName() + " (shading leftovers)");
+		}
+	}
+
+	/**
+	 * Pin the wrapped jar's automatic-module name. The jar joins Forbric's synthetic GAME {@link ModuleLayer}
+	 * (see {@code ForbricFmlBootstrap}); without an explicit {@code Automatic-Module-Name}, derivation falls back
+	 * to the cache-mangled FILE name ({@code <id>-<sha16>.jar}) whose hash segment is not a Java identifier and
+	 * makes {@code ModuleFinder} throw. The name is also what {@code ModFileInfo.moduleName()} must return for
+	 * FML's {@code FMLModContainer} to find the mod's module, so it must stay deterministic per mod id.
+	 */
+	private static void writeAutomaticModuleName(FileSystem fs, String modId,
+			net.forbric.loader.impl.metadata.ModEcosystem ecosystem) throws IOException {
+		Path mf = fs.getPath("META-INF", "MANIFEST.MF");
+		Manifest manifest = new Manifest();
+		if (Files.exists(mf)) {
+			try (InputStream in = Files.newInputStream(mf)) {
+				manifest = new Manifest(in);
+			}
+		}
+		if (manifest.getMainAttributes().getValue(Attributes.Name.MANIFEST_VERSION) == null) {
+			manifest.getMainAttributes().put(Attributes.Name.MANIFEST_VERSION, "1.0");
+		}
+		manifest.getMainAttributes().putValue("Automatic-Module-Name", automaticModuleName(modId, ecosystem));
+		Files.createDirectories(mf.getParent());
+		try (OutputStream out = Files.newOutputStream(mf)) {
+			manifest.write(out);
+		}
+	}
+
+	/** @see #automaticModuleName(String, net.forbric.loader.impl.metadata.ModEcosystem) */
+	public static String automaticModuleName(String modId) {
+		return automaticModuleName(modId, net.forbric.loader.impl.metadata.ModEcosystem.NEOFORGE);
+	}
+
+	/**
+	 * Deterministic, always-valid module name for a wrapped Forge-family mod. The runtime resolves a mod's
+	 * module by {@code IModFile.getId()}, which is the mod's toml {@code modId}; the layer module must
+	 * therefore be named EXACTLY that id (NeoForge modIds match {@code [a-z][a-z0-9_]*}, already valid Java
+	 * module names — no prefix, no sanitize needed).
+	 */
+	public static String automaticModuleName(String modId, net.forbric.loader.impl.metadata.ModEcosystem ecosystem) {
+		String seg = modId == null || modId.isEmpty() ? "mod" : modId.replaceAll("[^A-Za-z0-9_]", "_");
+		if (Character.isDigit(seg.charAt(0))) seg = "_" + seg;
+		return seg;
+	}
+
+	private static String jsonStringObject(Map<String, String> entries) {
+		StringBuilder sb = new StringBuilder("{ ");
+		boolean first = true;
+		for (Map.Entry<String, String> e : entries.entrySet()) {
+			if (!first) sb.append(", ");
+			sb.append('"').append(e.getKey()).append("\": \"").append(e.getValue()).append('"');
+			first = false;
+		}
+		return sb.append(" }").toString();
+	}
+
+	private static String jsonStringArray(List<String> values) {
+		if (values == null || values.isEmpty()) return "[]";
+
+		StringBuilder sb = new StringBuilder("[");
+		for (int i = 0; i < values.size(); i++) {
+			if (i > 0) sb.append(", ");
+			sb.append('"').append(values.get(i)).append('"');
+		}
+		return sb.append(']').toString();
+	}
+}
