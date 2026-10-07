@@ -598,3 +598,303 @@ public final class PayloadInterop {
 				if (fabric != null && fabricType != null && fabricType.equals(payloadType)) return fabric;
 				if (fabric != null && !payloadClass.startsWith("net.neoforged.")) return fabric;
 			}
+			return firstNonNull(local, neo, fabric, fallback);
+		}
+
+		private Object selectDecode() {
+			if (isDinnerboneChannelRegistration(id)) {
+				return firstNonNull(neo, fabric, local, fallback);
+			}
+			if (isCommonNegotiation(id)) {
+				return firstNonNull(neo, local, fabric, fallback);
+			}
+			return firstNonNull(local, fabric, neo, fallback);
+		}
+	}
+
+	/**
+	 * Called from the head of NeoForge's {@code NetworkRegistry.checkPacket} (both overloads): a payload from a
+	 * negotiation NeoForge is not part of is not NeoForge's to police. Its check compares the payload's channel
+	 * with what NeoForge negotiated, and a channel another ecosystem negotiated is not in that list by
+	 * construction — so a Fabric mod's client could not even SEND on its own channel
+	 * ("Payload … may not be sent to the server!"). Says whether the packet carries such a payload.
+	 */
+	public static boolean isForgePayloadPacket(Object packet) {
+		if (packet == null) return false;
+		Method accessor = payloadAccessor(packet.getClass());
+		if (accessor == null) return false;
+		try {
+			Object payload = accessor.invoke(packet);
+			if (payload == null) return false;
+			return notNeoForgesToPolice(payload);
+		} catch (ReflectiveOperationException | RuntimeException e) {
+			return false;
+		}
+	}
+
+	/**
+	 * Called right after NeoForge's {@code NetworkRegistry.isModdedPayload} where the common packet listeners decide
+	 * whether a RECEIVED payload goes to NeoForge's dispatcher ({@code ForeignPayloadReceiveInjector}). NeoForge's
+	 * dispatcher knows only the channels NeoForge registered and closes the connection on any other — the receiving
+	 * half of the verdict {@link #isForgePayloadPacket} already takes away from its send check. A channel another
+	 * ecosystem negotiated goes down vanilla's path instead, where the mod that owns it listens: Carpet's client
+	 * takes {@code carpet:hello} at {@code ClientPacketListener.handleUnknownCustomPayload}, and was disconnected
+	 * with "No Channel for carpet:hello" before it got there.
+	 */
+	public static boolean neoForgeDispatches(Object payload, boolean modded) {
+		return modded && !notNeoForgesToPolice(payload);
+	}
+
+	/** Channels already let past, so the log says it once per channel rather than once per packet. */
+	private static final Set<String> UNPOLICED = Collections.synchronizedSet(new LinkedHashSet<>());
+
+	/**
+	 * Whether {@code payload}'s channel belongs to a negotiation NeoForge is not part of.
+	 *
+	 * <p>NeoForge's check asks the CONNECTION whether it negotiated this channel. Under Forbric the other two
+	 * ecosystems negotiate their own — Fabric's {@code c:register}, MinecraftForge's handshake — and a channel
+	 * from either is absent from NeoForge's view by construction. Its answer for a channel it does not know is to
+	 * close the connection, which is a verdict about a conversation it is not in.
+	 *
+	 * <p>Polymer is the case that paid for it. It registers its payloads through its own codec patch rather than
+	 * Fabric's registry, so nothing mirrors them into NeoForge, and joining a world died on "Payload
+	 * polymer:handshake may not be sent to the server!" after the packet had already encoded perfectly well.
+	 *
+	 * <p>Two guards keep this narrow. A payload class from {@code net.minecraft} or {@code net.neoforged} is never
+	 * exempt whatever the registry holds: {@code minecraft:brand} and {@code neoforge:register} are not in
+	 * PAYLOAD_REGISTRATIONS either, and letting those past would turn "not NeoForge's channel" into "no channel is
+	 * policed". And a payload NeoForge DID register is still policed, so every NeoForge mod keeps the check its
+	 * own loader gives it — including the ones the kernel mirrors in from Fabric's registry.
+	 */
+	private static boolean notNeoForgesToPolice(Object payload) {
+		String payloadClass = payload.getClass().getName();
+		if (payloadClass.startsWith("net.minecraft.") || payloadClass.startsWith("net.neoforged.")) return false;
+
+		Class<?> registryClass = load(payload.getClass().getClassLoader(), NEO_NETWORK_REGISTRY);
+		if (registryClass == null) return false;
+		try {
+			Object type = invokeNoArg(payload, "type");
+			Object id = type == null ? null : invokeNoArg(type, "id");
+			if (id == null) return false;
+
+			Field registrationsField = findField(registryClass, "PAYLOAD_REGISTRATIONS");
+			if (registrationsField == null) return false;
+			registrationsField.setAccessible(true);
+			@SuppressWarnings("unchecked")
+			Map<Object, Map<Object, Object>> registrations =
+					(Map<Object, Map<Object, Object>>) registrationsField.get(null);
+			if (registrations == null || registrations.isEmpty()) return false;
+			for (Map<Object, Object> protocolMap : registrations.values()) {
+				if (protocolMap != null && protocolMap.containsKey(id)) return false;
+			}
+
+			if (UNPOLICED.add(String.valueOf(id))) {
+				ForbricLog.info("[Forbric/Net] %s is not a channel NeoForge registered, so its channel check is not "
+						+ "the authority on it — another ecosystem negotiated this one, and NeoForge's answer for a "
+						+ "channel it does not know is to close the connection", id);
+			}
+			return true;
+		} catch (ReflectiveOperationException | RuntimeException e) {
+			return false;
+		}
+	}
+
+	/**
+	 * The {@code payload()} accessor for a packet class, resolved once per class and then remembered.
+	 *
+	 * <p>This is on the hot path and was not cached. {@link #isForgePayloadPacket} runs at the head of the
+	 * outbound-packet check, so it is reached for EVERY packet the game sends — and it went through the generic
+	 * reflective lookup each time, which walks the class's whole superclass chain calling
+	 * {@code getDeclaredMethod} and then every interface. Most packets have no {@code payload()} at all, so the
+	 * common case was the most expensive one: the full walk, a {@code NoSuchMethodException} constructed and
+	 * discarded at each step, and a defensive copy of the {@code Method} array behind each call.
+	 *
+	 * <p>{@link ClassValue} rather than a map: it is keyed by class without keeping the class alive, needs no
+	 * lock, and a miss is cached as a null exactly like a hit.
+	 */
+	static Method payloadAccessor(Class<?> packetClass) {
+		return PAYLOAD_ACCESSOR.get(packetClass);
+	}
+
+	private static final ClassValue<Method> PAYLOAD_ACCESSOR = new ClassValue<>() {
+		@Override
+		protected Method computeValue(Class<?> type) {
+			Method accessor = findMethod(type, "payload");
+			if (accessor != null) accessor.setAccessible(true);
+			return accessor;
+		}
+	};
+
+	/** The first declaration of {@code name} walking up from {@code type}, made accessible; null if there is none. */
+	private static Method declaredMethod(Class<?> type, String name, Class<?>... parameters) {
+		for (Class<?> c = type; c != null; c = c.getSuperclass()) {
+			try {
+				Method found = c.getDeclaredMethod(name, parameters);
+				found.setAccessible(true);
+				return found;
+			} catch (NoSuchMethodException keepLooking) {
+				// up one
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * Records the PLAY channels a {@code c:register} carries into the connection, which is the half of Fabric's own
+	 * {@code c:register} handler this class replaces.
+	 *
+	 * <p>Fabric declares a client's PLAY receivers during CONFIGURATION, through {@code c:register} — not through
+	 * {@code minecraft:register}, which carries only the current phase's. {@code CommonPacketsImpl} takes the
+	 * channels of a {@code c:register} whose phase is {@code play} and adds them to the connection's
+	 * {@code ChannelInfoHolder}; {@code ServerPlayNetworkAddon}'s constructor then drains exactly that list into
+	 * its sendable set, and nothing else ever seeds it.
+	 *
+	 * <p>This class intercepts {@code c:register} to serve NeoForge's negotiation as well, and returns TRUE — which
+	 * cancels Fabric's own body. It replayed the addon call and not the recording, so the list stayed empty and
+	 * every Fabric PLAY channel was unsendable for the whole session. That is invisible for a mod that checks
+	 * {@code canSend} and skips; Cardinal Components does not check-and-skip, it DISCONNECTS — joining a world
+	 * ended with "This server requires Apoli: Legacy and Cardinal Components API (unhandled packet:
+	 * cardinal-components:entity_sync)", which names two mods and nothing else.
+	 *
+	 * <p>Server side only, and only for the {@code play} phase, because that is the whole of what Fabric's handler
+	 * does with it. {@code -Dforbric.fabricPlayChannels=off} leaves the list empty again.
+	 */
+	static final String PLAY_CHANNELS_PROPERTY = "forbric.fabricPlayChannels";
+
+	static boolean playChannelRecordingEnabled() {
+		return !"off".equalsIgnoreCase(System.getProperty(PLAY_CHANNELS_PROPERTY, "on"));
+	}
+
+	private static void recordPlayPhaseChannels(Object addon, Object payload) {
+		if (addon == null || payload == null || !playChannelRecordingEnabled()) return;
+		if (!addon.getClass().getName().startsWith(FABRIC_SERVER_ADDON_PACKAGE)) return;
+		try {
+			// The record component is `protocol`, not `phase` — the first version asked for "phase", got null from
+			// the reflective miss, and compared it against "play" forever.
+			Object declaredFor = invokeNoArg(payload, "protocol");
+			Object channels = invokeNoArg(payload, "channels");
+			if (!(channels instanceof Collection<?> ids) || ids.isEmpty()) return;
+
+			ClassLoader loader = loaderFor(addon, payload);
+			Class<?> protocol = load(loader, "net.minecraft.network.ConnectionProtocol");
+			Object play = protocol == null ? null : Enum.valueOf(protocol.asSubclass(Enum.class), "PLAY");
+			Object playId = play == null ? null : invokeNoArg(play, "id");
+			if (playId == null || !String.valueOf(playId).equals(String.valueOf(declaredFor))) return;
+
+			Object connection = fieldValue(addon, "connection");
+			Object pending = connection == null ? null : invoke(connection, "fabric_getPendingChannelsNames", play);
+			if (!(pending instanceof Collection<?> sink)) return;
+			@SuppressWarnings("unchecked")
+			Collection<Object> target = (Collection<Object>) sink;
+			target.addAll(ids);
+			probe(() -> "  recorded " + ids.size() + " PLAY channel(s) for the connection: " + ids);
+			ForbricLog.info("[Forbric/Net] recorded %d Fabric PLAY channel(s) the client declared during "
+					+ "configuration — the kernel serves c:register itself to reach NeoForge's negotiation too, and "
+					+ "Fabric's own handler is the only thing that puts them on the connection for the play addon "
+					+ "to inherit", ids.size());
+			// The declared half, and the moment to say what the two halves add up to: configuration is over,
+			// so a payload type with no channel behind it will not acquire one later — it will disconnect
+			// whoever sends on it.
+			NetworkChannelCensus.declared(net.forbric.api.Ecosystem.FABRIC, ids);
+			NetworkChannelCensus.report();
+		} catch (Throwable t) {
+			ForbricLog.warn("[Forbric/Net] could not record the client's Fabric PLAY channels — a Fabric mod's "
+					+ "play packets will be unsendable, and Cardinal Components disconnects rather than skipping",
+					unwrap(t));
+		}
+	}
+
+	private static Boolean handleFabricCommonNegotiationAddon(Object addon, Object payload) {
+		if (payload == null) return null;
+		String id = payloadId(payload);
+		if (!isCommonNegotiation(id)) return null;
+		if (load(loaderFor(addon, payload), NEO_NETWORK_REGISTRY) == null) return null;
+
+		String payloadClass = payload.getClass().getName();
+		if ("c:version".equals(id)) {
+			int version = commonVersion(payload);
+			if (version > 0) invoke(addon, "onCommonVersionPacket", version);
+			Object listener = commonPacketListener(addon);
+			Object neoPayload = NEO_COMMON_VERSION_PAYLOAD.equals(payloadClass)
+					? payload
+					: createNeoCommonVersionPayload(payload);
+			if (listener != null && neoPayload != null) {
+				invokeNeoNetworkRegistry("checkCommonVersion", listener, neoPayload);
+			}
+			return Boolean.TRUE;
+		}
+
+		if ("c:register".equals(id)) {
+			Object fabricPayload = FABRIC_COMMON_REGISTER_PAYLOAD.equals(payloadClass)
+					? payload
+					: createFabricCommonRegisterPayload(payload);
+			if (fabricPayload != null) invoke(addon, "onCommonRegisterPacket", fabricPayload);
+			// …and the OTHER half of Fabric's own c:register handler, which this method replaces.
+			recordPlayPhaseChannels(addon, fabricPayload != null ? fabricPayload : payload);
+			Object listener = commonPacketListener(addon);
+			Object neoPayload = NEO_COMMON_REGISTER_PAYLOAD.equals(payloadClass)
+					? payload
+					: createNeoCommonRegisterPayload(addon, payload);
+			if (listener != null && neoPayload != null) {
+				invokeNeoNetworkRegistry("onCommonRegister", listener, neoPayload);
+			}
+			return Boolean.TRUE;
+		}
+
+		return null;
+	}
+
+	private static Object fabricTypeAndCodec(Object id, Object protocol, Object packetFlow) {
+		ClassLoader loader = loaderFor(id, protocol, packetFlow);
+		Class<?> registryClass = load(loader, FABRIC_REGISTRY);
+		if (registryClass == null) return null;
+
+		String field = fabricRegistryField(protocol, packetFlow);
+		if (field == null) return null;
+		Object registry = staticField(registryClass, field);
+		if (registry == null) return null;
+		Object entry = invoke(registry, "get", id);
+		return entry != null ? entry : mirrorNeoPayloadIntoFabricRegistry(loader, id, protocol, packetFlow);
+	}
+
+	private static String fabricRegistryField(Object protocol, Object packetFlow) {
+		String protocolName = enumName(protocol);
+		String flowName = enumName(packetFlow);
+		if ("CONFIGURATION".equals(protocolName) && "CLIENTBOUND".equals(flowName)) return "CLIENTBOUND_CONFIGURATION";
+		if ("CONFIGURATION".equals(protocolName) && "SERVERBOUND".equals(flowName)) return "SERVERBOUND_CONFIGURATION";
+		if ("PLAY".equals(protocolName) && "CLIENTBOUND".equals(flowName)) return "CLIENTBOUND_PLAY";
+		if ("PLAY".equals(protocolName) && "SERVERBOUND".equals(flowName)) return "SERVERBOUND_PLAY";
+		return null;
+	}
+
+	private static Object neoCodec(Object id, Object protocol, Object packetFlow) {
+		ClassLoader loader = loaderFor(id, protocol, packetFlow);
+		Class<?> registry = load(loader, NEO_NETWORK_REGISTRY);
+		if (registry == null) return null;
+		Object builtin = neoBuiltinCodec(registry, id);
+		if (builtin != null) return builtin;
+		Object registration = neoRegistration(loader, id, protocol, packetFlow);
+		return registration == null ? null : invokeNoArg(registration, "codec");
+	}
+
+	private static Object neoBuiltinCodec(Class<?> registry, Object id) {
+		try {
+			Field builtinsField = findField(registry, "BUILTIN_PAYLOADS");
+			if (builtinsField == null) return null;
+			builtinsField.setAccessible(true);
+			Object builtins = builtinsField.get(null);
+			return builtins instanceof Map<?, ?> map ? map.get(id) : null;
+		} catch (ReflectiveOperationException | RuntimeException e) {
+			return null;
+		}
+	}
+
+	private static Object fallbackCodec(Object fallback, Object id) {
+		if (fallback == null) return null;
+		return invoke(fallback, "create", id);
+	}
+
+	private static Object typeAndCodecCodec(Object typeAndCodec) {
+		return typeAndCodec == null ? null : invokeNoArg(typeAndCodec, "codec");
+	}
+
