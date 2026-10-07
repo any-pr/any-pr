@@ -298,3 +298,5 @@ class FmlTransformerViewTest {
 			}
 			return super.findClass(name);
 		}
+	}
+}
