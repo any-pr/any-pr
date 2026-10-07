@@ -298,3 +298,9 @@ class LaunchInputCheckTest {
 
 		Path impostorBase = base(dir.resolve("impostor-base.jar"));
 		Path impostorRuntime = carrier(dir.resolve("impostor-runtime.jar"), Ecosystem.NEOFORGE);
+		assertFalse(LaunchInputCheck.problems(List.of(impostorBase), List.of(carrierJar)).isEmpty(),
+				"a synthetic base must not pass for the real one");
+		assertFalse(LaunchInputCheck.problems(List.of(base), List.of(impostorRuntime)).isEmpty(),
+				"a synthetic carrier must not pass for the real one");
+	}
+}
