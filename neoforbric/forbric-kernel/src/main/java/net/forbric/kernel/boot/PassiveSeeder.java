@@ -898,3 +898,303 @@ public final class PassiveSeeder {
 			return modFile;
 		} catch (Throwable t) {
 			ForbricLog.warn("[Forbric/Seed] could not build a synthetic ModFile for '%s' (%s) — the ModFileInfo's "
+					+ "file stays null, and a mod that walks FMLLoader.getLoadingModList().getModFiles() calling "
+					+ "getFile() on each entry will NPE on this one", id, String.valueOf(t));
+			return null;
+		}
+	}
+
+	/**
+	 * Gives a seeded {@code ModFile} a scan result, so {@code getScanResult()} answers instead of throwing FML's
+	 * "Scanning of this mod file has not started yet."
+	 *
+	 * <p>FML fills {@code futureScanResult} from {@code startScan}, which is its background scan at discovery; the
+	 * kernel runs no FML discovery, so on a seeded file the field was null forever and the getter threw every
+	 * time. That was invisible until a mod asked. RollingGate's constructor walks
+	 * {@code LoadingModList.getModFiles()} and calls {@code getFile().getScanResult().getAnnotations()} on every
+	 * entry to find its rule containers — so it threw out of its own constructor, and every RollingGate rule and
+	 * every Server++ rule (found by the same walk) was simply missing from the server.
+	 *
+	 * <p>LAZY, on purpose: a {@link LazyScanFuture} does nothing until it is read. Most instances never ask, and
+	 * an eager index would be an ASM pass over every NeoForge jar on every boot, run from the pre-Mixin window
+	 * ({@code KernelBoot} seeds the FML identity before Mixin starts), which should load no more game-side
+	 * classes than it has to. The jar's index comes from {@link ModFileScanner#scanShared}, so this file and the
+	 * {@code KernelModFile} that {@code ModList} holds for the same jar answer with one object, as a single native
+	 * {@code ModFile} would.
+	 *
+	 * <p>An index that cannot be built reads as an empty one and says so once for the jar — a mod walking the list
+	 * must not die on a neighbour's unreadable file. So {@code getScanResult()} does not throw while the carrier's
+	 * {@code ModFileScanData} can itself be instantiated; if even that fails, the carrier reports the failed scan.
+	 *
+	 * <p>{@code -Dforbric.seededScanData=off} leaves the field null, which is the behaviour before this.
+	 */
+	private static void seedScanResult(Class<?> modFileCls, Object modFile, ClassLoader gameLoader, Path jar,
+			boolean indexed) {
+		if (!ModFileScanner.seededIndexEnabled()) return;
+		try {
+			setInstanceField(modFileCls, "futureScanResult", modFile, seededScan(gameLoader, jar, indexed));
+		} catch (Throwable t) {
+			ForbricLog.warn("[Forbric/Seed] could not give the seeded NeoForge ModFile for %s a scan result (%s) — "
+					+ "its getScanResult() throws \"Scanning of this mod file has not started yet.\", which kills "
+					+ "any mod that walks the LoadingModList's scan data from its constructor (RollingGate)",
+					jar.getFileName(), String.valueOf(unwrap(t)));
+		}
+	}
+
+	/** The lazy future {@link #seedScanResult} installs: the jar's shared index, or an empty one. */
+	private static CompletableFuture<Object> seededScan(ClassLoader gameLoader, Path jar, boolean indexed) {
+		return new LazyScanFuture(() -> {
+			if (indexed) {
+				Object real = null;
+				String why = "the scan produced no index";
+				try {
+					real = ModFileScanner.scanShared(jar, gameLoader);
+				} catch (Throwable t) {
+					why = String.valueOf(t);
+				}
+				if (real != null) return real;
+				ForbricLog.warn("[Forbric/Seed] could not index %s for the seeded NeoForge LoadingModList (%s) — "
+						+ "it answers getScanResult() with an EMPTY index, so a mod that finds its own members by "
+						+ "walking that list (RollingGate's rule containers) finds nothing in this jar",
+						jar.getFileName(), why);
+			}
+			String empty = ForeignType.MOD_FILE_SCAN_DATA.binary(Ecosystem.NEOFORGE);
+			try {
+				return Class.forName(empty, true, gameLoader).getConstructor().newInstance();
+			} catch (ReflectiveOperationException e) {
+				throw new IllegalStateException("could not build an empty " + empty, e);
+			}
+		});
+	}
+
+	/**
+	 * NeoForge's {@code JarContents} for {@code jar}: {@code getPrimaryPath()} answers at once, and every other
+	 * call opens {@code JarContents.ofPath(jar)} once and asks it. A jar that cannot be opened reads as
+	 * {@code JarContents.empty}, as before, and says so once.
+	 */
+	static Object lazyContents(ClassLoader gameLoader, Class<?> contentsCls, Path jar) throws ReflectiveOperationException {
+		Path path = jar.toAbsolutePath();
+		Method ofPath = contentsCls.getMethod("ofPath", Path.class), empty = contentsCls.getMethod("empty", Path.class);
+		Object[] opened = {null};
+		InvocationHandler handler = (proxy, method, args) -> {
+			switch (method.getName()) {
+				case "getPrimaryPath" -> { if (method.getParameterCount() == 0) return path; }
+				case "toString" -> { if (method.getParameterCount() == 0) return "JarContents(" + path + ", opened on first read)"; }
+				case "hashCode" -> { if (method.getParameterCount() == 0) return System.identityHashCode(proxy); }
+				case "equals" -> { if (method.getParameterCount() == 1) return proxy == args[0]; }
+				case "close" -> {
+					synchronized (opened) { if (opened[0] instanceof java.io.Closeable closeable) closeable.close(); opened[0] = null; }
+					return null;
+				}
+				default -> { }
+			}
+			Object target;
+			synchronized (opened) {
+				if (opened[0] == null) {
+					try { opened[0] = ofPath.invoke(null, path); }
+					catch (java.lang.reflect.InvocationTargetException unreadable) {
+						ForbricLog.warn("[Forbric/Seed] could not open %s for its mod's own file reads (%s) — it reads as empty",
+								path.getFileName(), String.valueOf(unreadable.getCause()));
+						opened[0] = empty.invoke(null, path);
+					}
+				}
+				target = opened[0];
+			}
+			try { return method.invoke(target, args); }
+			catch (java.lang.reflect.InvocationTargetException thrown) { throw thrown.getCause(); }
+		};
+		return Proxy.newProxyInstance(gameLoader, new Class<?>[] {contentsCls}, handler);
+	}
+
+	/**
+	 * Fills a constructor-free {@code ModInfo} from a {@link DiscoveredMod}.
+	 *
+	 * <p>{@code version} is a REAL {@code DefaultArtifactVersion} over the mod's declared version string (already
+	 * {@code ${file.jarVersion}}-resolved by the discoverer), because that string is user-visible: it is what
+	 * {@code ModFileInfo.versionString()} returns and what a version probe renders. A placeholder here would be a
+	 * quieter version of the very bug being fixed.
+	 *
+	 * <p>{@code config} must not be null — NeoForge's own {@code FeatureFlagLoader.loadModdedFlags} runs over
+	 * {@code getModFiles()} during {@code Bootstrap} and calls {@code getConfig().getConfigElement("featureFlags")}
+	 * on every mod unguarded. Answering {@code Optional.empty()} is both non-null and true: the kernel's reader does
+	 * not carry that key, so this mod declares no feature flags, and the deeper walk into jar contents (which the
+	 * kernel cannot satisfy) is never entered.
+	 */
+	private static Object buildModInfo(ClassLoader gameLoader, Class<?> modInfoCls, Object owningFile,
+			DiscoveredMod mod) throws Exception {
+		Object modInfo = allocate(modInfoCls);
+		String id = mod.getId();
+
+		setInstanceField(modInfoCls, "owningFile", modInfo, owningFile);
+		setInstanceField(modInfoCls, "modId", modInfo, id);
+		setInstanceField(modInfoCls, "namespace", modInfo, id);
+		setInstanceField(modInfoCls, "version", modInfo, artifactVersion(gameLoader, version(mod)));
+		setInstanceField(modInfoCls, "displayName", modInfo,
+				mod.getDisplayName() == null || mod.getDisplayName().isBlank() ? id : mod.getDisplayName());
+		setInstanceField(modInfoCls, "description", modInfo, "");
+		setInstanceField(modInfoCls, "logoFile", modInfo, Optional.empty());
+		setInstanceField(modInfoCls, "updateJSONURL", modInfo, Optional.empty());
+		setInstanceField(modInfoCls, "modUrl", modInfo, Optional.empty());
+		// Dependencies stay empty on purpose: the kernel's resolver has ALREADY decided what loads, and a populated
+		// list here would only invite NeoForge-side re-checking of a decision that is not its to make.
+		setInstanceField(modInfoCls, "dependencies", modInfo, List.of());
+		setInstanceField(modInfoCls, "features", modInfo, List.of());
+		// As in buildForgeModInfo: the declared table, so a NeoForge mod asking a kernel-built IModInfo about
+		// its properties gets the truth rather than silence.
+		setInstanceField(modInfoCls, "properties", modInfo, mod.getModProperties());
+		setInstanceField(modInfoCls, "config", modInfo, configElementsEnabled()
+				? configurableOver(gameLoader, Ecosystem.NEOFORGE, mod.getConfigElements())
+				: emptyConfigurable(gameLoader, Ecosystem.NEOFORGE));
+		// logoBlur stays at its allocation default (false).
+		return modInfo;
+	}
+
+	/** The mod's declared version, or the conventional unknown-version placeholder when it declared none. */
+	private static String version(DiscoveredMod mod) {
+		return mod.getVersion() == null || mod.getVersion().isBlank() ? "0.0" : mod.getVersion();
+	}
+
+	/** A real {@code DefaultArtifactVersion}; reflective because the kernel carries no compile dep on maven-artifact. */
+	private static Object artifactVersion(ClassLoader gameLoader, String version) throws Exception {
+		return Class.forName("org.apache.maven.artifact.versioning.DefaultArtifactVersion", true, gameLoader)
+				.getConstructor(String.class).newInstance(version);
+	}
+
+
+	/**
+	 * Allocates {@code type} WITHOUT running any constructor.
+	 *
+	 * <p>{@code sun.misc.Unsafe.allocateInstance} directly — it is JDK-only, so this works identically whether
+	 * the game runtime is present (a real boot) or not (unit tests, tooling) — never a reason to skip seeding.
+	 */
+	private static Object allocate(Class<?> type) throws Exception {
+		Object unsafe = jdkUnsafe;
+		if (unsafe == null) {
+			Class<?> unsafeCls = Class.forName("sun.misc.Unsafe");
+			Field theUnsafe = unsafeCls.getDeclaredField("theUnsafe");
+			theUnsafe.setAccessible(true);
+			jdkUnsafe = unsafe = theUnsafe.get(null);
+		}
+		return unsafe.getClass().getMethod("allocateInstance", Class.class).invoke(unsafe, type);
+	}
+
+	/**
+	 * Writes one private instance field, final included. {@code setAccessible(true)} is enough for a NON-STATIC
+	 * final field (the JLS carve-out deserialization relies on), so this needs no Unsafe and works identically
+	 * whether the target class came from the game loader or a plain classpath.
+	 */
+	private static void setInstanceField(Class<?> owner, String name, Object target, Object value) throws Exception {
+		Field field = owner.getDeclaredField(name);
+		field.setAccessible(true);
+		field.set(target, value);
+	}
+
+	/**
+	 * Registers NeoForge's BASELINE registries (neoforge:fluid_type, biome_modifier serializers, …) into the ROOT
+	 * registry so the merged base's NeoForge-patched vanilla code can resolve them. The merged base references
+	 * these even with zero mods (e.g. worldgen resolves {@code DeferredHolder{neoforge:fluid_type/minecraft:empty}}).
+	 *
+	 * <p>Mechanism: {@code NeoForgeRegistriesSetup.registerRegistries(NewRegistryEvent)} is NeoForge's own handler
+	 * that fills the event with all {@code NeoForgeRegistries.*}; {@code NewRegistryEvent.fill()} then registers
+	 * them to the root. The kernel drives this handler directly (no bus, no mod dispatch — zero mods) at the
+	 * pre-freeze window. This is the first slice of native ecosystem registration (M3), not lifecycle driving.
+	 */
+	public static void seedNeoForgeRegistries(ClassLoader gameLoader) {
+		try {
+			// Ensure the static NeoForgeRegistries.* registry objects are created first.
+			Class.forName("net.neoforged.neoforge.registries.NeoForgeRegistries", true, gameLoader);
+
+			Class<?> setupCls = Class.forName("net.neoforged.neoforge.registries.NeoForgeRegistriesSetup", false, gameLoader);
+			Class<?> eventCls = Class.forName(ForeignType.NEW_REGISTRY_EVENT.binary(Ecosystem.NEOFORGE), false, gameLoader);
+
+			Constructor<?> eventCtor = eventCls.getDeclaredConstructor();
+			eventCtor.setAccessible(true);
+			Object event = eventCtor.newInstance();
+
+			Method registerRegistries = setupCls.getDeclaredMethod("registerRegistries", eventCls);
+			registerRegistries.setAccessible(true);
+			registerRegistries.invoke(null, event);
+
+			Method fill = eventCls.getDeclaredMethod("fill");
+			fill.setAccessible(true);
+			fill.invoke(event);
+
+			ForbricLog.info("[Forbric/Seed] registered NeoForge baseline registries into the root (native, no lifecycle)");
+		} catch (ClassNotFoundException absent) {
+			ForbricLog.debug("[Forbric/Seed] NeoForge registry setup not present — skipping");
+		} catch (Throwable t) {
+			ForbricLog.warn("[Forbric/Seed] could not register NeoForge baseline registries", unwrap(t));
+		}
+	}
+
+	/**
+	 * Runs NeoForge's OWN {@code NeoForgeRegistriesSetup.modifyRegistries(ModifyRegistriesEvent)} — the twin of
+	 * {@link #seedNeoForgeRegistries}, driven the same way (its handler directly, no bus, no mod dispatch).
+	 *
+	 * <p>{@code NeoForgeRegistriesSetup.setup(IEventBus)} only adds two listeners, {@code registerRegistries} and
+	 * {@code modifyRegistries}. The kernel drove the first and never the second, so everything the second does was
+	 * simply missing. It does two kinds of work:
+	 *
+	 * <ul>
+	 *   <li>{@code setSync(true)} over {@code VANILLA_SYNC_REGISTRIES} — which the kernel had HAND-REIMPLEMENTED in
+	 *       {@code KernelLifecycle.markVanillaRegistriesSynced}. That half was visible, so it got fixed; the rest
+	 *       was not.</li>
+	 *   <li>Five {@code addCallback} wirings that nothing replaced: {@code BLOCK}, {@code ITEM},
+	 *       {@code ATTRIBUTE}, {@code POINT_OF_INTEREST_TYPE}, and — the one that bites — <b>{@code ATTACHMENT_TYPES}
+	 *       ← {@code AttachmentSync.ATTACHMENT_TYPE_ADD_CALLBACK}</b>, the callback that mirrors every synced
+	 *       {@code AttachmentType} into {@code neoforge:synced_attachment_types}.</li>
+	 * </ul>
+	 *
+	 * <p>Without that last one a NeoForge mod using synced data attachments (Mutant Monsters via Puzzles Lib) kicks
+	 * the player the instant they join: the server sends {@code neoforge:sync_attachments}, whose codec looks the
+	 * attachment up by numeric id, and {@code IdMap.getIdOrThrow} throws
+	 * {@code Can't find id for AttachmentType … in Registry[neoforge:synced_attachment_types]} inside the encoder —
+	 * so the connection dies with a bare "Disconnected" and a clean world save, which reads like anything but a
+	 * registry bug.
+	 *
+	 * <p>Ordering is load-bearing in both directions: this must run AFTER {@link #seedNeoForgeRegistries} (the
+	 * callback is attached to a registry that call creates and roots) and BEFORE the {@code RegisterEvent} pass
+	 * (an {@code AddCallback} fires on ADD, so an attachment registered before it is attached is never mirrored).
+	 *
+	 * @return true if NeoForge's handler ran; false leaves the caller to fall back to the partial hand-rolled path
+	 */
+	public static boolean applyNeoForgeRegistryModifications(ClassLoader gameLoader) {
+		try {
+			Class<?> setupCls = Class.forName("net.neoforged.neoforge.registries.NeoForgeRegistriesSetup", false,
+					gameLoader);
+			Class<?> eventCls = Class.forName("net.neoforged.neoforge.registries.ModifyRegistriesEvent", false,
+					gameLoader);
+
+			Constructor<?> eventCtor = eventCls.getDeclaredConstructor();
+			eventCtor.setAccessible(true);
+
+			Method modifyRegistries = setupCls.getDeclaredMethod("modifyRegistries", eventCls);
+			modifyRegistries.setAccessible(true);
+			modifyRegistries.invoke(null, eventCtor.newInstance());
+
+			ForbricLog.info("[Forbric/Seed] applied NeoForge's registry modifications — vanilla registries marked "
+					+ "client-syncing and the block/item/attribute/POI/attachment callbacks wired (native)");
+			return true;
+		} catch (ClassNotFoundException absent) {
+			ForbricLog.debug("[Forbric/Seed] NeoForge registry setup not present — skipping registry modifications");
+			return false;
+		} catch (Throwable t) {
+			ForbricLog.warn("[Forbric/Seed] could not apply NeoForge registry modifications — falling back to the "
+					+ "sync-flags-only path; synced data attachments will not work", unwrap(t));
+			return false;
+		}
+	}
+
+	private static void setStaticIfNull(Class<?> owner, String field, Object value) throws Exception {
+		Field f = owner.getDeclaredField(field);
+		f.setAccessible(true);
+		if (f.get(null) == null) f.set(null, value);
+	}
+
+	private static Throwable unwrap(Throwable t) {
+		return t instanceof java.lang.reflect.InvocationTargetException && t.getCause() != null ? t.getCause() : t;
+	}
+
+	/** The mods the audit will judge, held until Mixin has registered its configs. See above. */
+	private static volatile List<DiscoveredMod> pendingAudit = List.of();
+
