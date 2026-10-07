@@ -298,3 +298,167 @@ class FabricFreezeHookMixinAdapterTest {
 		assertEquals(MixinFit.value(at, "value"), MixinFit.value(StagedFabricMixinFixture.at(written, "observe"), "value"));
 	}
 
+	@ParameterizedTest(name = "{0}")
+	@MethodSource("staying")
+	void anInjectorThatNeedsFreezesBodyOrMoreThanItsCallbackStays(String name) {
+		assertStays(fabric(name), hooked());
+	}
+
+	/** text_styles' NeoForge injector there runs where NeoForge freezes; a mixin of no known owner is not guessed at. */
+	@ParameterizedTest(name = "{0}")
+	@NullSource
+	@EnumSource(value = Ecosystem.class, names = { "NEOFORGE" })
+	void aMixinThatIsNotAFabricModsStays(Ecosystem owner) {
+		ClassNode mixin = parse("ForeignOwnedMixin");
+		if (owner != null) MixinStubRebind.noteEcosystem(mixin.name, owner);
+		assertStays(mixin, hooked());
+	}
+
+	/** Without fabric-registry-sync a Fabric game freezes in Bootstrap too, and Create's HEAD injector relies on it. */
+	@Test
+	void withoutFabricRegistrySyncNothingMoves() {
+		for (Supplier<Boolean> answer : List.<Supplier<Boolean>>of(() -> false, () -> null)) {
+			FabricFreezeHookMixinAdapter.registrySyncPresent = answer;
+			assertStays(fabric("NoRegistrySyncMixin"), hooked());
+		}
+	}
+
+	@Test
+	void withoutBothHooksOnTheTargetNothingMoves() {
+		ClassNode plain = MixinFit.parse(classes.get(FabricFreezeHookMixinAdapter.BUILT_IN_REGISTRIES));
+		ClassNode headOnly = hooked().apply(FabricFreezeHookMixinAdapter.BUILT_IN_REGISTRIES);
+		headOnly.methods.removeIf(m -> m.name.equals(TAIL));
+		for (Function<String, ClassNode> targets : List.<Function<String, ClassNode>>of(only(plain), only(headOnly), name -> null)) {
+			assertStays(fabric("UnhookedMixin"), targets);
+		}
+	}
+
+	@Test
+	void theSwitchOffMovesNothing() {
+		Function<String, ClassNode> hooked = hooked();
+		String old = System.setProperty(FabricFreezePointInjector.PROPERTY, "off");
+		try {
+			assertStays(fabric("SwitchedOffMixin"), hooked);
+		} finally {
+			if (old == null) System.clearProperty(FabricFreezePointInjector.PROPERTY);
+			else System.setProperty(FabricFreezePointInjector.PROPERTY, old);
+		}
+	}
+
+	/** A mixin applied to a second class as well would move off that class's freeze too. */
+	@Test
+	void aMixinWithASecondTargetStays() {
+		assertStays(fabric("TwoTargetsMixin"), hooked());
+	}
+
+	/** Each injector is judged alone: the one inside freeze() stays in Bootstrap while its neighbour moves. */
+	@Test
+	void onlyTheEligibleInjectorOfAMixinMoves() {
+		ClassNode mixin = fabric("MixedMixin");
+		assertEquals(1, FabricFreezeHookMixinAdapter.adapt(mixin, hooked()));
+		assertEquals(Map.of("before", List.of(HEAD + "()V"), "inside", List.of("freeze()V")), injected(mixin));
+		assertEquals(List.of(mixin.name + "#before -> " + HEAD), rows(mixin));
+	}
+
+	/** The released jar, so a Create Fly that changes either injector is noticed here and not at boot. */
+	@Test
+	void releasedCreateFlyMovesOnInitializeToTheHeadHookAndAfterFreezeToTheTailHook() throws Exception {
+		ClassNode mixin = CreateGuestMixinFixture.mixin(CREATE_MIXIN);
+		MixinStubRebind.noteEcosystem(CREATE_MIXIN, Ecosystem.FABRIC);
+		Map<String, String> bodies = bodies(mixin);
+		assertEquals(2, FabricFreezeHookMixinAdapter.adapt(mixin, hooked()));
+		assertEquals(Map.of("onInitialize", List.of(HEAD + "()V"), "afterFreeze", List.of(TAIL + "()V")), injected(mixin));
+		assertEquals(bodies, bodies(mixin));
+		assertEquals(List.of(CREATE_MIXIN + "#afterFreeze -> " + TAIL, CREATE_MIXIN + "#onInitialize -> " + HEAD), rows(mixin));
+		assertEquals(0, FabricFreezeHookMixinAdapter.adapt(mixin, hooked()));
+	}
+
+	static Stream<String> moving() {
+		return MOVES.keySet().stream().sorted();
+	}
+
+	static Stream<String> movingOffTheCall() {
+		return MOVES.keySet().stream().filter(name -> name.startsWith("BootStrapCall")).sorted();
+	}
+
+	static Stream<String> staying() {
+		return STAYS.keySet().stream().sorted();
+	}
+
+	/** Refused whole: nothing returned, not a byte of the mixin changed, and no row under its name. */
+	private static void assertStays(ClassNode mixin, Function<String, ClassNode> targets) {
+		byte[] before = StagedFabricMixinFixture.bytes(mixin);
+		assertEquals(0, FabricFreezeHookMixinAdapter.adapt(mixin, targets), mixin.name);
+		assertArrayEquals(before, StagedFabricMixinFixture.bytes(mixin), mixin.name + " was rewritten");
+		assertEquals(List.of(), rows(mixin));
+	}
+
+	/** {@code BuiltInRegistries} as the kernel loads it: the stand-in through the real {@link FabricFreezePointInjector}. */
+	private static Function<String, ClassNode> hooked() {
+		byte[] plain = classes.get(FabricFreezeHookMixinAdapter.BUILT_IN_REGISTRIES);
+		return only(MixinFit.parse(new FabricFreezePointInjector().transform(FabricFreezePointInjector.TARGET, plain, null)));
+	}
+
+	private static Function<String, ClassNode> only(ClassNode builtInRegistries) {
+		return name -> name.equals(FabricFreezeHookMixinAdapter.BUILT_IN_REGISTRIES) ? builtInRegistries : null;
+	}
+
+	private static ClassNode parse(String name) {
+		return MixinFit.parse(classes.get(PACKAGE + name));
+	}
+
+	private static ClassNode fabric(String name) {
+		ClassNode mixin = parse(name);
+		MixinStubRebind.noteEcosystem(mixin.name, Ecosystem.FABRIC);
+		return mixin;
+	}
+
+	/** Each injector handler's {@code method} list, by handler name. */
+	private static Map<String, List<String>> injected(ClassNode mixin) {
+		Map<String, List<String>> out = new HashMap<>();
+		for (MethodNode method : mixin.methods) {
+			var injector = MixinFit.injectorOf(method);
+			if (injector != null) out.put(method.name, MixinFit.stringList(MixinFit.value(injector, "method")));
+		}
+		return out;
+	}
+
+	private static Map<String, String> bodies(ClassNode mixin) {
+		Map<String, String> out = new HashMap<>();
+		for (MethodNode method : mixin.methods) out.put(method.name + method.desc, MixinInstructionFingerprint.hash(method));
+		return out;
+	}
+
+	private static List<String> rows(ClassNode mixin) {
+		return FabricFreezeHookMixinAdapter.moved().stream().filter(row -> row.startsWith(mixin.name + "#")).toList();
+	}
+
+	private static String binary(String name) {
+		return (PACKAGE + name).replace('/', '.');
+	}
+
+	/** One injector over a handler {@code observe} that calls into Create, so its body is something to keep. */
+	private static String one(String injector, String handler) {
+		return "\t" + injector + "\n\tprivate " + handler + " {\n\t\tCreate.register();\n\t}\n";
+	}
+
+	private static String mixin(String name, String annotation, String body) {
+		return """
+				package test.freeze;
+
+				import net.minecraft.core.registries.BuiltInRegistries;
+				import org.spongepowered.asm.mixin.Mixin;
+				import org.spongepowered.asm.mixin.injection.At;
+				import org.spongepowered.asm.mixin.injection.Inject;
+				import org.spongepowered.asm.mixin.injection.ModifyArg;
+				import org.spongepowered.asm.mixin.injection.Redirect;
+				import org.spongepowered.asm.mixin.injection.Slice;
+				import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+				import org.spongepowered.asm.mixin.injection.callback.LocalCapture;
+
+				%s
+				public abstract class %s {
+				%s}
+				""".formatted(annotation, name, body);
+	}
+}
