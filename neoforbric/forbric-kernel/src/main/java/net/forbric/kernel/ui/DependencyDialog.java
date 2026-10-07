@@ -1,0 +1,300 @@
+/*
+ * Copyright 2026 The Forbric Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package net.forbric.kernel.ui;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+
+import net.forbric.kernel.util.ForbricLog;
+
+/**
+ * Puts an unmet hard dependency in front of the player, instead of only in the log.
+ *
+ * <p>The log line was always there. It is one WARN in a ten-thousand-line file, and the failure it predicts
+ * arrives much later wearing someone else's name: a pack whose BiomesOPlenty was missing TerraBlender logged
+ * that requirement at boot, then died forty seconds afterwards on "Failed to load registries due to errors" —
+ * 455 unknown block ids, an error naming neither mod. A player cannot be expected to connect those.
+ *
+ * <p>See {@link DependencyDialogMain} for why the dialog is a separate process on every platform.
+ *
+ * <h2>What it may and may not do</h2>
+ *
+ * <p>{@code DependencyAudit} states the policy this belongs to: it reports, it never refuses, because one bad
+ * declaration must not cost a player every other mod. A dialog does not change that — the kernel still loads
+ * everything, and "Launch anyway" is what happens on every path that is not a deliberate click on Quit: a
+ * closed window, a dialog that fails to open, no display, a child that crashes, a timeout. The one case where
+ * the boot stops is the player choosing to stop it, which is not the kernel refusing on their behalf.
+ *
+ * <p>Silent on a dedicated server and in any headless run. A server blocked on a dialog nobody can see is
+ * strictly worse than the log line it replaces, and the gates run servers unattended.
+ *
+ * <h2>One window, not two</h2>
+ *
+ * <p>The audit no longer opens its window itself: it {@link #hold holds} the notice, and the launch's compatibility
+ * decision shows it. When nothing needs a decision, that is the notice above, unchanged. When a confirmed required
+ * loss does, the notice is folded into the {@link #confirm confirmation} -- the same child, the same layout -- whose
+ * contract is the opposite one: only an explicit click on continue approves, and a closed window or
+ * {@code -Dforbric.dependencyDialog=off} is a launch that was not approved. A window that cannot be shown at all -- no
+ * runnable {@code java} beside this runtime, a child that cannot start or cannot draw, nobody answering it -- is not
+ * an answer either way: {@link DependencyDialogMain#UNSHOWN}, and the launch asks in the game's own window instead.
+ * Either way the player is asked once, and suspected findings only ever reach the details.
+ */
+public final class DependencyDialog {
+	/**
+	 * {@code -Dforbric.dependencyDialog=} {@code on} (default) | {@code off} | {@code dryRun}.
+	 *
+	 * <ul>
+	 *   <li>{@code off} — the warning stays in the log. What {@code run/launch-kernel-client.sh} passes unless
+	 *       told otherwise, so no gate and no developer run can ever block on a window. A confirmed required loss
+	 *       still needs an explicit continue, and with no window there is none: under the ask policy that launch
+	 *       is not approved rather than approved by default.</li>
+	 *   <li>{@code dryRun} — fork the real child, with AWT disabled inside it. Every part of the path runs: the
+	 *       report is written, the child JVM starts, reads it, finds it cannot draw, and exits — CONTINUE for the
+	 *       notice, UNSHOWN for a confirmation, which approves nothing and moves the question into the game. It
+	 *       exists so a gate can assert on the machinery rather than on a mock of it. Nothing is drawn and
+	 *       nobody has to click, which is the only way a dialog is testable unattended.</li>
+	 *   <li>{@code on} — the real thing.</li>
+	 * </ul>
+	 *
+	 * <p>The default is ON because the player who needs this is the one who never passes a flag. The gates and
+	 * the dev launcher opt out explicitly rather than relying on the guards below: a gate hung on an invisible
+	 * window is the worst failure mode in this repo, and "three guards make it impossible" is not the same
+	 * thing as "it cannot happen".
+	 */
+	static final String SWITCH = "forbric.dependencyDialog";
+
+	/** @see #SWITCH */
+	private static final String DRY_RUN = "dryRun";
+
+	/**
+	 * How long to wait for the player. Generous, because reading it is the point — but not unbounded: a child
+	 * that somehow renders nothing must not hold the launch forever.
+	 */
+	private static final long TIMEOUT_MINUTES = 10;
+
+	/**
+	 * Why the confirmation cannot be shown in this JVM, once that is known, or null. Remembered so that a launch
+	 * asking at three boundaries does not fork three children that cannot start: on FCL, Android's phone launcher,
+	 * every one of them failed the same way, with error 13 from {@code execve}.
+	 */
+	private static volatile String confirmationUnavailable;
+
+	private DependencyDialog() {
+	}
+
+	/**
+	 * The unmet requirements and mixin breaks the audit found, held for the launch's one decision.
+	 *
+	 * @param rows   unmet requirements
+	 * @param mixins mixins that were written to attach to another mod and did not
+	 */
+	public record Notice(List<DependencyReport.Row> rows, List<DependencyReport.MixinRow> mixins) {
+		public static final Notice EMPTY = new Notice(List.of(), List.of());
+
+		public Notice {
+			rows = rows == null ? List.of() : List.copyOf(rows);
+			mixins = mixins == null ? List.of() : List.copyOf(mixins);
+		}
+
+		public boolean isEmpty() {
+			return rows.isEmpty() && mixins.isEmpty();
+		}
+
+		public int size() {
+			return rows.size() + mixins.size();
+		}
+	}
+
+	private static Notice held = Notice.EMPTY;
+
+	/** What the audit found, shown by the launch decision rather than in a window of its own. Replaces, never adds. */
+	public static synchronized void hold(List<DependencyReport.Row> rows, List<DependencyReport.MixinRow> mixins) {
+		held = new Notice(rows, mixins);
+	}
+
+	/** The held notice, handed over once: the first decision shows it and no later one can show it again. */
+	static synchronized Notice takeHeld() {
+		Notice taken = held;
+		held = Notice.EMPTY;
+		return taken;
+	}
+
+	/**
+	 * Says where a notice went when no window can show it.
+	 *
+	 * @param why the reason on a client; a server always says it is not the client, which is the guard gates name
+	 */
+	static void unshown(Notice notice, boolean isClient, String why) {
+		if (notice.isEmpty()) return;
+		if (!isClient) {
+			ForbricLog.debug("[Forbric/Deps] not the client — the %d finding(s) stay in the log", notice.size());
+			return;
+		}
+		ForbricLog.info("[Forbric/Deps] %s — %d finding(s) reported in the log only", why, notice.size());
+	}
+
+	/**
+	 * Shows the dialog if this run is one that can have a player in front of it, and quits if they say so.
+	 *
+	 * @param rows     the unmet requirements; nothing happens when empty
+	 * @param isClient whether this is the physical client. The caller knows the side; this class must not guess
+	 *                 it, because guessing wrong in the silent direction costs a warning and guessing wrong in
+	 *                 the loud direction hangs a server
+	 */
+	public static boolean offer(List<DependencyReport.Row> rows, boolean isClient) {
+		return offer(rows, List.of(), isClient);
+	}
+
+	/**
+	 * @param mixins mixins that were written to attach to another mod and did not. A different problem from an
+	 *               unmet dependency and reported separately, because no dependency check can see it: both mods
+	 *               are installed and each is inside the range the other declares
+	 * @return false only when the player chose to quit; the caller turns that into the launch's typed stop rather
+	 *         than this class exiting the JVM from the middle of a boot
+	 */
+	public static boolean offer(List<DependencyReport.Row> rows, List<DependencyReport.MixinRow> mixins,
+			boolean isClient) {
+		return offer(rows, mixins, List.of(), isClient);
+	}
+
+	/** @param suspected notes for the details pane. They never open a window by themselves. */
+	static boolean offer(List<DependencyReport.Row> rows, List<DependencyReport.MixinRow> mixins,
+			List<DependencyReport.CompatibilityRow> suspected, boolean isClient) {
+		if (rows == null) rows = List.of();
+		if (mixins == null) mixins = List.of();
+		if (suspected == null) suspected = List.of();
+		if (rows.isEmpty() && mixins.isEmpty()) return true;
+		int findings = rows.size() + mixins.size();
+		if (!isClient) {
+			ForbricLog.debug("[Forbric/Deps] not the client — the %d finding(s) stay in the log", findings);
+			return true;
+		}
+		String mode = System.getProperty(SWITCH, "on");
+		if ("off".equalsIgnoreCase(mode)) {
+			ForbricLog.info("[Forbric/Deps] -D%s=off — %d finding(s) reported in the log only",
+					SWITCH, findings);
+			return true;
+		}
+		boolean dryRun = DRY_RUN.equalsIgnoreCase(mode);
+		if (java.awt.GraphicsEnvironment.isHeadless() && !net.forbric.kernel.boot.MacAwtBootstrap.usesHeadlessFonts()) {
+			// Measured safe to ask: on a JVM started with -XstartOnFirstThread this returns in ~12ms and starts
+			// no AWT thread, so the guard cannot be the thing that breaks the window it is guarding.
+			ForbricLog.info("[Forbric/Deps] headless — %d finding(s) reported in the log only", findings);
+			return true;
+		}
+		String launcher = launcherProblem();
+		if (launcher != null) {
+			ForbricLog.info("[Forbric/Deps] %s — %d finding(s) reported in the log only", launcher, findings);
+			return true;
+		}
+
+		int answer;
+		try {
+			// The dry run differs ONLY in the child's flags, so what a gate exercises is this method, this fork
+			// and this exit code — not a stand-in for them.
+			answer = ask(rows, mixins, suspected, dryRun ? List.of("-Djava.awt.headless=true") : List.of());
+			if (dryRun) {
+				ForbricLog.info("[Forbric/Deps] -D%s=dryRun — forked the dialog for %d finding(s) with "
+						+ "no display; it answered %d (launch anyway) without drawing anything",
+						SWITCH, findings, answer);
+			}
+		} catch (Throwable failed) {
+			ForbricLog.warn("[Forbric/Deps] could not show the unmet-dependency dialog — the warnings above are "
+					+ "the whole of it; launching anyway", failed);
+			return true;
+		}
+		if (answer == DependencyDialogMain.QUIT) {
+			ForbricLog.warn("[Forbric/Deps] the player chose to quit rather than launch with %d finding(s). "
+					+ "This is their decision, not the kernel refusing — -D%s=off launches without asking.",
+					findings, SWITCH);
+			return false;
+		}
+		ForbricLog.info("[Forbric/Deps] launching anyway with %d finding(s), at the player's choice", findings);
+		return true;
+	}
+
+	/**
+	 * The one window when a confirmed required loss needs an answer, with the held notice folded in.
+	 *
+	 * <p>Fail-closed where {@link #offer} is fail-open, and the switch keeps its meaning of "no window": with it off
+	 * nothing is asked, so nothing is approved. The dry run forks the real child with no display, which cannot
+	 * approve either -- so a gate sees the whole path and the refusal it must end in.
+	 *
+	 * @return {@link DependencyDialogMain#CONTINUE} only for an explicit click on continue
+	 */
+	static int confirm(DependencyReport.Confirmation confirmation) throws Exception {
+		int findings = confirmation.findings();
+		String mode = System.getProperty(SWITCH, "on");
+		if ("off".equalsIgnoreCase(mode)) {
+			ForbricLog.warn("[Forbric/Deps] -D%s=off — %d finding(s) reported in the log only; a required loss "
+					+ "needs an explicit continue, so continuation was not approved", SWITCH, findings);
+			return DependencyDialogMain.QUIT;
+		}
+		String unavailable = confirmationUnavailable != null ? confirmationUnavailable : launcherProblem();
+		if (unavailable != null) return unshown(unavailable);
+		boolean dryRun = DRY_RUN.equalsIgnoreCase(mode);
+		int answer;
+		try {
+			answer = askConfirmation(confirmation, dryRun ? List.of("-Djava.awt.headless=true") : List.of());
+		} catch (java.io.IOException cannotStart) {
+			// FCL's java.home holds a bin/java that execve refuses (error 13): the launcher loads the JVM in its own
+			// process and never runs that file. Not the player saying no.
+			return unshown("its process could not be started: " + cannotStart.getMessage());
+		}
+		if (dryRun) {
+			ForbricLog.info("[Forbric/Deps] -D%s=dryRun — forked the dialog for %d finding(s) with no display; it "
+					+ "answered %d (%s) without drawing anything", SWITCH, findings, answer,
+					answer == DependencyDialogMain.CONTINUE ? "continue"
+							: answer == DependencyDialogMain.UNSHOWN ? "could not show it" : "not approved");
+		}
+		if (answer == DependencyDialogMain.UNSHOWN) confirmationUnavailable = "nobody could answer it in its window";
+		return answer;
+	}
+
+	/** Whether {@code -Dforbric.dependencyDialog=off} asks for no window at all. */
+	static boolean switchedOff() {
+		return "off".equalsIgnoreCase(System.getProperty(SWITCH, "on"));
+	}
+
+	private static int unshown(String why) {
+		confirmationUnavailable = why;
+		ForbricLog.warn("[Forbric/Deps] the confirmation window cannot be shown here: %s", why);
+		return DependencyDialogMain.UNSHOWN;
+	}
+
+	/** Test seam: forget that this JVM could not show the confirmation. */
+	static void forgetUnavailable() {
+		confirmationUnavailable = null;
+	}
+
+	/**
+	 * Why this runtime has no {@code java} to start the window's process with, or null when it has one.
+	 *
+	 * <p>The child is {@code java.home/bin/java}. A launcher that embeds its JRE and loads the JVM in its own process
+	 * has no need for that file to run, and on Android it does not: FCL's is there and {@code execve} refuses it.
+	 * Asking the file system first turns a failed fork into a known answer before anything is attempted.
+	 */
+	static String launcherProblem() {
+		Path bin = Path.of(System.getProperty("java.home", ""), "bin");
+		if (Files.isExecutable(bin.resolve("java")) || Files.isExecutable(bin.resolve("java.exe"))) return null;
+		return "there is no runnable java at " + bin.resolve("java");
+	}
+
+	/**
+	 * Why no window can be shown on this run, or null when one can: the same three guards {@link #offer} applies,
