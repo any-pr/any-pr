@@ -298,3 +298,55 @@ public final class MergedLinkChecker {
 		if (name.equals("<init>") || name.equals("<clinit>")) {
 			ClassNode cn = classes.get(owner);
 			if (cn == null) return true; // owner itself outside closure — not a merged class we can judge
+			for (MethodNode mn : cn.methods) {
+				if (mn.name.equals(name) && mn.desc.equals(desc)) return true;
+			}
+			return false;
+		}
+		for (String c = owner; c != null; ) {
+			ClassNode cn = classes.get(c);
+			if (cn == null) {
+				// Outside our closure — resolve by reflection (JDK/library supertypes: Thread.start, ArrayList.addAll,
+				// Throwable.getMessage, etc. are all legit inherited). Match by NAME (lenient) to suppress false
+				// positives; only a name that exists NOWHERE up the reflective chain is genuinely DANGLING.
+				return reflectivelyHasMethod(c, name);
+			}
+			for (MethodNode mn : cn.methods) {
+				if (mn.name.equals(name) && mn.desc.equals(desc)) return true;
+			}
+			for (String itf : cn.interfaces) {
+				if (resolveMethod(itf, name, desc)) return true;
+			}
+			c = cn.superName;
+		}
+		return false;
+	}
+
+	private boolean reflectivelyHasField(String internalName, String name) {
+		try {
+			Class<?> c = Class.forName(internalName.replace('/', '.'), false, getClass().getClassLoader());
+			for (Class<?> k = c; k != null; k = k.getSuperclass()) {
+				for (var f : k.getDeclaredFields()) if (f.getName().equals(name)) return true;
+				for (Class<?> itf : k.getInterfaces()) {
+					for (var f : itf.getFields()) if (f.getName().equals(name)) return true;
+				}
+			}
+			return false; // class exists but no such field anywhere up its chain -> dangling
+		} catch (Throwable notLoadable) {
+			return true; // library/runtime supertype we couldn't load -> assume OK (avoid false positives)
+		}
+	}
+
+	private boolean reflectivelyHasMethod(String internalName, String name) {
+		try {
+			Class<?> c = Class.forName(internalName.replace('/', '.'), false, getClass().getClassLoader());
+			for (Class<?> k = c; k != null; k = k.getSuperclass()) {
+				for (var m : k.getDeclaredMethods()) if (m.getName().equals(name)) return true;
+			}
+			for (var m : c.getMethods()) if (m.getName().equals(name)) return true; // default/interface methods
+			return false;
+		} catch (Throwable notLoadable) {
+			return true;
+		}
+	}
+}
