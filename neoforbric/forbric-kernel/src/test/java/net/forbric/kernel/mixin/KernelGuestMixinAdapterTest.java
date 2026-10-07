@@ -298,3 +298,303 @@ class KernelGuestMixinAdapterTest {
 		Map<String, byte[]> classes = new HashMap<>();
 		classes.put(state + ".class", target(state, "biome", Opcodes.ACC_PUBLIC, false));
 		classes.put(PKG + "/MovingBlockRenderStateMixin.class",
+				shadowingMixin("MovingBlockRenderStateMixin", state, "biome"));
+
+		assertTrue(KernelGuestMixinAdapter.unfitMixins("example.mixins.json",
+				config(PKG.replace('/', '.'), "MovingBlockRenderStateMixin"), resolver(classes)).isEmpty(),
+				"a public field may legitimately be assigned by another class — never call it orphaned");
+	}
+
+	@Test
+	void aSuppressedMixinMarksItsOwningModDegraded() {
+		List<ModCatalog.Entry> previous = ModCatalog.everything();
+		try {
+			MixinConfigOwners.publish(List.of(new MixinConfigOwners.Owned("x.mixins.json", "xmod", Ecosystem.FABRIC)));
+			ModCatalog.publish(List.of(new ModCatalog.Entry(Ecosystem.FABRIC, "xmod", "X", "1", "", List.of(), "x.jar", "", "")));
+			String t = "net/minecraft/client/renderer/GameRenderer";
+			Map<String, byte[]> classes = new HashMap<>();
+			classes.put(t + ".class", target(t, "unused", Opcodes.ACC_PRIVATE, true));
+			classes.put(PKG + "/Dangling.class", danglingMixin("Dangling", t));
+
+			assertEquals(List.of("Dangling"), KernelGuestMixinAdapter.unfitMixins("x.mixins.json",
+					config(PKG.replace('/', '.'), "Dangling"), resolver(classes)));
+			assertEquals(1, ModCatalog.failures().size(), "the owning mod's row says what was left out");
+			ModCatalog.Entry xmod = ModCatalog.failures().get(0);
+			assertEquals("xmod", xmod.modId());
+			assertEquals(ModCatalog.Status.DEGRADED, xmod.status());
+			assertTrue(xmod.statusDetail().contains("Dangling"), xmod.statusDetail());
+		} finally {
+			MixinConfigOwners.reset();
+			ModCatalog.publish(previous);
+		}
+	}
+
+	/**
+	 * Iris' case: a mixin whose target exists only in the build of a duplicated mod the kernel did not load.
+	 * Mixin says nothing about a target that never loads, so without this the mod boots clean and the interface
+	 * the mixin was there to implant is missing — a ClassCastException at the first use, minutes later.
+	 */
+	@Test
+	void aMixinTargetingAnArbitratedAwayClassIsNamedInsteadOfBeingSilentlyInert() {
+		List<ModCatalog.Entry> previous = ModCatalog.everything();
+		try {
+			net.forbric.kernel.boot.ArbitratedAwayClasses.reset();
+			MixinConfigOwners.publish(List.of(new MixinConfigOwners.Owned("iris.mixins.json", "iris", Ecosystem.FABRIC)));
+			ModCatalog.publish(List.of(new ModCatalog.Entry(Ecosystem.FABRIC, "iris", "Iris", "1", "", List.of(), "i.jar", "", "")));
+			String gone = "net/caffeinemc/mods/sodium/fabric/render/FluidRendererImpl";
+			net.forbric.kernel.boot.ArbitratedAwayClasses.record(List.of(gone.replace('/', '.')),
+					new net.forbric.kernel.boot.ArbitratedAwayClasses.Loss("sodium", Ecosystem.FABRIC,
+							Ecosystem.NEOFORGE, "sodium-fabric-0.9.2.jar"));
+
+			// The target's bytes are deliberately STILL SERVABLE, because in the live boot they were: the losing
+			// jar stays readable on the owned classpath even though its classes are not the ones in play. A
+			// resource check was silent on exactly this case; membership of the registry is the whole test.
+			Map<String, byte[]> classes = new HashMap<>();
+			classes.put(gone + ".class", target(gone, "unused", Opcodes.ACC_PRIVATE, true));
+			classes.put(PKG + "/MixinFluidRendererImpl.class", danglingMixin("MixinFluidRendererImpl", gone));
+
+			assertTrue(KernelGuestMixinAdapter.unfitMixins("iris.mixins.json",
+					config(PKG.replace('/', '.'), "MixinFluidRendererImpl"), resolver(classes)).isEmpty(),
+					"nothing is suppressed — the mixin was never going to apply; what was missing is the report");
+			assertEquals(1, ModCatalog.failures().size());
+			String detail = ModCatalog.failures().get(0).statusDetail();
+			assertTrue(detail.contains("FluidRendererImpl"), detail);
+			assertTrue(detail.contains("sodium"), "the row must name the mod whose build was arbitrated away: " + detail);
+			// And the ledger has it: the target never loads, so the mixin is confirmed not to run — but a missing
+			// target is only a warning to native Mixin, so it is not a necessary loss that stops a launch.
+			var finding = net.forbric.api.CompatibilityFindings.all().stream()
+					.filter(f -> f.id().equals(MixinCompatibility.id("iris.mixins.json",
+							PKG.replace('/', '.') + ".MixinFluidRendererImpl"))).findFirst().orElseThrow();
+			assertEquals(net.forbric.api.CompatibilityFinding.Confidence.CONFIRMED, finding.confidence());
+			assertFalse(finding.required());
+			assertTrue(net.forbric.api.CompatibilityFindings.confirmedRequired().isEmpty());
+		} finally {
+			net.forbric.kernel.boot.ArbitratedAwayClasses.reset();
+			MixinConfigOwners.reset();
+			ModCatalog.publish(previous);
+		}
+	}
+
+	/** A target that is merely absent — no arbitration removed it — is an ordinary compat mixin and stays quiet. */
+	@Test
+	void aMixinForAModThatIsSimplyNotInstalledIsNotReported() {
+		List<ModCatalog.Entry> previous = ModCatalog.everything();
+		try {
+			net.forbric.kernel.boot.ArbitratedAwayClasses.reset();
+			MixinConfigOwners.publish(List.of(new MixinConfigOwners.Owned("q.mixins.json", "qmod", Ecosystem.FABRIC)));
+			ModCatalog.publish(List.of(new ModCatalog.Entry(Ecosystem.FABRIC, "qmod", "Q", "1", "", List.of(), "q.jar", "", "")));
+			Map<String, byte[]> classes = new HashMap<>();
+			classes.put(PKG + "/MixinAbsent.class", danglingMixin("MixinAbsent", "de/example/NotInstalled"));
+
+			KernelGuestMixinAdapter.unfitMixins("q.mixins.json",
+					config(PKG.replace('/', '.'), "MixinAbsent"), resolver(classes));
+
+			assertTrue(ModCatalog.failures().isEmpty(),
+					"a compat mixin for an uninstalled mod is normal, and marking it would be the false positive "
+							+ "this report exists to avoid");
+		} finally {
+			MixinConfigOwners.reset();
+			ModCatalog.publish(previous);
+		}
+	}
+
+	/**
+	 * Iris beside a Sodium that stopped making the call Iris redirects: the anchor misses on ANOTHER MOD's class.
+	 * Nothing has been observed to fail yet, so the finding is only SUSPECTED and asks nobody to continue or quit —
+	 * but a suspicion still belongs in the details. The dependency dialog's mixin section reads ForeignMixinBreaks
+	 * and the Mods screen reads the row; with neither fed, the render crash a frame later names no mod at all.
+	 */
+	@Test
+	void aMissOnAnotherModsClassReachesTheDialogAndTheRowButStaysSuspected() {
+		List<ModCatalog.Entry> previous = ModCatalog.everything();
+		try {
+			ForeignMixinBreaks.reset();
+			MixinConfigOwners.publish(List.of(new MixinConfigOwners.Owned("iris.mixins.json", "iris", Ecosystem.FABRIC)));
+			ModCatalog.publish(List.of(new ModCatalog.Entry(Ecosystem.FABRIC, "iris", "Iris", "1", "", List.of(), "i.jar", "", "")));
+			String sodium = "net/caffeinemc/mods/sodium/client/render/chunk/RenderRegionManager";
+			Map<String, byte[]> classes = new HashMap<>();
+			classes.put(sodium + ".class", target(sodium, "unused", Opcodes.ACC_PRIVATE, true));
+			classes.put(PKG + "/MixinRenderRegionManager.class", halfMixin("MixinRenderRegionManager", sodium));
+
+			assertTrue(KernelGuestMixinAdapter.unfitMixins("iris.mixins.json",
+					config(PKG.replace('/', '.'), "MixinRenderRegionManager"), resolver(classes)).isEmpty(),
+					"a half-fitting cross-mod mixin is kept, like every PARTIAL");
+
+			List<ForeignMixinBreaks.Break> breaks = ForeignMixinBreaks.all();
+			assertEquals(1, breaks.size(), "the dependency dialog's mixin section is fed");
+			assertEquals("iris.mixins.json", breaks.get(0).config());
+			assertEquals("MixinRenderRegionManager", breaks.get(0).mixin());
+			assertTrue(breaks.get(0).anchors().stream().anyMatch(a -> a.contains("methodThatNoLongerExists")),
+					breaks.get(0).anchors().toString());
+
+			assertEquals(1, ModCatalog.failures().size(), "the Mods screen names the mod");
+			assertEquals(ModCatalog.Status.DEGRADED, ModCatalog.failures().get(0).status());
+			assertTrue(ModCatalog.failures().get(0).statusDetail().contains("another mod's class"),
+					ModCatalog.failures().get(0).statusDetail());
+
+			var finding = net.forbric.api.CompatibilityFindings.all().stream()
+					.filter(f -> f.id().equals(MixinCompatibility.id("iris.mixins.json",
+							PKG.replace('/', '.') + ".MixinRenderRegionManager"))).findFirst().orElseThrow();
+			assertEquals(net.forbric.api.CompatibilityFinding.Confidence.SUSPECTED, finding.confidence());
+			assertTrue(net.forbric.api.CompatibilityFindings.confirmedRequired().isEmpty(),
+					"a preflight suspicion never asks the player to continue or quit");
+		} finally {
+			ForeignMixinBreaks.reset();
+			MixinConfigOwners.reset();
+			ModCatalog.publish(previous);
+		}
+	}
+
+	/**
+	 * A mixin on {@code ByteBufCodecs$15}, which the merge renumbered into three candidates, so nothing can move it.
+	 * Every handler then binds — to the unrelated class that now carries that name — and the final-class check
+	 * sees all of them attached. That is the evidence for "the anchors resolved", which is all it may discharge;
+	 * the drift is a question about WHICH class, and it has to survive the attachment.
+	 */
+	@Test
+	void aDriftedTargetIsNotDischargedByItsHandlersAttaching() {
+		MixinCompatibility.reset();
+		try {
+			MixinConfigOwners.publish(List.of(new MixinConfigOwners.Owned("drift.mixins.json", "driftmod", Ecosystem.FABRIC)));
+			String drifted = "net/minecraft/network/codec/ByteBufCodecs$15";
+			String mixinClass = PKG.replace('/', '.') + ".CodecMixin";
+			Map<String, byte[]> classes = new HashMap<>();
+			classes.put(drifted + ".class", target(drifted, "unused", Opcodes.ACC_PRIVATE, true));
+			classes.put(PKG + "/CodecMixin.class", shadowingMixin("CodecMixin", drifted, "unused"));
+			byte[] cfg = ("{\"required\":true,\"package\":\"" + PKG.replace('/', '.') + "\",\"mixins\":[\"CodecMixin\"],"
+					+ "\"injectors\":{\"defaultRequire\":1}}").getBytes(StandardCharsets.UTF_8);
+
+			MixinCompatibility.rememberOriginalConfig("drift.mixins.json", cfg);
+			assertTrue(KernelGuestMixinAdapter.unfitMixins("drift.mixins.json", cfg, resolver(classes)).isEmpty(),
+					"a drifted target is PARTIAL and kept");
+
+			org.objectweb.asm.tree.ClassNode mixin = new org.objectweb.asm.tree.ClassNode();
+			new org.objectweb.asm.ClassReader(classes.get(PKG + "/CodecMixin.class")).accept(mixin, 0);
+			FinalMixinApplications.remember(mixin);
+			// The final class: the merged handler, and the call the injector made to it.
+			ClassWriter cw = new ClassWriter(0);
+			cw.visit(Opcodes.V21, Opcodes.ACC_PUBLIC, drifted, null, "java/lang/Object", null);
+			MethodVisitor handler = cw.visitMethod(Opcodes.ACC_PRIVATE, "handler$000$onRender", "()V", null, null);
+			AnnotationVisitor merged = handler.visitAnnotation("Lorg/spongepowered/asm/mixin/transformer/meta/MixinMerged;", true);
+			merged.visit("mixin", mixinClass);
+			merged.visitEnd();
+			handler.visitCode();
+			handler.visitInsn(Opcodes.RETURN);
+			handler.visitMaxs(0, 1);
+			handler.visitEnd();
+			MethodVisitor render = cw.visitMethod(Opcodes.ACC_PUBLIC, "render", "()V", null, null);
+			render.visitCode();
+			render.visitVarInsn(Opcodes.ALOAD, 0);
+			render.visitMethodInsn(Opcodes.INVOKESPECIAL, drifted, "handler$000$onRender", "()V", false);
+			render.visitInsn(Opcodes.RETURN);
+			render.visitMaxs(1, 1);
+			render.visitEnd();
+			cw.visitEnd();
+			FinalMixinApplications.observe(drifted.replace('/', '.'), cw.toByteArray(),
+					(m, name, desc) -> List.of(new FinalMixinApplications.Renamed("handler$000$" + name, desc)));
+
+			var findings = net.forbric.api.CompatibilityFindings.all();
+			var whole = findings.stream().filter(f -> f.id().equals(MixinCompatibility.id("drift.mixins.json", mixinClass)))
+					.findFirst().orElseThrow();
+			assertEquals(net.forbric.api.CompatibilityFinding.Confidence.RESOLVED, whole.confidence(),
+					"every anchor attached, and that part of the suspicion is answered");
+			var drift = findings.stream().filter(f -> f.id().equals(MixinCompatibility.driftId("drift.mixins.json", mixinClass)))
+					.findFirst().orElseThrow(() -> new AssertionError("no drift row survived: " + findings));
+			assertEquals(net.forbric.api.CompatibilityFinding.Confidence.SUSPECTED, drift.confidence(),
+					"attachment cannot say the handlers bound to the class vanilla compiled at that name");
+			assertTrue(drift.evidence().stream().anyMatch(e -> e.contains("ByteBufCodecs$15")), drift.evidence().toString());
+			assertTrue(net.forbric.api.CompatibilityFindings.confirmedRequired().isEmpty());
+		} finally {
+			MixinCompatibility.reset();
+			MixinConfigOwners.reset();
+		}
+	}
+
+	@Test
+	void aConfigWithAPluginHoldsTheMarkBackUntilThePluginIsAsked() {
+		List<ModCatalog.Entry> previous = ModCatalog.everything();
+		try {
+			PluginDeclinedMixins.reset();
+			MixinConfigOwners.publish(List.of(new MixinConfigOwners.Owned("p.mixins.json", "pmod", Ecosystem.FABRIC)));
+			ModCatalog.publish(List.of(new ModCatalog.Entry(Ecosystem.FABRIC, "pmod", "P", "1", "", List.of(), "p.jar", "", "")));
+			String t = "net/minecraft/client/renderer/GameRenderer";
+			Map<String, byte[]> classes = new HashMap<>();
+			classes.put(t + ".class", target(t, "unused", Opcodes.ACC_PRIVATE, true));
+			classes.put(PKG + "/Dangling.class", danglingMixin("Dangling", t));
+
+			// Same suppression as the test above; the only difference is that this config declares a plugin, and
+			// the plugin is the one party that knows whether the mod wanted this mixin here at all.
+			assertEquals(List.of("Dangling"), KernelGuestMixinAdapter.unfitMixins("p.mixins.json",
+					configWithPlugin(PKG.replace('/', '.'), "com.example.ExamplePlugin", "Dangling"),
+					resolver(classes)));
+			assertTrue(ModCatalog.failures().isEmpty(), "the mark waits for the plugin's answer");
+			assertEquals(1, PluginDeclinedMixins.pending());
+
+			// No plugin instance was ever built, so there is no answer — and no answer marks the mod.
+			PluginDeclinedMixins.resolve();
+			assertEquals(1, ModCatalog.failures().size());
+			assertTrue(ModCatalog.failures().get(0).statusDetail().contains("Dangling"));
+		} finally {
+			PluginDeclinedMixins.reset();
+			MixinConfigOwners.reset();
+			ModCatalog.publish(previous);
+		}
+	}
+
+	/** Declines the mixin for the first target only, the way a plugin reading {@code targetClassName} can. */
+	public static final class FirstTargetDecliningPlugin {
+		public boolean shouldApplyMixin(String target, String mixin) {
+			return !"net.minecraft.client.renderer.GameRenderer".equals(target);
+		}
+	}
+
+	/** The kernel removes a mixin from EVERY target, so the plugin must be asked about every target too. */
+	@Test
+	void aSuppressionIsSettledAgainstEveryTargetNotJustTheFirst() {
+		List<ModCatalog.Entry> previous = ModCatalog.everything();
+		try {
+			PluginDeclinedMixins.reset();
+			MixinConfigOwners.publish(List.of(new MixinConfigOwners.Owned("p.mixins.json", "pmod", Ecosystem.FABRIC)));
+			ModCatalog.publish(List.of(new ModCatalog.Entry(Ecosystem.FABRIC, "pmod", "P", "1", "", List.of(), "p.jar", "", "")));
+			String first = "net/minecraft/client/renderer/GameRenderer";
+			String second = "net/minecraft/client/renderer/LevelRenderer";
+			Map<String, byte[]> classes = new HashMap<>();
+			classes.put(first + ".class", target(first, "unused", Opcodes.ACC_PRIVATE, true));
+			classes.put(second + ".class", target(second, "unused", Opcodes.ACC_PRIVATE, true));
+			ClassWriter cw = new ClassWriter(0);
+			cw.visit(Opcodes.V21, Opcodes.ACC_PUBLIC, PKG + "/Both", null, "java/lang/Object", null);
+			AnnotationVisitor at = cw.visitAnnotation("Lorg/spongepowered/asm/mixin/Mixin;", false);
+			AnnotationVisitor value = at.visitArray("value");
+			value.visit(null, Type.getObjectType(first));
+			value.visit(null, Type.getObjectType(second));
+			value.visitEnd();
+			at.visitEnd();
+			MethodVisitor mv = cw.visitMethod(Opcodes.ACC_PRIVATE, "onGone", "()V", null, null);
+			AnnotationVisitor inject = mv.visitAnnotation("Lorg/spongepowered/asm/mixin/injection/Inject;", false);
+			AnnotationVisitor methods = inject.visitArray("method");
+			methods.visit(null, "methodThatNoLongerExists");
+			methods.visitEnd();
+			inject.visitEnd();
+			mv.visitCode();
+			mv.visitInsn(Opcodes.RETURN);
+			mv.visitMaxs(0, 1);
+			mv.visitEnd();
+			cw.visitEnd();
+			classes.put(PKG + "/Both.class", cw.toByteArray());
+
+			assertEquals(List.of("Both"), KernelGuestMixinAdapter.unfitMixins("p.mixins.json",
+					configWithPlugin(PKG.replace('/', '.'), FirstTargetDecliningPlugin.class.getName(), "Both"),
+					resolver(classes)));
+			PluginDeclinedMixins.rememberPlugin(new FirstTargetDecliningPlugin());
+			PluginDeclinedMixins.resolve();
+
+			assertEquals(1, ModCatalog.failures().size(),
+					"the plugin would have applied the mixin to LevelRenderer, so leaving it out there is a loss");
+		} finally {
+			PluginDeclinedMixins.reset();
+			MixinConfigOwners.reset();
+			ModCatalog.publish(previous);
+		}
+	}
+
+	@Test
