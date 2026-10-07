@@ -298,3 +298,14 @@ class FixturePolicyExtensionTest {
 		}
 	}
 
+	static class BeforeAllProbe {
+		@BeforeAll
+		static void skips() {
+			if (Boolean.getBoolean(PROBE)) Assumptions.assumeTrue(false, "[fixture:staged] probe in @BeforeAll");
+		}
+
+		@Test
+		void runs() {
+		}
+	}
+}
