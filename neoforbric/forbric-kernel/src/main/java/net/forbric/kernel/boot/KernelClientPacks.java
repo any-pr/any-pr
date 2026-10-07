@@ -298,3 +298,7 @@ public final class KernelClientPacks {
 		} catch (Throwable t) {
 			ForbricLog.debug("[Forbric/ClientPacks] could not count vanilla-read packs: %s",
 					String.valueOf(Reflect.unwrap(t)));
+			return 0;
+		}
+	}
+}
