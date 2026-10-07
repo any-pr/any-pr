@@ -598,3 +598,9 @@ async function main() {
   out(`转换完成: 成功 ${ok}，失败 ${fail}，总耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s`);
   process.exitCode = fail ? 3 : 0;
 }
+
+module.exports = { DEFAULTS, VERSION, convertFile, resolveFFmpeg, probeMedia, parseSize };
+
+if (require.main === module) {
+  main().catch((e) => { out('错误: ' + (e && e.stack || e)); process.exit(1); });
+}
