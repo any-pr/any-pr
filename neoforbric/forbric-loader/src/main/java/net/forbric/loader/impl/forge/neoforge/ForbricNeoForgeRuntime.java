@@ -298,3 +298,260 @@ public final class ForbricNeoForgeRuntime implements PreLaunchEntrypoint {
 			} catch (Throwable t) {
 				ForbricLog.error("[Forbric/NeoFML] could not build LanguageProviderLoader — genuine mod "
 						+ "construction will fail", t);
+			}
+
+			try {
+				Path gameDir = FabricLoader.getInstance().getGameDir();
+				Class<?> pathsCls = Class.forName("net.neoforged.fml.loading.FMLPaths", false, cl);
+				Method load = null;
+				for (Method m : pathsCls.getDeclaredMethods()) {
+					if (m.getName().equals("loadAbsolutePaths") && m.getParameterCount() == 1) {
+						load = m;
+						break;
+					}
+				}
+				if (load != null) {
+					load.setAccessible(true);
+					load.invoke(null, gameDir);
+					Class.forName("net.neoforged.fml.loading.FMLConfig", false, cl)
+							.getMethod("load").invoke(null);
+					ForbricLog.info("[Forbric/NeoFML] FMLPaths + FMLConfig initialized under " + gameDir);
+				} else {
+					ForbricLog.warn("[Forbric/NeoFML] FMLPaths.loadAbsolutePaths not found — config dirs may be unset");
+				}
+			} catch (Throwable t) {
+				ForbricLog.warn("[Forbric/NeoFML] FMLPaths/FMLConfig init failed (config loading may misbehave)", t);
+			}
+		} catch (Throwable t) {
+			ForbricLog.error("[Forbric/NeoFML] wireLoader failed", t);
+		}
+	}
+
+	/** A Proxy {@code ILaunchContext}: dist/gameDir/versions from Fabric state, services from the Knot CL. */
+	private Object launchContextProxy(ClassLoader cl, Object versionInfo) throws Exception {
+		Class<?> ctxCls = Class.forName("net.neoforged.neoforgespi.ILaunchContext", false, cl);
+		Class<?> distCls = Class.forName("net.neoforged.api.distmarker.Dist", false, cl);
+		EnvType env = FabricLoader.getInstance().getEnvironmentType();
+		Object dist = distCls.getMethod("valueOf", String.class)
+				.invoke(null, env == EnvType.SERVER ? "DEDICATED_SERVER" : "CLIENT");
+		Path gameDir = FabricLoader.getInstance().getGameDir();
+
+		return java.lang.reflect.Proxy.newProxyInstance(cl, new Class<?>[]{ctxCls}, (proxy, method, args) -> {
+			switch (method.getName()) {
+			case "getRequiredDistribution": return dist;
+			case "gameDirectory": return gameDir;
+			case "loadServices": return java.util.ServiceLoader.load((Class<?>) args[0], cl).stream();
+			case "isLocated": return false;
+			case "addLocated": return true;
+			case "getVersions": return versionInfo;
+			case "toString": return "ForbricLaunchContext";
+			case "hashCode": return System.identityHashCode(proxy);
+			case "equals": return proxy == args[0];
+			default: throw new UnsupportedOperationException("Forbric proxy does not implement " + method);
+			}
+		});
+	}
+
+	private static void setField(Class<?> cls, Object instance, String name, Object value) throws Exception {
+		Field f = cls.getDeclaredField(name);
+		f.setAccessible(true);
+		f.set(instance, value);
+	}
+
+	// --- Headless registration drive (verification / no-EULA server) ---------------------------------
+
+	private void driveHeadlessRegistration(ClassLoader cl) {
+		try {
+			Class<?> sharedConstants = Class.forName("net.minecraft.SharedConstants", false, cl);
+			sharedConstants.getMethod("tryDetectVersion").invoke(null);
+			Class<?> bootstrap = Class.forName("net.minecraft.server.Bootstrap", false, cl);
+			bootstrap.getMethod("bootStrap").invoke(null);
+			ForbricLog.info("[Forbric/NeoForge] Bootstrap.bootStrap() invoked — registries are up");
+		} catch (Throwable t) {
+			ForbricLog.error("[Forbric/NeoForge] Bootstrap.bootStrap() failed", t);
+		}
+		onRegistrationWindow(cl);
+	}
+
+	private synchronized void onRegistrationWindow(ClassLoader cl) {
+		if (registered) return;
+		registered = true;
+
+		try {
+			for (String modClass : discoverModClasses()) {
+				Object bus = buildModBus(cl);
+				Class<?> modCls = Class.forName(modClass, true, cl); // static init runs here (registries are up)
+				Object instance = constructMod(modCls, bus, cl);
+				modBuses.put(modClass, bus);
+				ForbricLog.info("[Forbric/NeoForge] constructed @Mod " + modClass + " -> " + instance);
+			}
+
+			Class<?> gameData = Class.forName("net.neoforged.neoforge.registries.GameData", false, cl);
+			gameData.getMethod("unfreezeData").invoke(null);
+			ForbricLog.info("[Forbric/NeoForge] registration window OPEN (GameData.unfreezeData)");
+			try {
+				fireRegisterEvents(cl);
+				invokeFabricMainEntrypoints();
+			} finally {
+				gameData.getMethod("freezeData").invoke(null);
+				ForbricLog.info("[Forbric/NeoForge] registration window CLOSED (GameData.freezeData)");
+			}
+
+			verifyItems(cl);
+		} catch (Throwable t) {
+			ForbricLog.error("[Forbric/NeoForge] registration window failed", t);
+		}
+	}
+
+	private void fireRegisterEvents(ClassLoader cl) throws Exception {
+		if (modBuses.isEmpty()) return;
+
+		Class<?> registryCls = Class.forName("net.minecraft.core.Registry", false, cl);
+		Class<?> resourceKeyCls = Class.forName("net.minecraft.resources.ResourceKey", false, cl);
+		Class<?> eventCls = Class.forName("net.neoforged.bus.api.Event", false, cl);
+		Class<?> busCls = Class.forName("net.neoforged.bus.api.IEventBus", false, cl);
+		Class<?> registerEventCls = Class.forName("net.neoforged.neoforge.registries.RegisterEvent", false, cl);
+		Class<?> builtin = Class.forName("net.minecraft.core.registries.BuiltInRegistries", false, cl);
+
+		Constructor<?> regEventCtor = registerEventCls.getDeclaredConstructor(resourceKeyCls, registryCls);
+		regEventCtor.setAccessible(true);
+		Method keyM = registryCls.getMethod("key");
+		Method postM = busCls.getMethod("post", eventCls);
+
+		List<Object> registries = new ArrayList<>();
+		for (Field f : builtin.getFields()) {
+			if (registryCls.isAssignableFrom(f.getType())) registries.add(f.get(null));
+		}
+
+		for (Map.Entry<String, Object> e : modBuses.entrySet()) {
+			for (Object registry : registries) {
+				Object event = regEventCtor.newInstance(keyM.invoke(registry), registry);
+				postM.invoke(e.getValue(), event);
+			}
+			ForbricLog.info("[Forbric/NeoForge] fired RegisterEvent x" + registries.size() + " on bus for " + e.getKey());
+		}
+	}
+
+	/** Drive Fabric {@code main} entrypoints so Fabric content mods register in the same open window. */
+	private void invokeFabricMainEntrypoints() {
+		for (EntrypointContainer<ModInitializer> c :
+				FabricLoader.getInstance().getEntrypointContainers("main", ModInitializer.class)) {
+			String id = c.getProvider().getMetadata().getId();
+			try {
+				c.getEntrypoint().onInitialize();
+				ForbricLog.info("[Forbric/NeoForge] invoked Fabric main entrypoint of " + id);
+			} catch (Throwable t) {
+				ForbricLog.error("[Forbric/NeoForge] Fabric main entrypoint of " + id + " failed", t);
+			}
+		}
+	}
+
+	private void verifyItems(ClassLoader cl) throws Exception {
+		String csv = System.getProperty(VERIFY_ITEMS, "").trim();
+		if (csv.isEmpty()) return;
+
+		Class<?> builtin = Class.forName("net.minecraft.core.registries.BuiltInRegistries", false, cl);
+		Class<?> registryCls = Class.forName("net.minecraft.core.Registry", false, cl);
+		Class<?> idCls = Class.forName("net.minecraft.resources.Identifier", false, cl);
+		Object itemReg = builtin.getField("ITEM").get(null);
+		Method contains = registryCls.getMethod("containsKey", idCls);
+		Method getValue = registryCls.getMethod("getValue", idCls);
+		Method idOf = idCls.getMethod("fromNamespaceAndPath", String.class, String.class);
+
+		for (String spec : csv.split(",")) {
+			spec = spec.trim();
+			if (spec.isEmpty()) continue;
+			String[] np = spec.split(":", 2);
+			Object id = idOf.invoke(null, np[0], np[1]);
+			boolean has = (Boolean) contains.invoke(itemReg, id);
+			Object val = has ? getValue.invoke(itemReg, id) : null;
+			ForbricLog.info("[Forbric/VERIFY] BuiltInRegistries.ITEM contains " + spec + " = " + has
+					+ (val != null ? " -> " + val : ""));
+		}
+	}
+
+	// --- discovery + construction helpers ------------------------------------------------------------
+
+	/** The {@code @Mod} classes to construct: a {@code -Dforbric.neoforgeMods} CSV plus every wrapped mod's keys. */
+	private static List<String> discoverModClasses() {
+		LinkedHashSet<String> classes = new LinkedHashSet<>();
+
+		String csv = System.getProperty(NEOFORGE_MODS, "").trim();
+		if (!csv.isEmpty()) {
+			for (String s : csv.split(",")) {
+				if (!s.trim().isEmpty()) classes.add(s.trim());
+			}
+		}
+
+		for (ModContainer mod : FabricLoader.getInstance().getAllMods()) {
+			if (!isNeoForgeWrap(mod)) continue; // the traditional-Forge driver owns "forge"-family wraps
+			classes.addAll(forgeClasses(mod));
+		}
+
+		return new ArrayList<>(classes);
+	}
+
+	/** Whether a wrapped mod belongs to the NeoForge family (missing key = legacy wrap = accept). */
+	private static boolean isNeoForgeWrap(ModContainer mod) {
+		CustomValue v = mod.getMetadata().getCustomValue(ECOSYSTEM_KEY);
+		return v == null || v.getType() != CustomValue.CvType.STRING || "neoforge".equals(v.getAsString());
+	}
+
+	/** The Forge main classes a wrapped mod declares: {@code forbric:forgeClasses} (array) or the legacy single key. */
+	private static List<String> forgeClasses(ModContainer mod) {
+		List<String> classes = new ArrayList<>();
+
+		CustomValue array = mod.getMetadata().getCustomValue(FORGE_CLASSES_KEY);
+		if (array != null && array.getType() == CustomValue.CvType.ARRAY) {
+			for (CustomValue element : array.getAsArray()) {
+				if (element.getType() == CustomValue.CvType.STRING) classes.add(element.getAsString());
+			}
+		}
+
+		if (classes.isEmpty()) {
+			CustomValue single = mod.getMetadata().getCustomValue(FORGE_CLASS_KEY);
+			if (single != null && single.getType() == CustomValue.CvType.STRING && !single.getAsString().isEmpty()) {
+				classes.add(single.getAsString());
+			}
+		}
+
+		return classes;
+	}
+
+	private static Object buildModBus(ClassLoader cl) throws Exception {
+		Class<?> busBuilder = Class.forName("net.neoforged.bus.api.BusBuilder", false, cl);
+		Object builder = busBuilder.getMethod("builder").invoke(null);
+		try {
+			Class<?> modBusEvent = Class.forName("net.neoforged.fml.event.IModBusEvent", false, cl);
+			builder = busBuilder.getMethod("markerType", Class.class).invoke(builder, modBusEvent);
+		} catch (Throwable ignore) {
+			// markerType is best-effort
+		}
+		return busBuilder.getMethod("build").invoke(builder);
+	}
+
+	/** Construct a {@code @Mod} FMLModContainer-style: fill ctor params by type (IEventBus → bus, Dist → dist). */
+	private static Object constructMod(Class<?> modCls, Object bus, ClassLoader cl) throws Exception {
+		Class<?> iEventBus = Class.forName("net.neoforged.bus.api.IEventBus", false, cl);
+		Class<?> distCls = Class.forName("net.neoforged.api.distmarker.Dist", false, cl);
+		Object dist = Class.forName("net.neoforged.fml.loading.FMLEnvironment", false, cl)
+				.getMethod("getDist").invoke(null);
+
+		Constructor<?> best = null;
+		for (Constructor<?> c : modCls.getConstructors()) {
+			if (best == null || c.getParameterCount() > best.getParameterCount()) best = c;
+		}
+		if (best == null) throw new NoSuchMethodException("no public constructor on " + modCls.getName());
+
+		Class<?>[] params = best.getParameterTypes();
+		Object[] args = new Object[params.length];
+		for (int i = 0; i < params.length; i++) {
+			if (params[i].isAssignableFrom(iEventBus)) args[i] = bus;
+			else if (params[i] == distCls) args[i] = dist;
+			else args[i] = null; // ModContainer / FMLModContainer / etc. — not modelled yet
+		}
+
+		best.setAccessible(true);
+		return best.newInstance(args);
+	}
+}
