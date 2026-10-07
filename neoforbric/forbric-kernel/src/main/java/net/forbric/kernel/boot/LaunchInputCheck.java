@@ -298,3 +298,49 @@ final class LaunchInputCheck {
 			Set<Ecosystem> out = EnumSet.noneOf(Ecosystem.class);
 			if (unreadable != null) return out;
 			for (Ecosystem family : FAMILIES) if (missing.get(family).isEmpty()) out.add(family);
+			return out;
+		}
+
+		/** Whether anything of {@code family} is in this jar. */
+		boolean present(Ecosystem family) {
+			return unreadable == null && found.get(family) > 0;
+		}
+
+		/** Whether all this jar has of {@code family} is its manifest: what that family's mods carry. */
+		boolean manifestOnly(Ecosystem family) {
+			return present(family) && found.get(family) == 1 && !missing.get(family).contains(manifest(family));
+		}
+	}
+
+	static Contents read(Path jar) {
+		if (!Files.isRegularFile(jar)) return new Contents("does not exist", Map.of(), Map.of());
+
+		Map<Ecosystem, List<String>> missing = new LinkedHashMap<>();
+		Map<Ecosystem, Integer> found = new LinkedHashMap<>();
+		try (ZipFile zip = new ZipFile(jar.toFile())) {
+			for (Ecosystem family : FAMILIES) {
+				List<String> absent = new ArrayList<>();
+				int have = 0;
+				for (String marker : markers(family)) {
+					if (zip.getEntry(marker) == null) absent.add(marker);
+					else have++;
+				}
+				missing.put(family, List.copyOf(absent));
+				found.put(family, have);
+			}
+		} catch (IOException | RuntimeException unreadable) {
+			return new Contents("cannot be opened as a jar: " + unreadable, Map.of(), Map.of());
+		}
+		return new Contents(null, missing, found);
+	}
+
+	/**
+	 * The launch stopped because the jars it was handed cannot run. The reason and the fix are already in the log, so
+	 * {@link CompatibilityLaunchBoundary} turns this into an exit code rather than a crash.
+	 */
+	static final class Rejected extends IllegalStateException {
+		Rejected(List<String> problems) {
+			super("Forbric install is broken; see logs/latest.log: " + String.join("; ", problems));
+		}
+	}
+}
