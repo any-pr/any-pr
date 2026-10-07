@@ -298,3 +298,303 @@ public final class ForbricClassLoader extends URLClassLoader {
 					c = defineGameClass(name); // must be here; if bytes missing this throws (a real error)
 				} else {
 					// Child-first for owned jars, else parent. Catches game/mod classes without a package list,
+					// while MC libraries (DataFixerUpper, Brigadier, netty, guava, joptsimple) fall to the parent.
+					c = tryDefineGameClass(name);
+					if (c == null) c = parent.loadClass(name);
+				}
+			}
+			if (resolve) resolveClass(c);
+			return c;
+		}
+	}
+
+	private Class<?> defineGameClass(String name) throws ClassNotFoundException {
+		Class<?> c = tryDefineGameClass(name);
+		if (c == null) {
+			throw new ClassNotFoundException(name + " (game-side, but not found in any kernel-owned jar)");
+		}
+		return c;
+	}
+
+	/**
+	 * Reads {@code name} from this loader's own jars, runs the pipeline (chain, then Mixin), defines it.
+	 *
+	 * <p>When the class is in no owned jar the pre-mixin bytes are {@code null} and Mixin is still consulted: that
+	 * is how a mixin-GENERATED class ({@code org.spongepowered.asm.synthetic.*}) comes into being. If Mixin does
+	 * not generate it either, this returns {@code null} and the caller falls back to the parent.
+	 */
+	private Class<?> tryDefineGameClass(String name) {
+		String path = name.replace('.', '/') + ".class";
+		URL resource = findResource(path); // this loader's own URLs only
+		byte[] bytes = null;
+
+		if (resource != null) {
+			bytes = read(resource);
+			if (bytes == null) return null;
+
+			// Before the chain runs: LoaderProbeRewriter needs to know which loader family owns this class in
+			// order to bake the right answer into its Class.forName call sites.
+			if (!jarFamilies.isEmpty()) rememberOrigin(name, resource);
+
+			byte[] transformed = transformer.apply(name, bytes);
+			if (transformed != null) bytes = transformed;
+		} else {
+			// A transformer-synthesized class (class-tweaker enum extension) has no jar to come from.
+			byte[] generated = generatedClasses.get(name);
+
+			if (generated != null) {
+				definePackageIfNeeded(name, null);
+				// No jar to point at: a synthesized class genuinely has no code source.
+				return define(name, generated, null);
+			}
+
+			// Last resort: a jar that cross-jar arbitration superseded. Reached only because no owned jar has this
+			// class, so it cannot shadow the winner — see setRescueJars.
+			resource = rescueResource(path);
+			if (resource != null) {
+				bytes = read(resource);
+				if (bytes == null) return null;
+				if (RESCUED.add(name)) {
+					ForbricLog.info("[Forbric/DupeId] served %s from a superseded jar — no loaded mod provides it. "
+							+ "If this mod then fails on uninitialised state, pin it to that ecosystem instead "
+							+ "(forbric-mods.txt, or -Dforbric.modOwner=<id>=<loader>)", name);
+				}
+				byte[] transformed = transformer.apply(name, bytes);
+				if (transformed != null) bytes = transformed;
+			}
+		}
+
+		byte[] woven = mixinTransformer.apply(name, bytes);
+		if (woven != null) bytes = woven;
+		if (bytes == null) return null;
+
+		definePackageIfNeeded(name, resource);
+		return define(name, bytes, domainFor(resource));
+	}
+
+	/**
+	 * {@code defineClass}, recovering from a RE-ENTRANT definition of the same class on this thread.
+	 *
+	 * <p>{@link #loadClass} takes the per-name lock and checks {@code findLoadedClass} first, so two threads cannot
+	 * race here. One thread can still get in twice: this method's own pipeline runs guest code before the class is
+	 * defined. {@code mixinTransformer.apply} on the FIRST game class triggers Mixin's one-shot {@code select()},
+	 * which constructs every guest config plugin, and a plugin's constructor or {@code <clinit>} may load anything.
+	 * If that graph reaches the class currently being defined, the inner {@code loadClass} re-enters the same
+	 * (reentrant) lock, still sees {@code findLoadedClass == null}, and defines it — then this outer call fails with
+	 * {@code LinkageError: attempted duplicate class definition}.
+	 *
+	 * <p>Observed on a 64-mod NeoForge pack: {@code net.neoforged.fml.ModList} is the first class the kernel loads
+	 * after Mixin bootstrap ({@code PassiveSeeder.seedNeoForgeModList}), so it is the one that pays. Seeding then
+	 * failed, {@code ModList.get()} stayed null, and the client died in {@code Options.<init>} at
+	 * {@code ClientHooks.onRegisterKeyMappings} — three steps away, with nothing connecting it back. The trigger is
+	 * NOT a plugin that names ModList; none does. It is transitive, which is why it appears only at pack scale.
+	 *
+	 * <p>The error means the class IS defined by this loader, and the inner definition went through this same
+	 * pipeline, so it is the same bytes. Returning it is loss-free and strictly better than failing the caller. The
+	 * recovery is logged once per class: it is not an error, but it does mean guest code ran mid-definition, and
+	 * that is worth being able to see.
+	 */
+	private Class<?> define(String name, byte[] bytes, ProtectionDomain domain) {
+		traceDefine(name);
+		try {
+			Class<?> defined = defineClass(name, bytes, 0, bytes.length, domain);
+			definitionEvidence.defined(name, bytes);
+			net.forbric.kernel.mixin.FinalMixinApplications.onClassDefined(name, bytes);
+			net.forbric.kernel.mixin.SupersededMixins.observeDefinition(name, bytes);
+			net.forbric.kernel.boot.KernelHudBridge.observeDefinition(name, bytes);
+			return defined;
+		} catch (LinkageError duplicate) {
+			Class<?> already = findLoadedClass(name);
+			if (already == null) throw duplicate; // a genuine linkage problem, not re-entrancy
+			if (REENTRANT.add(name)) {
+				ForbricLog.debug("[Forbric/Loader] %s was defined re-entrantly (guest code loaded it from inside its "
+						+ "own transform, most likely a mixin config plugin's construction) — using the definition "
+						+ "that already completed", name);
+			}
+			return already;
+		}
+	}
+
+	/**
+	 * The {@link ProtectionDomain} for a class read out of {@code resource}, or null when it has no jar.
+	 *
+	 * <p>Classes were defined with no protection domain at all, so {@code SomeClass.class.getProtectionDomain()
+	 * .getCodeSource()} answered null for every mod. That is not an exotic call: a mod that ships data next to
+	 * its own classes uses it to find its own jar — JourneyMap and spark both do — and a null there is an NPE
+	 * inside the mod, blamed on the mod. Sodium's own startup checks read it too, to work out what it was loaded
+	 * from.
+	 *
+	 * <p>The code source is the JAR, not the class entry inside it: {@code jar:file:/x.jar!/a/B.class} becomes
+	 * {@code file:/x.jar}, which is the spelling every one of those callers expects to turn back into a path.
+	 *
+	 * <p>Permissions are left to the loader (the {@code null} permission set plus {@code this}), which is how
+	 * {@link URLClassLoader} itself builds them.
+	 */
+	private ProtectionDomain domainFor(URL resource) {
+		String spelling = jarUrlOf(resource);
+		if (spelling == null) return null;
+
+		ProtectionDomain cached = domains.get(spelling);
+		if (cached != null) return cached;
+
+		try {
+			ProtectionDomain built = new ProtectionDomain(
+					new CodeSource(new URL(spelling), (java.security.CodeSigner[]) null), null, this, null);
+			ProtectionDomain raced = domains.putIfAbsent(spelling, built);
+			return raced != null ? raced : built;
+		} catch (Throwable t) {
+			// A code source is a nicety; failing to build one must not cost the class its definition.
+			ForbricLog.debug("[Forbric/Loader] no code source for %s: %s", spelling, String.valueOf(t));
+			return null;
+		}
+	}
+
+	/** The containing jar's URL spelling for a {@code jar:...!/entry} URL, the URL itself otherwise, or null. */
+	static String jarUrlOf(URL resource) {
+		if (resource == null) return null;
+		if (!"jar".equals(resource.getProtocol())) return resource.toString();
+		String file = resource.getFile();
+		int bang = file.indexOf("!/");
+		return bang < 0 ? null : file.substring(0, bang);
+	}
+
+	/**
+	 * Declares which owned jars belong to exactly one loader family, so {@link LoaderProbePolicy} can answer a
+	 * guest's platform probe for the loader that guest was actually loaded as. A universal jar carrying more than one
+	 * manifest belongs to the one ecosystem {@code MultiLoaderArbiter} chose for it. Jars absent from the map — the
+	 * merged base, the Forge/NeoForge runtime carriers, MC libraries, and any jar declaring no loader at all — are
+	 * unowned and see every probe answer yes, as before. Call once, before any class loads.
+	 */
+	public void setJarFamilies(java.util.Map<java.nio.file.Path, LoaderProbePolicy.Family> byJar) {
+		jarFamilies.clear();
+		byJar.forEach((jar, family) -> {
+			try {
+				jarFamilies.put("jar:" + jar.toUri().toURL(), family);   // same spelling findResource will produce
+			} catch (java.net.MalformedURLException impossible) {
+				// a jar already on this loader's URL list cannot fail to spell itself
+			}
+		});
+	}
+
+	/**
+	 * Declares which owned jars are universal — carrying more than one loader's manifest — so their
+	 * {@code META-INF/services} files are served as the arbitrated loader would read them. See {@link UniversalJarServices}.
+	 */
+	public void setUniversalJars(java.util.Collection<java.nio.file.Path> jars) {
+		universalJars.clear();
+		for (java.nio.file.Path jar : jars) {
+			try {
+				universalJars.add("jar:" + jar.toUri().toURL());   // setJarFamilies' spelling
+			} catch (java.net.MalformedURLException impossible) {
+				// a jar already on this loader's URL list cannot fail to spell itself
+			}
+		}
+	}
+
+	/**
+	 * A universal jar's services file lists one provider per loader and counts on the foreign ones failing to link;
+	 * here they all link, so the file is narrowed to what the jar's arbitrated loader could use. See
+	 * {@link UniversalJarServices}.
+	 */
+	@Override
+	public java.util.Enumeration<URL> findResources(String name) throws IOException {
+		java.util.Enumeration<URL> found = super.findResources(name);
+		if (universalJars.isEmpty() || !name.startsWith(UniversalJarServices.PREFIX) || !UniversalJarServices.enabled()) return found;
+		java.util.List<URL> served = new java.util.ArrayList<>();
+		while (found.hasMoreElements()) {
+			URL resource = found.nextElement();
+			String url = resource.toString();
+			int bang = url.indexOf("!/");
+			String jar = bang < 0 ? null : url.substring(0, bang);
+			LoaderProbePolicy.Family owner = jar == null || !universalJars.contains(jar) ? null : jarFamilies.get(jar);
+			served.add(owner == null ? resource : UniversalJarServices.serve(resource, name, owner, internal -> {
+				try (java.io.InputStream in = new URL(jar + "!/" + internal + ".class").openStream()) {
+					return in.readAllBytes();
+				} catch (IOException absent) {
+					return null;
+				}
+			}));
+		}
+		return java.util.Collections.enumeration(served);
+	}
+
+	/**
+	 * The loader family of the jar {@code binaryName} is being defined from, or {@code null} if it is unowned —
+	 * the merged base, a runtime carrier, an MC library, a jar declaring no loader, or a kernel class. A universal jar
+	 * answers the ecosystem {@code MultiLoaderArbiter} chose for it.
+	 */
+	public LoaderProbePolicy.Family familyOfClass(String binaryName) {
+		return classFamilies.get(binaryName);
+	}
+
+	/**
+	 * The loader family of the jar this loader WILL read {@code binaryName} from, or {@code null} when that jar is
+	 * unowned (see {@link #setJarFamilies}) or no jar has the class.
+	 *
+	 * <p>{@link #familyOfClass} cannot answer this for a transformer that edits what Mixin sees. It is filled in as a
+	 * class is DEFINED, and Mixin's view ({@link #getPreMixinClassBytes}) runs the same chain first -- for a mixin
+	 * class, the only time, since a mixin class is never defined. Fabric's environment stripping is the case: asking by
+	 * definition, it would leave every mixin class unstripped and Mixin would merge the client-only handlers Fabric
+	 * removes. This makes the same lookup both paths make, so both get the same answer.
+	 *
+	 * <p>The superseded-jar fallback mirrors {@link #tryDefineGameClass}; a superseded jar lost arbitration and is in
+	 * no family, so what it serves answers {@code null}. The lookup is a {@code findResource}, so callers ask only
+	 * about the few classes that need it.
+	 */
+	public LoaderProbePolicy.Family familyOfResource(String binaryName) {
+		if (jarFamilies.isEmpty() && runtimeJarFamilies.isEmpty()) return null;
+		String path = binaryName.replace('.', '/') + ".class";
+		URL resource = findResource(path);
+		if (resource == null) resource = rescueResource(path);
+		if (resource == null) return null;
+		LoaderProbePolicy.Family family = familyOfUrl(resource);
+		return family != null ? family : familyOfUrl(resource, runtimeJarFamilies);
+	}
+
+	/**
+	 * Records a jar a loader's own launcher API put on the classpath after boot as that loader's, for
+	 * {@link #familyOfResource} only.
+	 *
+	 * <p>Fabric's {@code FabricLauncher.addToClassPath} is the case: Knot runs its transformer, environment stripping
+	 * included, over every class it loads from such a jar, so the strip has to know the jar is Fabric's. CustomSkinLoader's
+	 * Fabric bootstrap adds its common jar this way.
+	 *
+	 * <p>Deliberately NOT {@link #familyOfClass}: that answer bakes loader probes, and a runtime jar has always seen
+	 * every probe answer yes here. Nothing in the sweep packs needs that to change, so it does not.
+	 */
+	public void addRuntimeJarFamily(java.nio.file.Path jar, LoaderProbePolicy.Family family) {
+		try {
+			runtimeJarFamilies.put("jar:" + jar.toUri().toURL(), family);   // setJarFamilies' spelling
+		} catch (java.net.MalformedURLException impossible) {
+			// the caller has just added this same path as a URL
+		}
+	}
+
+	/**
+	 * Records the family of the jar a freshly defined class came from. Only single-family jars are in the map, so an
+	 * unowned origin simply records nothing.
+	 */
+	private void rememberOrigin(String name, URL resource) {
+		LoaderProbePolicy.Family family = familyOfUrl(resource);
+		if (family != null) classFamilies.put(name, family);
+	}
+
+	/** The family of the jar a {@code jar:file:/…/x.jar!/a/B.class} URL points into, or {@code null}. */
+	private LoaderProbePolicy.Family familyOfUrl(URL resource) {
+		return familyOfUrl(resource, jarFamilies);
+	}
+
+	private static LoaderProbePolicy.Family familyOfUrl(URL resource,
+			java.util.Map<String, LoaderProbePolicy.Family> families) {
+		String url = resource.toString();
+		int bang = url.indexOf("!/");
+		return bang < 0 ? null : families.get(url.substring(0, bang));
+	}
+
+	// Owned single-family jars, keyed by "jar:file:…!"-prefix; and the per-class answer derived from them.
+	private final ConcurrentHashMap<String, LoaderProbePolicy.Family> jarFamilies = new ConcurrentHashMap<>();
+	// The owned jars that carry more than one loader's manifest, same keys. See setUniversalJars.
+	private final java.util.Set<String> universalJars = ConcurrentHashMap.newKeySet();
+	// Jars a launcher API added after boot, same keys; consulted by familyOfResource only (see addRuntimeJarFamily).
+	private final ConcurrentHashMap<String, LoaderProbePolicy.Family> runtimeJarFamilies = new ConcurrentHashMap<>();
+	private final ConcurrentHashMap<String, LoaderProbePolicy.Family> classFamilies = new ConcurrentHashMap<>();
