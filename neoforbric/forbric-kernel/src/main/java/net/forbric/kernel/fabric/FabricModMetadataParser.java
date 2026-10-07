@@ -298,3 +298,36 @@ public final class FabricModMetadataParser {
 
 	private static ModEnvironment environment(String value) {
 		if (value == null || value.isEmpty() || value.equals("*")) return ModEnvironment.UNIVERSAL;
+		if (value.equals("client")) return ModEnvironment.CLIENT;
+		if (value.equals("server")) return ModEnvironment.SERVER;
+
+		return ModEnvironment.UNIVERSAL;
+	}
+
+	private static List<String> stringList(UnmodifiableConfig config, String key) {
+		Object value = config.get(Collections.singletonList(key));
+		if (!(value instanceof List)) return new ArrayList<>();
+
+		List<String> out = new ArrayList<>();
+
+		for (Object o : (List<?>) value) {
+			if (o != null) out.add(o.toString());
+		}
+
+		return out;
+	}
+
+	private static String string(UnmodifiableConfig config, String key) {
+		Object value = config.get(Collections.singletonList(key));
+		return value == null ? null : value.toString();
+	}
+
+	private static UnmodifiableConfig sub(UnmodifiableConfig config, String key) {
+		Object value = config.get(Collections.singletonList(key));
+		return value instanceof UnmodifiableConfig ? (UnmodifiableConfig) value : null;
+	}
+
+	private static String orDefault(String value, String fallback) {
+		return value == null || value.isEmpty() ? fallback : value;
+	}
+}
