@@ -298,3 +298,36 @@ public final class HookCallSiteCensus {
 		try (ZipFile zf = new ZipFile(jar.toFile())) {
 			var entries = zf.entries();
 			while (entries.hasMoreElements()) {
+				ZipEntry e = entries.nextElement();
+				if (!e.getName().endsWith(".class")) continue;
+				ClassNode cn = new ClassNode();
+				try (InputStream in = zf.getInputStream(e)) {
+					new ClassReader(in.readAllBytes()).accept(cn, ClassReader.SKIP_FRAMES | ClassReader.SKIP_DEBUG);
+				}
+				// The hook class calling its own hooks is not the game reaching them, the same rule as of().
+				if (cn.name.equals(hookClass)) continue;
+				for (MethodNode m : cn.methods) {
+					if (m.instructions == null) continue;
+					for (AbstractInsnNode insn = m.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+						if (insn instanceof MethodInsnNode mi && mi.owner.equals(hookClass)) {
+							out.merge(mi.name + mi.desc, 1, Integer::sum);
+						}
+					}
+				}
+			}
+		}
+		return out;
+	}
+
+	private static ClassNode read(Path jar, String entry) throws IOException {
+		try (ZipFile zf = new ZipFile(jar.toFile())) {
+			ZipEntry e = zf.getEntry(entry);
+			if (e == null) return null;
+			ClassNode cn = new ClassNode();
+			try (InputStream in = zf.getInputStream(e)) {
+				new ClassReader(in.readAllBytes()).accept(cn, ClassReader.SKIP_FRAMES | ClassReader.SKIP_DEBUG);
+			}
+			return cn;
+		}
+	}
+}
