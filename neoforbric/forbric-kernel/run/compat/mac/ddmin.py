@@ -298,3 +298,230 @@ def _visit(data, visit, depth=0):
         raise ValueError('nested jar depth exceeded')
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         visit(archive)
+        for child in _nested(archive):
+            _visit(archive.read(child), visit, depth + 1)
+
+
+def _declared(archive):
+    """(config, environment) for each mixin config one archive declares, in any of the three loaders' ways."""
+    names = set(archive.namelist())
+    declared = []
+    if 'fabric.mod.json' in names:
+        for entry in _json(archive, 'fabric.mod.json').get('mixins') or []:
+            if isinstance(entry, str):
+                declared.append((entry, '*'))
+            elif isinstance(entry, dict) and entry.get('config'):
+                declared.append((entry['config'], entry.get('environment', '*')))
+    for filename in ('META-INF/mods.toml', 'META-INF/neoforge.mods.toml'):
+        if filename in names:
+            try:
+                metadata = tomllib.loads(archive.read(filename).decode('utf-8'))
+            except (ValueError, UnicodeDecodeError):
+                metadata = {}
+            declared += [(row['config'], '*') for row in metadata.get('mixins') or []
+                         if isinstance(row, dict) and row.get('config')]
+    if 'META-INF/MANIFEST.MF' in names:
+        for line in archive.read('META-INF/MANIFEST.MF').decode('utf-8', 'replace').splitlines():
+            if line.startswith('MixinConfigs:'):
+                declared += [(name.strip(), '*') for name in line.split(':', 1)[1].split(',') if name.strip()]
+    return declared
+
+
+def mixin_configs(jar_bytes):
+    """config name -> its mixin entries that a CLIENT applies, over every jar (and nested jar) in jar_bytes.
+
+    A config is named as its mod declares it (fabric.mod.json, [[mixins]] in either mods.toml, a manifest's
+    MixinConfigs), which is the name -Dforbric.disableMixinConfigs matches; an entry is written as its config lists
+    it, the form -Dforbric.suppressMixins takes after 'config:'. The config file may sit in a nested jar, as
+    sodium-neoforge's do. A config declared for the server only, and a config's server list, are left out.
+    """
+    jar_bytes = list(jar_bytes)
+    declared = []
+    for data in jar_bytes:
+        _visit(data, lambda archive: declared.extend(_declared(archive)))
+    wanted = [name for name, environment in declared if environment != 'server']
+    files = {}
+
+    def read(archive):
+        for name in set(wanted) & set(archive.namelist()):
+            files.setdefault(name, archive.read(name))
+    for data in jar_bytes:
+        _visit(data, read)
+    configs = {}
+    for name in wanted:
+        entries = configs.setdefault(name, [])
+        try:
+            config = json.loads(files[name]) if name in files else {}
+        except ValueError:
+            config = {}
+        for section in ('mixins', 'client'):
+            for entry in config.get(section) or []:
+                if isinstance(entry, str) and entry not in entries:
+                    entries.append(entry)
+    return configs
+
+
+def narrow(sessions, reference, jars, jvm, configs):
+    """The mixin configs, then the mixin classes within them, the failure of the closed set jars needs.
+
+    Both are ddmin over what stays ENABLED: everything else goes into -Dforbric.disableMixinConfigs or
+    -Dforbric.suppressMixins. ddmin never tries nothing, so that is tried first: a failure that survives with every
+    config off needs none of them.
+    """
+    names = sorted(configs)
+
+    def configuration(enabled, kept=None):
+        flags = list(jvm)
+        disabled = [name for name in names if name not in enabled]
+        if disabled:
+            flags.append(f'-D{DISABLE_CONFIGS}=' + ','.join(disabled))
+        if kept is not None:
+            suppressed = [entry for entry in entries if entry not in kept]
+            if suppressed:
+                flags.append(f'-D{SUPPRESS_MIXINS}=' + ','.join(suppressed))
+        return jars, flags
+
+    result = dict(configs=None, classes=None)
+    entries = []
+    by_config = Judged(sessions, reference, lambda enabled: configuration(set(enabled)))
+    result['config_runs'] = by_config.runs
+    if not names:
+        result.update(configs=[], classes=[], note='the closed set declares no mixin config')
+        return result
+    if by_config([]) == FAIL:
+        result.update(configs=[], classes=[], note='the failure happens with every one of these mixin configs disabled')
+        return result
+    enabled = ddmin_core.ddmin(names, by_config)
+    result['configs'] = enabled
+    entries = [f'{name}:{entry}' for name in enabled for entry in configs[name]]
+    by_class = Judged(sessions, reference, lambda kept: configuration(set(enabled), set(kept)))
+    result['class_runs'] = by_class.runs
+    if not entries:
+        result.update(classes=[], note='the configs it needs list no mixin class')
+    elif by_class([]) == FAIL:
+        result.update(classes=[], note='the failure needs these configs but none of their mixin classes')
+    else:
+        result['classes'] = ddmin_core.ddmin(entries, by_class)
+    return result
+
+
+# --- rounds -------------------------------------------------------------------------------------------------------
+
+def minimise_round(sessions, pack, candidates, jvm, mods, use_seeds=True, narrowing=False):
+    """Run closed(candidates) as the reference, then ddmin the candidates against it (and narrow the result)."""
+    closure = pack.closure
+    try:
+        reference_entry, _ = sessions.run(ddmin_core.closed(candidates, closure), jvm)
+    except BudgetExhausted:
+        return dict(candidates=len(candidates), reference=None, status='BUDGET')
+    reference = reference_entry['observation']
+    rows = (reference['winners'].get('rows') or {})
+    picks = reference['winners'].get('picks') or {}
+    record = dict(candidates=len(candidates), reference=dict(
+        label=reference_entry['label'], jars=len(reference_entry['jars']), run=reference['run'],
+        strict=reference['strict'], signature=reference['signature'],
+        arbitration={mod_id: dict(loader=loader, copy=rows.get(mod_id)) for mod_id, loader in sorted(picks.items())}))
+    if reference['strict']:
+        record['status'] = 'PASSED'
+        return record
+    seed_jars = [jar for jar in reference['seeds'] if jar in set(candidates)] if use_seeds else []
+    record['seeds'] = seed_jars
+    # minimise hands the oracle configurations it has already closed over their dependencies.
+    oracle = Judged(sessions, reference, lambda config: (config, list(jvm)))
+    record['runs'] = oracle.runs
+    try:
+        reduction = ddmin_core.minimise(candidates, oracle, closure, seed_jars)
+    except BudgetExhausted:
+        best = oracle.smallest_failing()
+        record.update(status='BUDGET', smallest_failing_closed=best,
+                      smallest_failing=[jar for jar in best if jar in set(candidates)] if best else None)
+        return record
+    except NotReproduced as refused:
+        record.update(status='NOT_REPRODUCED', outcome=refused.outcome)
+        return record
+    record.update(status='MINIMISED', minimal=reduction.minimal, closed=reduction.closed, seeded=reduction.seeded)
+    if narrowing:
+        configs = mixin_configs((Path(mods) / jar).read_bytes() for jar in reduction.closed)
+        try:
+            record['narrow'] = narrow(sessions, reference, reduction.closed, jvm, configs)
+        except BudgetExhausted:
+            record['narrow'] = dict(status='BUDGET')
+    return record
+
+
+def minimise_pack(pack, out, launch, fingerprint, mods, ticks=200, jvm=(), budget=80, use_seeds=True, iterate=False,
+                  narrowing=False, settings=None):
+    """Every round, written to <out>/ddmin-result.json; returns that result.
+
+    With iterate, each MINIMISED round's minimal set leaves the candidates and the rest is run again as the next
+    round's reference, until a round's reference passes, the candidates run out, or a round does not finish.
+    """
+    jvm = list(jvm)
+    if narrowing and any(flag.startswith((f'-D{DISABLE_CONFIGS}=', f'-D{SUPPRESS_MIXINS}=')) for flag in jvm):
+        raise SystemExit(f'--narrow sets -D{DISABLE_CONFIGS} and -D{SUPPRESS_MIXINS} itself; leave them out of --jvm')
+    if not pack.candidates:
+        raise SystemExit('The manifest names no jar to minimise')
+    out = Path(out)
+    sessions = Sessions(out, launch, fingerprint, pack.digests, ticks, budget, mods)
+    rounds, candidates = [], list(pack.candidates)
+    while candidates:
+        record = minimise_round(sessions, pack, candidates, jvm, mods, use_seeds, narrowing)
+        rounds.append(record)
+        if record['status'] != 'MINIMISED' or not iterate:
+            break
+        candidates = [jar for jar in candidates if jar not in record['minimal']]
+    changed = sorted(jar for jar in pack.jars if mixed.sha256(Path(mods) / jar) != pack.digests[jar])
+    if changed:
+        raise SystemExit('Test input changed during the minimisation: ' + ', '.join(changed))
+    result = dict(status=rounds[-1]['status'], kernel_sha256=sessions.kernel, jvm=jvm, ticks=ticks, budget=budget,
+                  launches=sessions.launches, cache_hits=sessions.hits, rounds=rounds, **(settings or {}))
+    out.mkdir(parents=True, exist_ok=True)
+    (out / 'ddmin-result.json').write_text(json.dumps(result, indent=2) + '\n', encoding='utf-8')
+    return result
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument('--manifest', required=True, help="the failing pack: a mixed run's manifest.json")
+    parser.add_argument('--out', help='parent of ddmin/ (default: PERMOD_DATA)')
+    parser.add_argument('--ticks', type=int, default=200, help='world ticks before the clean disconnect (default 200)')
+    parser.add_argument('--stall', type=int, default=120, help="driver's CLIENT_STALL in seconds (default 120)")
+    parser.add_argument('--timeout', type=int, default=420, help="driver's RUN_TIMEOUT in seconds (default 420)")
+    parser.add_argument('--grace', type=int, default=20, help="driver's GRACE in seconds (default 20)")
+    parser.add_argument('--jvm', action='append', default=[], help='an extra JVM flag for every session: --jvm=-Da=b')
+    parser.add_argument('--budget', type=int, default=80, help='most game launches in this invocation (default 80)')
+    parser.add_argument('--no-seeds', action='store_true', help="do not start from the reference's own suspects")
+    parser.add_argument('--iterate', action='store_true', help='take each minimal set out and minimise what fails next')
+    parser.add_argument('--narrow', action='store_true', help='narrow each minimal set to mixin configs, then classes')
+    args = parser.parse_args(argv)
+    if not os.environ.get('PERMOD_DATA'):
+        raise SystemExit('Set PERMOD_DATA to the sweep data directory (mods/ and closure.json)')
+    data = Path(os.environ['PERMOD_DATA']).resolve()
+    os.environ['PERMOD_INSTANCE'] = str(data / os.environ.get('PERMOD_DDMIN_INSTANCE', 'ddmin-inst'))
+    installed = mixed.permod()
+    pack = load_pack(args.manifest, data)
+    out = Path(args.out).resolve() / 'ddmin' if args.out else data / 'ddmin'
+    runs, subjects = out / 'runs', set(pack.subjects)
+
+    def launch(jars, jvm, label):
+        mixed.prepare_pack(jars)
+        result = mixed.run(label, args.ticks, [jar for jar in jars if jar in subjects], runs, jvm=jvm,
+                           stall=args.stall, timeout=args.timeout, grace=args.grace)
+        return runs / label, result
+
+    manifest = Path(args.manifest).resolve()
+    settings = dict(manifest=str(manifest), manifest_sha256=mixed.sha256(manifest),
+                    closure_sha256=mixed.sha256(data / 'closure.json'), stall=args.stall, timeout=args.timeout,
+                    grace=args.grace, seeds=not args.no_seeds, iterate=args.iterate, narrow=args.narrow)
+    result = minimise_pack(pack, out, launch, installed.kernel_fingerprint, data / 'mods', ticks=args.ticks,
+                           jvm=args.jvm, budget=args.budget, use_seeds=not args.no_seeds, iterate=args.iterate,
+                           narrowing=args.narrow, settings=settings)
+    for number, record in enumerate(result['rounds'], 1):
+        print(f"round {number}: {record['status']} {record.get('minimal', '')} "
+              f"reference={(record['reference'] or {}).get('signature')}")
+    print(f"{result['launches']} launches, {result['cache_hits']} from the cache; {out / 'ddmin-result.json'}")
+    return 0 if result['status'] in ('MINIMISED', 'PASSED') else 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())
