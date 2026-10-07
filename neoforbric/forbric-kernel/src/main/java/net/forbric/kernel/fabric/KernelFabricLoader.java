@@ -598,3 +598,303 @@ public final class KernelFabricLoader implements FabricLoader {
 
 	/**
 	 * The launch arguments with the player's credentials removed.
+	 *
+	 * <p>{@code sanitize} was accepted and ignored, so a mod asking for the SANITISED arguments — which is what a
+	 * mod does before writing them into a crash report, a debug dump or a log it uploads — got the real ones,
+	 * {@code --accessToken} included. That token is a live session credential. Fabric strips the same four, and
+	 * the value that follows each flag goes with it.
+	 *
+	 * <p>Unknown flags are kept: the caller asked for the launch arguments, not for a whitelist, and dropping
+	 * something the kernel does not recognise would quietly change what a mod sees.
+	 */
+	static String[] sanitized(String[] arguments) {
+		List<String> out = new ArrayList<>(arguments.length);
+		for (int i = 0; i < arguments.length; i++) {
+			if (SENSITIVE_ARGUMENTS.contains(arguments[i])) {
+				// Skip its value too. A flag at the very end has none, and must not run off the array.
+				if (i + 1 < arguments.length) i++;
+				continue;
+			}
+			out.add(arguments[i]);
+		}
+		return out.toArray(new String[0]);
+	}
+
+	private ClassLoader entrypointLoader() {
+		ClassLoader loader = gameLoader;
+		return loader != null ? loader : Thread.currentThread().getContextClassLoader();
+	}
+
+	/**
+	 * One entrypoint declaration, resolved lazily and then cached (Fabric constructs on first access) — or one a mod
+	 * added through Fabric Loader's entrypoint storage, which builds its own instances.
+	 */
+	private final class Entrypoint {
+		private final String key;
+		private final KernelModContainer provider;
+		private final EntrypointDecl decl;
+		/** Non-null for an entrypoint a mod added through the storage; it is then also the storage entry. */
+		private final EntrypointStorage.Entry added;
+
+		private volatile Object value;
+		private volatile Class<?> resolvedClass;
+		private volatile EntrypointStorage.Entry storageEntry;
+		/** Whether this declaration's load failure has been said; {@link #provides} runs once per query of its key. */
+		private volatile boolean unresolvableReported;
+
+		Entrypoint(String key, KernelModContainer provider, EntrypointDecl decl) {
+			this.key = key;
+			this.provider = provider;
+			this.decl = decl;
+			this.added = null;
+		}
+
+		Entrypoint(String key, KernelModContainer provider, EntrypointStorage.Entry added) {
+			this.key = key;
+			this.provider = provider;
+			this.decl = null;
+			this.added = added;
+			this.storageEntry = added;
+		}
+
+		/** This entrypoint as an entry of Fabric Loader's storage — the same object every time, which is its identity. */
+		EntrypointStorage.Entry storageEntry() {
+			EntrypointStorage.Entry entry = storageEntry;
+			if (entry != null) return entry;
+
+			synchronized (this) {
+				if (storageEntry == null) storageEntry = new KernelBackedEntry(this);
+				return storageEntry;
+			}
+		}
+
+		/** Whether this declaration can yield an instance of {@code type}, without constructing it. */
+		boolean provides(Class<?> type) {
+			// An added entry carries its own adapter, which alone knows; like a named adapter, it answers on use.
+			if (added != null) return true;
+			// Only the adapter knows how its language spells "this value implements that interface" — Kotlin's, for
+			// one, resolves an `object` through a synthetic INSTANCE field. Guessing here would silently drop the
+			// entrypoint; let the adapter answer at construction time instead.
+			if (!decl.isDefaultAdapter()) return true;
+
+			try {
+				String v = decl.value();
+				int sep = v.indexOf("::");
+
+				if (sep < 0) {
+					return type.isAssignableFrom(loadClass(v));
+				}
+
+				Class<?> owner = loadClass(v.substring(0, sep));
+				String member = v.substring(sep + 2);
+
+				for (Field field : owner.getDeclaredFields()) {
+					if (field.getName().equals(member) && Modifier.isStatic(field.getModifiers())) {
+						return type.isAssignableFrom(field.getType());
+					}
+				}
+
+				// A method reference can satisfy any functional interface; the exact shape is checked on construction.
+				for (Method method : owner.getDeclaredMethods()) {
+					if (method.getName().equals(member)) return type.isInterface();
+				}
+
+				return false;
+			} catch (Throwable t) {
+				return unresolvable(t);
+			}
+		}
+
+		/**
+		 * An entrypoint whose class, or a type its members name, cannot be loaded or linked here.
+		 *
+		 * <p>Nothing above throws for a declaration of another type — that is the {@code return false} paths — so
+		 * anything that lands here is a load failure, and it used to be a WARN and a skip. fabric-networking's
+		 * {@code CommonPacketsImpl::init} names {@code ServerConfigurationPacketListenerImpl} in a lambda's signature;
+		 * when creativecore's required redirect made that class fail its weave, reflection on the entrypoint class
+		 * threw, the entrypoint was dropped, Fabric's common packet handshake never registered, and the report had no
+		 * word about fabric-networking. Fabric itself throws here, for the whole key.
+		 *
+		 * <p>For the keys the kernel drives ({@code main}, {@code client}, {@code server}, {@code preLaunch}) the
+		 * declaration is handed on as matching: construction throws the same error inside the lifecycle driver's own
+		 * catch, which already fails the mod and records its CONFIRMED initialization finding — one reporting path, and
+		 * Fabric's outcome. For any other key the mod that reads it decides; the entry is skipped as before and a
+		 * SUSPECTED finding names the key, because a class that links natively but not here can be a plugin
+		 * (modmenu, emi, jade) for a mod that is otherwise fine. {@link #RESOLVE_FAILURE_PROPERTY}{@code =warn}
+		 * restores the plain skip.
+		 */
+		private boolean unresolvable(Throwable t) {
+			String id = provider.getMetadata().getId();
+			if ("warn".equalsIgnoreCase(System.getProperty(RESOLVE_FAILURE_PROPERTY, "fail"))) {
+				ForbricLog.warn("[Forbric/Fabric] %s: cannot resolve entrypoint '%s': %s", id, decl.value(), String.valueOf(t));
+				return false;
+			}
+			boolean first = !unresolvableReported;
+			unresolvableReported = true;
+			if (LIFECYCLE_KEYS.contains(key)) {
+				if (first) {
+					ForbricLog.warn("[Forbric/Fabric] %s: %s entrypoint '%s' cannot be loaded here (%s) — it is handed to the "
+							+ "%s driver, which fails the mod as Fabric would", id, key, decl.value(), String.valueOf(t), key);
+				}
+				return true;
+			}
+			if (first) {
+				ForbricLog.warn("[Forbric/Fabric] %s: its '%s' entrypoint '%s' cannot be loaded here (%s) — whatever reads "
+						+ "'%s' goes without it", id, key, decl.value(), String.valueOf(t), key);
+				net.forbric.api.CompatibilityFindings.record(new net.forbric.api.CompatibilityFinding(
+						"entrypoint:" + key + ":" + decl.value(), id, "Mod integration",
+						"KernelFabricLoader entrypoint resolution", net.forbric.api.CompatibilityFinding.Confidence.SUSPECTED,
+						false, "its '" + key + "' entrypoint " + decl.value() + " cannot be loaded, so the mod reading '" + key
+								+ "' goes without it", List.of("key=" + key, "entrypoint=" + decl.value(), String.valueOf(t))));
+			}
+			return false;
+		}
+
+		Object get(Class<?> type) {
+			if (added != null) {
+				// The entry caches per requested type itself, as Fabric's does.
+				try {
+					return added.getOrCreate(type);
+				} catch (Throwable t) {
+					throw new RuntimeException("could not construct entrypoint '" + definition() + "' of mod "
+							+ provider.getMetadata().getId(), t);
+				}
+			}
+
+			Object v = value;
+			if (v != null) return v;
+
+			synchronized (this) {
+				if (value != null) return value;
+
+				try {
+					value = construct(type);
+				} catch (Throwable t) {
+					throw new RuntimeException("could not construct entrypoint '" + decl.value() + "' of mod "
+							+ provider.getMetadata().getId(), t);
+				}
+
+				return value;
+			}
+		}
+
+		private Object construct(Class<?> type) throws Throwable {
+			if (!decl.isDefaultAdapter()) {
+				// A mod-provided adapter (fabric-language-kotlin and friends) builds the instance itself; it may
+				// hand anything it does not handle back through LanguageAdapter.getDefault(), which lands on the
+				// same resolution as the branch below. See KernelLanguageAdapters.
+				return KernelLanguageAdapters.get(decl.adapter()).create(provider, decl.value(), type);
+			}
+
+			String v = decl.value();
+			int sep = v.indexOf("::");
+
+			if (sep < 0) {
+				Class<?> cls = loadClass(v);
+				return cls.getDeclaredConstructor().newInstance();
+			}
+
+			Class<?> owner = loadClass(v.substring(0, sep));
+			String member = v.substring(sep + 2);
+
+			for (Field field : owner.getDeclaredFields()) {
+				if (field.getName().equals(member) && Modifier.isStatic(field.getModifiers())) {
+					field.setAccessible(true);
+					return field.get(null);
+				}
+			}
+
+			for (Method method : owner.getDeclaredMethods()) {
+				if (!method.getName().equals(member) || !Modifier.isStatic(method.getModifiers())) continue;
+
+				method.setAccessible(true);
+				MethodHandle handle = MethodHandles.lookup().unreflect(method);
+				// Binds the static method to the requested functional interface without generating a class in the
+				// mod's package (LambdaMetafactory would need a lookup inside the mod's own class).
+				return MethodHandleProxies.asInterfaceInstance(type, handle);
+			}
+
+			throw new NoSuchMethodException("no static member '" + member + "' on " + owner.getName());
+		}
+
+		/**
+		 * Resolves an entrypoint class WITHOUT running its static initialiser.
+		 *
+		 * <p>It used to initialise, and {@link #provides} calls this for every candidate — so asking for the
+		 * entrypoints of ONE key ran the static initialiser of every entrypoint class of every mod, including
+		 * ones that were never going to be constructed and ones belonging to the other side's phase entirely.
+		 * A mod that does real work in a static initialiser therefore did it at the wrong moment, and if that
+		 * work threw, the class stayed permanently erroneous: a class initialiser is a one-shot.
+		 *
+		 * <p>Nothing is lost by waiting. Every path in {@code construct} initialises the class as a side effect
+		 * of what it does next — {@code newInstance}, a static field read, a method handle invocation — so the
+		 * initialiser still runs, at the moment the entrypoint is actually used.
+		 */
+		private Class<?> loadClass(String name) throws ClassNotFoundException {
+			Class<?> cls = resolvedClass;
+			if (cls != null && cls.getName().equals(name)) return cls;
+
+			cls = Class.forName(name, false, entrypointLoader());
+			resolvedClass = cls;
+			return cls;
+		}
+
+		String definition() {
+			return added != null ? added.getDefinition() : decl.value();
+		}
+
+		KernelModContainer provider() {
+			return provider;
+		}
+	}
+
+	/** A kernel entrypoint as Fabric Loader's storage holds it: what a mod reading the storage sees for it. */
+	private static final class KernelBackedEntry implements EntrypointStorage.Entry {
+		private final Entrypoint entrypoint;
+
+		KernelBackedEntry(Entrypoint entrypoint) {
+			this.entrypoint = entrypoint;
+		}
+
+		@Override
+		public <T> T getOrCreate(Class<T> type) {
+			return type.cast(entrypoint.get(type));
+		}
+
+		@Override
+		public boolean isOptional() {
+			return false;
+		}
+
+		@Override
+		public ModContainerImpl getModContainer() {
+			return entrypoint.provider();
+		}
+
+		@Override
+		public String getDefinition() {
+			return entrypoint.definition();
+		}
+
+		@Override
+		public String toString() {
+			return entrypoint.provider().getMetadata().getId() + "->" + entrypoint.definition();
+		}
+	}
+
+	/** The mod-facing view of one resolved entrypoint. */
+	private final class TypedContainer<T> implements EntrypointContainer<T> {
+		private final Entrypoint entry;
+		private final Class<T> type;
+
+		TypedContainer(Entrypoint entry, Class<T> type) {
+			this.entry = entry;
+			this.type = type;
+		}
+
+		@Override
+		public T getEntrypoint() {
+			return type.cast(entry.get(type));
+		}
+
+		@Override
