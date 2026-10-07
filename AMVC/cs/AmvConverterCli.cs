@@ -298,3 +298,113 @@ static class Program
             try
             {
                 DateTime t1 = DateTime.Now;
+                AmvResult r = AmvConverter.Run(f, dests[i], opts, ShowProgress);
+                ClearProgress();
+                if (r.ExitCode == 0)
+                {
+                    Console.WriteLine("[完成] " + f + " → " + Path.GetFullPath(dests[i]) +
+                        (opts.Quiet ? "" : "（" + (DateTime.Now - t1).TotalSeconds.ToString("F1") + "s）"));
+                    ok++;
+                }
+                else
+                {
+                    Console.WriteLine("[失败] " + f + ": " + (r.Error ?? ("返回码 " + r.ExitCode)));
+                    failCount++;
+                }
+            }
+            catch (Exception ex)
+            {
+                ClearProgress();
+                Console.WriteLine("[失败] " + f + ": " + ex.Message);
+                failCount++;
+            }
+        }
+
+        if (s_interrupted != 0) { Console.WriteLine("已中断"); return 130; }
+        Console.WriteLine("转换完成: 成功 " + ok + "，失败 " + failCount + "，总耗时 " + (DateTime.Now - t0).TotalSeconds.ToString("F1") + "s");
+        return failCount > 0 ? 3 : 0;
+    }
+
+    static void ShowProgress(double sec, double total)
+    {
+        if (total > 0)
+        {
+            int pct = (int)(sec / total * 100);
+            if (pct > 99) pct = 99;
+            if (pct < 0) pct = 0;
+            const int w = 24;
+            int fill = w * pct / 100;
+            Draw("\r转换中 [" + new string('#', fill) + new string('-', w - fill) + "] " +
+                 pct.ToString().PadLeft(3) + "%  " + FmtSec(sec) + "/" + FmtSec(total));
+        }
+        else
+        {
+            Draw("\r转换中 已处理 " + FmtSec(sec));
+        }
+    }
+
+    static string s_lastLine;
+    static void Draw(string line)
+    {
+        if (line == s_lastLine) return;
+        s_lastLine = line;
+        Console.Write(line);
+    }
+
+    static void ClearProgress()
+    {
+        if (s_lastLine != null)
+        {
+            Console.Write("\r" + new string(' ', s_lastLine.Length + 2) + "\r");
+            s_lastLine = null;
+        }
+    }
+
+    static string FmtSec(double s)
+    {
+        int v = (int)Math.Max(0, Math.Round(s));
+        int h = v / 3600, m = v % 3600 / 60, ss = v % 60;
+        return h > 0
+            ? h + ":" + m.ToString("00") + ":" + ss.ToString("00")
+            : m.ToString("00") + ":" + ss.ToString("00");
+    }
+
+    static int Fail(string msg) { Console.Error.WriteLine(msg); return 1; }
+
+    static void PrintHelp()
+    {
+        Console.WriteLine("AMVConverter v" + AmvConverter.Version + " (C#) —— 任意格式转 AMV（MP3/MP4 播放器视频格式）");
+        Console.WriteLine();
+        Console.WriteLine("用法: AMVConverter.exe [选项] <输入文件或目录...>");
+        Console.WriteLine();
+        Console.WriteLine("选项:");
+        Console.WriteLine("  -o, --out <路径>        输出文件（单个输入）或输出目录（批量）");
+        Console.WriteLine("  -s, --size <宽x高>      分辨率，默认 320x240（自动取 16 的倍数）");
+        Console.WriteLine("  -r, --fps <N>           帧率，默认 15（仅支持 10/14/15，见下方说明）");
+        Console.WriteLine("  -q, --quality <N>       视频质量 2~31，越小越清晰，默认 9");
+        Console.WriteLine("  -j, --jobs <N>          批量转换时的并行数 1~16（默认 1）");
+        Console.WriteLine("      --stretch           拉伸铺满画面（默认等比缩放并加黑边）");
+        Console.WriteLine("      --deinterlace       先做 yadif 去隔行（适合 DV/老摄像机源）");
+        Console.WriteLine("      --duration <N>      静态图片输入时的时长(秒)，默认 30");
+        Console.WriteLine("      --ffmpeg <路径>     指定 ffmpeg 可执行文件路径");
+        Console.WriteLine("      --overwrite         覆盖已存在的输出文件");
+        Console.WriteLine("      --keep              转换失败时保留残留输出");
+        Console.WriteLine("      --quiet             不显示进度条");
+        Console.WriteLine("      --info              只显示输入文件的流信息，不转换");
+        Console.WriteLine("      --dry-run           只打印将执行的 ffmpeg 命令，不转换");
+        Console.WriteLine("  -h, --help              显示帮助");
+        Console.WriteLine("  -V, --version           显示版本");
+        Console.WriteLine();
+        Console.WriteLine("说明:");
+        Console.WriteLine("  · 视频/音频/图片均可转换：纯音频自动配黑屏画面；静态图片默认循环 30 秒。");
+        Console.WriteLine("  · 按 AMV 标准编码: amv(mjpeg) 视频 + adpcm_ima_amv 音频(22050Hz 单声道)。");
+        Console.WriteLine("  · 帧率只支持 10/14/15: AMV 音频固定 22050Hz, 采样率必须能被视频帧率整除。");
+        Console.WriteLine("  · 缩放使用 lanczos 算法, 输出默认与源文件同目录同名, 扩展名 .amv。");
+        Console.WriteLine();
+        Console.WriteLine("示例:");
+        Console.WriteLine("  AMVConverter.exe movie.mp4                        → movie.amv");
+        Console.WriteLine("  AMVConverter.exe -s 160x120 -o ./amv ./视频目录     → 批量转换");
+        Console.WriteLine("  AMVConverter.exe -j 4 -o ./amv ./视频目录          → 4 路并行批量");
+        Console.WriteLine("  AMVConverter.exe song.mp3                         → 音乐带黑屏画面");
+    }
+}
