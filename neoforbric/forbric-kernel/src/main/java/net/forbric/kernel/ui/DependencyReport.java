@@ -298,3 +298,34 @@ public final class DependencyReport {
 	public static List<MixinRow> readMixins(Path file) throws IOException {
 		List<MixinRow> rows = new ArrayList<>();
 		boolean inSection = false;
+		for (String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
+			if (SECTION.equals(line)) { inSection = true; continue; }
+			if (SUSPECTED.equals(line)) break;
+			if (!inSection || line.isBlank()) continue;
+			String[] parts = line.split("\t", -1);
+			if (parts.length != 3) continue;
+			rows.add(new MixinRow(parts[0], parts[1], parts[2]));
+		}
+		return rows;
+	}
+
+	/** The legacy notice's third section. Lenient like the rest of that format: a malformed note is dropped. */
+	public static List<CompatibilityRow> readSuspected(Path file) throws IOException {
+		List<CompatibilityRow> rows = new ArrayList<>();
+		boolean inSection = false;
+		for (String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
+			if (SUSPECTED.equals(line)) { inSection = true; continue; }
+			if (!inSection || line.isBlank()) continue;
+			String[] parts = line.split("\t", -1);
+			if (parts.length != 6) continue;
+			rows.add(new CompatibilityRow(parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]));
+		}
+		return rows;
+	}
+
+	/** Never null, never empty, never contains the separator — so a malformed row cannot be produced at all. */
+	private static String field(String raw) {
+		if (raw == null || raw.isBlank()) return "?";
+		return raw.replace('\t', ' ').replace('\n', ' ').replace('\r', ' ');
+	}
+}
