@@ -598,3 +598,18 @@ public final class MixinAtWidenedCall {
 			String one = widenedNewIn(body, target);
 			if (one != null) moved.add(one);
 		}
+		return moved.size() == 1 ? moved.iterator().next() : null;
+	}
+
+	private static boolean callsExactly(MethodNode body, String target) {
+		Member member = parse(target);
+		if (member == null || body.instructions == null) return false;
+		for (AbstractInsnNode insn : body.instructions) {
+			if (insn instanceof MethodInsnNode call && call.owner.equals(member.owner())
+					&& call.name.equals(member.name()) && call.desc.equals(member.descriptor())) {
+				return true;
+			}
+		}
+		return false;
+	}
+}
