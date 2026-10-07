@@ -298,3 +298,26 @@ public final class PortingLayerAbiInjector implements ClassTransformer {
 		for (int i = 0; i + needle.length <= bytes.length; i++) {
 			for (int j = 0; j < needle.length; j++) {
 				if (bytes[i + j] != needle[j]) continue outer;
+			}
+			return true;
+		}
+		return false;
+	}
+
+	private static boolean addTheValidateSpecTheCarrierCalls(ClassNode node) {
+		for (MethodNode method : node.methods) {
+			if (VALIDATE_SPEC.equals(method.name)) {
+				throw new IllegalStateException("ForgeConfigSpecAdapter already declares " + VALIDATE_SPEC
+						+ method.desc + " — the port has caught up and this shim is stale");
+			}
+		}
+		MethodNode validate = new MethodNode(Opcodes.ACC_PUBLIC, VALIDATE_SPEC, "(" + MOD_CONFIG + ")V", null, null);
+		validate.instructions.add(new InsnNode(Opcodes.RETURN));
+		validate.maxStack = 0;
+		validate.maxLocals = 2;
+		node.methods.add(validate);
+		ForbricLog.warn("[Forbric/PortShim] gave ForgeConfigAPIPort's spec adapter the validateSpec real NeoForge "
+				+ "calls on every registration — it implements IConfigSpec against an older shape of it");
+		return true;
+	}
+}
