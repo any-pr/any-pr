@@ -298,3 +298,19 @@ check "the game asked on its own screen, Launch anyway or Quit" \
   "Forbric/Compatibility\] asking in the game about [0-9]+ required feature loss\(es\) the launch could not ask about in a window" "$REQLOG"
 assert_eq "and it was still waiting for the answer when the gate stopped it" "killed" "$(cat "$REQLOG.exit" 2>/dev/null)"
 check_absent "no crash" "Preparing crash report|Game crashed" "$REQLOG"
+
+step "off with a required loss: the switch is an explicit no-window, so the launch is not approved"
+run_client "$REQOFFLOG" ask off
+check "with no window a required loss is not approved" "continuation was not approved" "$REQOFFLOG"
+assert_eq "and the launch stopped with the typed policy stop" "78" "$(cat "$REQOFFLOG.exit" 2>/dev/null)"
+check_absent "no child was forked" "forked the dialog" "$REQOFFLOG"
+check_absent "and nothing was handed to the game" "asking in the game" "$REQOFFLOG"
+rm -f "$CLI/mods/forbricbrokencanary.jar"
+
+step "M20 result"
+if [ "${FAIL:-0}" -eq 0 ]; then
+  echo "[kernel] ✅ M20 GATE GREEN — an unmet hard dependency reaches the player in one window on a client, nothing on a server, and each answer is what happened"
+else
+  echo "[kernel] ❌ M20 GATE RED — see $SLOG / $CLOG / $CONTLOG / $OFFLOG / $REQLOG / $REQOFFLOG"
+  exit 1
+fi
