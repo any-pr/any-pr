@@ -298,3 +298,45 @@
       "detail": [],
       "seconds": 99,
       "strict": false,
+      "dependency_issues": [],
+      "unresolved": {},
+      "drew": false,
+      "crash": []
+    }
+  ],
+  "paired_baseline": false,
+  "historical_comparison_note": "Different sample and stricter dependency-inclusive criteria; no causal percentage-point estimate.",
+  "mixed": {
+    "subjects": 88,
+    "jars": 109,
+    "strict": false,
+    "first_run": "CRASH",
+    "reload": "NOT_RUN",
+    "cause": "chloride and cwb both override sodium:general.fullscreen_mode"
+  },
+  "diagnostic_status": "PASS",
+  "configuration_blocked_subjects": [
+    "tuanzis_server_mod-1.0.6.jar"
+  ],
+  "configuration_block_reason": "Its own whitelist rejected CompatPlayer before world entry; report status OK. This is not evidence of a loader defect.",
+  "diagnostic": {
+    "subjects": 86,
+    "jars": 107,
+    "strict": true,
+    "excluded": [
+      "cwb-4.1.0+26.2.jar",
+      "enchantcraft-1.0.0.jar"
+    ],
+    "first_world_ticks": 6000,
+    "reload_world_ticks": 200,
+    "counts_toward_full_pack_success": false
+  },
+  "validation": {
+    "kernel_tests": 2736,
+    "skipped": 0,
+    "failed": 0,
+    "python_tests": 8,
+    "gates_passed": 53,
+    "soak_release_accepted": false
+  }
+}
