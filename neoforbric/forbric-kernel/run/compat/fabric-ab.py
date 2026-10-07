@@ -298,3 +298,65 @@ def minimise(lab, budget, mode="all"):
         return dict(status="BUDGET", pack=PACKS[mode], reference=reference["signature"])
     native_minimal = lab.run("ddmin-minimal", "native", reduction.closed)
     forbric_minimal = lab.run("ddmin-minimal", "forbric", reduction.closed)
+    return dict(status="MINIMISED", pack=PACKS[mode], reference=reference["signature"], nativePack=native["outcome"], seeds=seeds,
+                minimal=reduction.minimal, closed=reduction.closed, launches=reduction.calls,
+                history=[dict(jars=len(config), verdict=verdict) for config, verdict in reduction.history],
+                minimalVerdict=pair_verdict(native_minimal, forbric_minimal),
+                minimalNative=native_minimal["outcome"], minimalForbric=forbric_minimal["outcome"],
+                minimalForbricSignature=forbric_minimal.get("signature"))
+
+
+def write_report(report, lab, summary):
+    """The committed evidence: manifest (Modrinth sha1 per jar), closure, summary and every session without its path."""
+    report.mkdir(parents=True, exist_ok=True)
+    (report / "summary.json").write_text(json.dumps(summary, indent=1) + "\n")
+    (report / "manifest.json").write_text(json.dumps(lab.manifest, indent=1) + "\n")
+    (report / "closure.json").write_text(json.dumps(lab.closure, indent=1, sort_keys=True) + "\n")
+    current = [r for r in lab.records() if r.get("identityDigest") in (lab.kernel, lab.launcher)]
+    (report / "sessions.jsonl").write_text("".join(json.dumps({k: v for k, v in r.items() if k != "result"}) + "\n" for r in current))
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--data", required=True)
+    parser.add_argument("--out", required=True)
+    parser.add_argument("action", choices=["pack", "per-mod", "confirm", "ddmin", "summary"])
+    parser.add_argument("--ticks", type=int)
+    parser.add_argument("--timeout", type=int)
+    parser.add_argument("--xmx")
+    parser.add_argument("--jobs", type=int, default=2)
+    parser.add_argument("--budget", type=int, default=60)
+    parser.add_argument("--only", nargs="+")
+    parser.add_argument("--subjects", choices=list(PACKS), default="all", help="pack/ddmin: which subjects the pack combines")
+    parser.add_argument("--fresh", action="store_true", help="run even when an identical session is recorded")
+    parser.add_argument("--report", help="summary: also copy summary.json and manifest.json here")
+    args = parser.parse_args(argv)
+    defaults = dict(pack=(1200, 1800, "4G"), ddmin=(1200, 1800, "4G")).get(args.action, (200, 900, "2G"))
+    lab = Lab(args.data, args.out, args.ticks or defaults[0], args.timeout or defaults[1], args.xmx or defaults[2])
+    if args.action == "pack":
+        jars, chosen = pack_jars(lab, args.subjects)
+        native = lab.run(PACKS[args.subjects], "native", jars, fresh=args.fresh)
+        forbric = lab.run(PACKS[args.subjects], "forbric", jars, fresh=args.fresh)
+        print(json.dumps(dict(pack=PACKS[args.subjects], subjects=len(chosen), jars=len(jars), verdict=pair_verdict(native, forbric),
+                              native=native["outcome"], forbric=forbric["outcome"],
+                              forbricSignature=forbric.get("signature"), nativeSignature=native.get("signature"))))
+    elif args.action == "per-mod":
+        per_mod(lab, args.jobs, args.only, args.fresh)
+    elif args.action == "confirm":
+        confirm(lab)
+    elif args.action == "ddmin":
+        result = minimise(lab, args.budget, args.subjects)
+        (lab.out / f"ddmin-{PACKS[args.subjects]}.json").write_text(json.dumps(result, indent=1) + "\n")
+        print(json.dumps({k: v for k, v in result.items() if k != "history"}, indent=1))
+    else:
+        summary = summarise(lab.manifest, lab.records(), lab.kernel, lab.launcher, lab.ticks)
+        summary["ddmin"] = {path.stem[len("ddmin-"):]: json.loads(path.read_text()) for path in sorted(lab.out.glob("ddmin-*.json"))}
+        (lab.out / "summary.json").write_text(json.dumps(summary, indent=1) + "\n")
+        print(json.dumps(dict(pack=summary["pack"]["verdict"], perModCounts=summary["perModCounts"])))
+        if args.report:
+            write_report(Path(args.report), lab, summary)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
