@@ -298,3 +298,137 @@ final class ReachableCandidateSelector {
 		int[] values = solver.model(); int size = solver.nVars();
 		for (int literal : values) size = Math.max(size, Math.abs(literal));
 		boolean[] model = new boolean[size + 1];
+		for (int literal : values) if (literal > 0) model[literal] = true;
+		lastModel = model;
+		return true;
+	}
+
+	private Set<Path> fromModel() {
+		Set<Path> result = new LinkedHashSet<>(); variables.forEach((path, variable) -> { if (lastModel[variable]) result.add(path); });
+		return result;
+	}
+
+	private Comparator<Path> candidateOrder(boolean root, String id) {
+		return (a, b) -> {
+			if (root && graph.nodes().get(a).root() != graph.nodes().get(b).root()) return graph.nodes().get(a).root() ? -1 : 1;
+			if (artifacts.containsKey(id)) {
+				String av = artifacts.get(id).get(a).iterator().next(), bv = artifacts.get(id).get(b).iterator().next();
+				int version = VersionPredicate.compare(bv, av); if (version != 0) return version;
+			}
+			List<Ecosystem> preference = root ? rootPreference : nestedPreference;
+			int ar = family(a) == null || !preference.contains(family(a)) ? preference.size() : preference.indexOf(family(a));
+			int br = family(b) == null || !preference.contains(family(b)) ? preference.size() : preference.indexOf(family(b));
+			if (ar != br) return Integer.compare(ar, br);
+			// Two builds of one mod from the SAME ecosystem: both genuine loaders keep the highest version
+			// (cc2ec44). Copies of one JarJar artifact often declare one literal for every build, or an unresolved
+			// ${file.jarVersion}; FML keeps the newest artifactVersion, so that breaks their tie. The candidate
+			// directory is a content digest, so the path is only the last resort.
+			if (!artifacts.containsKey(id) && family(a) == family(b)) {
+				int version = VersionPredicate.compare(modVersion(b, id), modVersion(a, id)); if (version != 0) return version;
+				String aa = artifactVersion(a), ba = artifactVersion(b);
+				if (aa != null || ba != null) {
+					if (aa == null || ba == null) return aa == null ? 1 : -1;
+					version = VersionPredicate.compare(ba, aa); if (version != 0) return version;
+				}
+			}
+			return a.toString().compareTo(b.toString());
+		};
+	}
+
+	/** The artifactVersion a bundling parent's JarJar metadata recorded for {@code candidate}, or null. */
+	private String artifactVersion(Path candidate) {
+		for (Map<Path, Set<String>> copies : artifacts.values()) if (copies.containsKey(candidate)) return copies.get(candidate).iterator().next();
+		return null;
+	}
+
+	/**
+	 * Roots first, then every other identity from the shallowest nesting level down, mod ids before JarJar
+	 * artifacts at each level. A child identity is only decided once its parents are, so trying "absent" first
+	 * for a nested id can never switch off the parent that bundles it, and an artifact identity cannot take a
+	 * build away from the mod-id contest that owns the preference.
+	 */
+	private List<String> decisionOrder() {
+		List<String> order = new ArrayList<>(rootIds), nested = new ArrayList<>();
+		for (String id : identities.keySet()) if (!rootIds.contains(id)) nested.add(id);
+		nested.sort(Comparator.<String>comparingInt(id -> identities.get(id).stream().mapToInt(p -> depth.getOrDefault(p, Integer.MAX_VALUE)).min().orElse(Integer.MAX_VALUE))
+				.thenComparing(id -> id.startsWith("@jarjar:")).thenComparing(Comparator.naturalOrder()));
+		order.addAll(nested);
+		return order;
+	}
+
+	/**
+	 * What can satisfy a JarJar coordinate: the named artifact, or any build that claims every mod id the bundled
+	 * child claims. FML resolves by mod id; a platform-specific artifact name (xaerolib-forge-26.2 against
+	 * xaerolib-neoforge-26.2) or a Fabric parent that carries no JarJar metadata must not make one library
+	 * two mutually required, mutually exclusive jars.
+	 */
+	private Set<Path> edgeProviders(NestedCandidateInventory.Edge edge) {
+		Set<Path> providers = new LinkedHashSet<>(identities.getOrDefault(artifactId(edge.coordinate().id()), List.of()));
+		var child = graph.nodes().get(edge.child()).claim();
+		if (child == null || child.modIds().isEmpty()) return providers;
+		Set<String> needed = new HashSet<>(); for (String id : child.modIds()) needed.add(JointCandidateSelector.key(id));
+		for (Path candidate : identities.getOrDefault(JointCandidateSelector.key(child.modIds().getFirst()), List.of())) {
+			var claim = graph.nodes().get(candidate).claim();
+			if (claim.modIds().stream().map(JointCandidateSelector::key).collect(java.util.stream.Collectors.toSet()).containsAll(needed)) providers.add(candidate);
+		}
+		return providers;
+	}
+
+	/** The version a candidate declares for {@code id} (either spelling), or "0" when it declares none. */
+	private String modVersion(Path candidate, String id) {
+		var claim = graph.nodes().get(candidate).claim(); if (claim == null) return "0";
+		String key = JointCandidateSelector.key(id);
+		for (String raw : claim.modIds()) if (JointCandidateSelector.key(raw).equals(key)) return claim.versionOf(raw);
+		return "0";
+	}
+
+	/** An explicit non-solution: retain chosen roots and only reachable descendants, never every losing jar. */
+	private Set<Path> fallback() {
+		Set<Path> selected = new LinkedHashSet<>();
+		for (var node : graph.nodes().values()) if (node.root() && !node.excluded()
+				&& node.claim() != null && node.claim().modIds().isEmpty()) selected.add(node.path());
+		for (String id : rootIds) {
+			List<Path> candidates = new ArrayList<>(identities.get(id)); candidates.sort(candidateOrder(true, id));
+			Path choice = candidates.stream().filter(p -> graph.nodes().get(p).root())
+					.filter(p -> !overrides.containsKey(id) || family(p) == overrides.get(id)).findFirst().orElse(candidates.getFirst());
+			selected.add(choice);
+		}
+		for (var pin : overrides.entrySet()) {
+			Path forced = identities.getOrDefault(pin.getKey(), List.of()).stream().filter(p -> family(p) == pin.getValue()).findFirst().orElse(null);
+			if (forced != null) addWithParent(forced, selected, new HashSet<>());
+		}
+		for (int round = 0; round < graph.nodes().size(); round++) {
+			boolean changed = false;
+			for (var edge : graph.edges()) {
+				if (!selected.contains(edge.parent()) || graph.nodes().get(edge.child()).excluded()) continue;
+				var child = graph.nodes().get(edge.child());
+				if (edge.payload() || (child.claim() == null && edge.coordinate() == null)) { changed |= selected.add(edge.child()); continue; }
+				List<String> ids = child.claim() == null ? List.of(artifactId(edge.coordinate().id())) : child.claim().modIds().stream().map(JointCandidateSelector::key).toList();
+				for (String id : ids) if (!intersects(selected, Set.copyOf(identities.get(id)))) {
+					List<Path> candidates = new ArrayList<>(identities.get(id)); candidates.sort(candidateOrder(rootIds.contains(id), id));
+					Path choice = candidates.stream().filter(p -> graph.nodes().get(p).root() || graph.edges().stream().anyMatch(e -> e.child().equals(p) && selected.contains(e.parent())))
+							.findFirst().orElse(edge.child());
+					changed |= selected.add(choice);
+				}
+			}
+			if (!changed) break;
+		}
+		return selected;
+	}
+	private void addWithParent(Path path, Set<Path> selected, Set<Path> seen) {
+		if (!seen.add(path)) return;
+		selected.add(path); if (graph.nodes().get(path).root()) return;
+		graph.edges().stream().filter(e -> e.child().equals(path)).findFirst().ifPresent(e -> addWithParent(e.parent(), selected, seen));
+	}
+	private Ecosystem family(Path path) { var claim = graph.nodes().get(path).claim(); return claim == null ? null : claim.ecosystem(); }
+	private int variable(Path path) { return variables.get(path); }
+	private static String artifactId(String id) { return "@jarjar:" + id; }
+	private static VecInt copy(VecInt values) {
+		// SAT4J's toArray() exposes capacity, including unused zero literals. Copy only logical entries and
+		// never share its backing array: each trial must preserve the preceding assumptions unchanged.
+		int[] entries = new int[values.size()]; values.copyTo(entries); return new VecInt(entries);
+	}
+	private static void clause(ISolver solver, int... values) throws ContradictionException { solver.addClause(new VecInt(values)); }
+	private static void clause(ISolver solver, List<Integer> values) throws ContradictionException { clause(solver, values.stream().mapToInt(Integer::intValue).toArray()); }
+	private static boolean intersects(Set<Path> selected, Set<Path> candidates) { return candidates.stream().anyMatch(selected::contains); }
+}
