@@ -298,3 +298,45 @@ class KernelCreativePagerTest {
 			for (String[] tab : new String[][] {{"A", "left"}, {"B", "left"}, {"C", "right"}, {"D", "left"},
 					{"HIDDEN", "hidden"}, {"SEARCH", "right"}, {"INVENTORY", "right"}}) {
 				tabs.put(tab[0], tabClass.getConstructor(String.class, boolean.class, boolean.class)
+						.newInstance(tab[0], tab[1].equals("right"), !tab[1].equals("hidden")));
+			}
+			@SuppressWarnings("unchecked") List<Object> defaults = (List<Object>) loader
+					.loadClass("net.neoforged.neoforge.common.CreativeModeTabRegistry").getField("DEFAULTS").get(null);
+			defaults.add(tab("SEARCH"));
+			defaults.add(tab("INVENTORY"));
+			pages.add(pageClass.getConstructor(List.class).newInstance(List.of(tab("A"), tab("B"))));
+			pages.add(pageClass.getConstructor(List.class).newInstance(List.of(tab("C"), tab("D"), tab("HIDDEN"))));
+		}
+
+		Object tab(String name) { return tabs.get(name); }
+		Object page(int index) { return pages.get(index); }
+
+		Object screen() throws Exception {
+			return screenClass.getConstructor(List.class, tabClass).newInstance(pages, tab("A"));
+		}
+
+		int owoPage(Object screen) throws Exception {
+			return (int) loader.loadClass(PROBE).getMethod("page", Object.class).invoke(null, screen);
+		}
+
+		/** Through the Fabric interface, as a Fabric mod compiled against fabric-api calls it. */
+		Object api(String name, Object screen, Object... args) throws Exception {
+			for (Method m : api.getMethods()) {
+				if (m.getName().equals(name) && m.getParameterCount() == args.length) return m.invoke(screen, args);
+			}
+			throw new AssertionError("no " + name + " on " + api);
+		}
+
+		/** NeoForge's page-returning {@code getCurrentPage}; by return type, since the screen now also has Fabric's {@code ()I}. */
+		Object neoForgePage(Object screen) throws Exception {
+			for (Method m : screenClass.getDeclaredMethods()) {
+				if (m.getName().equals("getCurrentPage") && m.getReturnType() == pageClass) return m.invoke(screen);
+			}
+			throw new AssertionError("no NeoForge getCurrentPage on " + screenClass);
+		}
+		Object selected() throws Exception { return screenClass.getMethod("selected").invoke(null); }
+		void press(Object screen, String button) throws Exception { screenClass.getMethod(button).invoke(screen); }
+		@SuppressWarnings("unchecked") List<String> calls() throws Exception { return (List<String>) trace.getField("calls").get(null); }
+		@Override public void close() throws Exception { loader.close(); }
+	}
+}
