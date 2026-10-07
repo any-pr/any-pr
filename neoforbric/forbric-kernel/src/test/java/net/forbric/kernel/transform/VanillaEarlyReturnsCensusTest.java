@@ -298,3 +298,22 @@ class VanillaEarlyReturnsCensusTest {
 				if (!line.isBlank() && !line.startsWith("#")) out.add(line.strip());
 			}
 		}
+		return out;
+	}
+
+	private static ClassNode read(byte[] bytes) {
+		ClassNode node = new ClassNode();
+		new ClassReader(bytes).accept(node, 0);
+		return node;
+	}
+
+	private static byte[] bytes(ZipFile jar, String binaryName) {
+		ZipEntry entry = jar.getEntry(binaryName.replace('.', '/') + ".class");
+		if (entry == null) return null;
+		try (InputStream in = jar.getInputStream(entry)) {
+			return in.readAllBytes();
+		} catch (IOException unreadable) {
+			return null;
+		}
+	}
+}
