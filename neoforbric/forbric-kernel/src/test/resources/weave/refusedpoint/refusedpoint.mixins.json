@@ -1,0 +1,1 @@
+{"required": true, "package": "fixture.refusedpoint.mixin", "compatibilityLevel": "JAVA_21", "mixins": ["PointMixin"], "injectors": {"defaultRequire": 1}}
