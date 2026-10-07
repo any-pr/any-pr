@@ -598,3 +598,303 @@
     ],
     "filename": "FallingTree-26.2-25.jar",
     "source_filename": "FallingTree-26.2-25.jar",
+    "url": "https://cdn.modrinth.com/data/Fb4jn8m6/versions/sOoH5kkd/FallingTree-26.2-25.jar",
+    "size": 493214,
+    "sha1": "b094d747558653554ffb9e883bb42b4df7542833",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "popular",
+    "slug": "yosbr",
+    "project_id": "WwbubTsV",
+    "loader": "fabric",
+    "version": "0.1.2",
+    "version_id": "KMOzdYko",
+    "version_type": "release",
+    "loaders": [
+      "fabric",
+      "quilt"
+    ],
+    "filename": "yosbr-0.1.2.jar",
+    "source_filename": "yosbr-0.1.2.jar",
+    "url": "https://cdn.modrinth.com/data/WwbubTsV/versions/KMOzdYko/yosbr-0.1.2.jar",
+    "size": 17373,
+    "sha1": "f0340e9c0bc95d67f3f3e9c1cd79b61054af11f9",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "popular",
+    "slug": "bookshelf-lib",
+    "project_id": "uy4Cnpcm",
+    "loader": "neoforge",
+    "version": "26.2.0.4",
+    "version_id": "qoYtJsvz",
+    "version_type": "release",
+    "loaders": [
+      "neoforge"
+    ],
+    "filename": "Bookshelf-neoforge-MC26.2-26.2.0.4.jar",
+    "source_filename": "Bookshelf-neoforge-MC26.2-26.2.0.4.jar",
+    "url": "https://cdn.modrinth.com/data/uy4Cnpcm/versions/qoYtJsvz/Bookshelf-neoforge-MC26.2-26.2.0.4.jar",
+    "size": 309208,
+    "sha1": "95337750ef31dd9d36b1cfe17e86b74fadee28e6",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "popular",
+    "slug": "guard-villagers",
+    "project_id": "H1sntfo8",
+    "loader": "neoforge",
+    "version": "4.0.4",
+    "version_id": "Ps38kmGN",
+    "version_type": "release",
+    "loaders": [
+      "neoforge"
+    ],
+    "filename": "guardvillagers-4.0.4-26.2.0.jar",
+    "source_filename": "guardvillagers-4.0.4-26.2.0.jar",
+    "url": "https://cdn.modrinth.com/data/H1sntfo8/versions/Ps38kmGN/guardvillagers-4.0.4-26.2.0.jar",
+    "size": 294012,
+    "sha1": "f7d1105bb5d74ba82b7a392c158b5ed74da99cf1",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "popular",
+    "slug": "dynamic-fps",
+    "project_id": "LQ3K71Q1",
+    "loader": "neoforge",
+    "version": "3.11.9",
+    "version_id": "NIDCSqrK",
+    "version_type": "release",
+    "loaders": [
+      "neoforge"
+    ],
+    "filename": "dynamic-fps-3.11.9+minecraft-26.2.0-neoforge.jar",
+    "source_filename": "dynamic-fps-3.11.9+minecraft-26.2.0-neoforge.jar",
+    "url": "https://cdn.modrinth.com/data/LQ3K71Q1/versions/NIDCSqrK/dynamic-fps-3.11.9%2Bminecraft-26.2.0-neoforge.jar",
+    "size": 185732,
+    "sha1": "32dfe949d65c30b963c52595a2eef69ab22a2fa5",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "random",
+    "slug": "petrwolfs-smoke-generator",
+    "project_id": "v7SeQfbX",
+    "loader": "fabric",
+    "version": "1.0.0",
+    "version_id": "4QIioSBM",
+    "version_type": "release",
+    "loaders": [
+      "fabric"
+    ],
+    "filename": "smoke-generator-1.0.0.jar",
+    "source_filename": "smoke-generator-1.0.0.jar",
+    "url": "https://cdn.modrinth.com/data/v7SeQfbX/versions/4QIioSBM/smoke-generator-1.0.0.jar",
+    "size": 20591,
+    "sha1": "cfaca4cbfa907ed745d2fce50f3642705b5df489",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "random",
+    "slug": "duxos-simple-player-heads",
+    "project_id": "ugVkNfRC",
+    "loader": "fabric",
+    "version": "V1.0.0+mod",
+    "version_id": "tXqJXeQx",
+    "version_type": "release",
+    "loaders": [
+      "fabric",
+      "forge",
+      "neoforge",
+      "quilt"
+    ],
+    "filename": "duxos-simple-player-heads-V1.0.0.jar",
+    "source_filename": "duxos-simple-player-heads-V1.0.0.jar",
+    "url": "https://cdn.modrinth.com/data/ugVkNfRC/versions/tXqJXeQx/duxos-simple-player-heads-V1.0.0.jar",
+    "size": 479281,
+    "sha1": "e618da651bd7d2c63bdeb6bf5f934051cddfd994",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "random",
+    "slug": "hypixel-fancyrank",
+    "project_id": "I3kdTlJM",
+    "loader": "fabric",
+    "version": "0.9.3-26.2",
+    "version_id": "l7SQLYsK",
+    "version_type": "release",
+    "loaders": [
+      "fabric",
+      "quilt"
+    ],
+    "filename": "fancyrank-0.9.3-26.2.jar",
+    "source_filename": "fancyrank-0.9.3-26.2.jar",
+    "url": "https://cdn.modrinth.com/data/I3kdTlJM/versions/l7SQLYsK/fancyrank-0.9.3-26.2.jar",
+    "size": 55759,
+    "sha1": "b9c8a9225ecab458515584e6c021e043ef978e91",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "random",
+    "slug": "sound-awareness",
+    "project_id": "bdWFmqMz",
+    "loader": "fabric",
+    "version": "2.2.0",
+    "version_id": "QN77dNQu",
+    "version_type": "release",
+    "loaders": [
+      "fabric",
+      "neoforge"
+    ],
+    "filename": "soundvisualizer-2.2.0-universal.jar",
+    "source_filename": "soundvisualizer-2.2.0-universal.jar",
+    "url": "https://cdn.modrinth.com/data/bdWFmqMz/versions/QN77dNQu/soundvisualizer-2.2.0-universal.jar",
+    "size": 1114722,
+    "sha1": "60e45f7dbffc1ec417987253abda2281b1963165",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "random",
+    "slug": "noinventoryrecipebook",
+    "project_id": "jDIxaDfw",
+    "loader": "fabric",
+    "version": "1.0.0",
+    "version_id": "MXPsJE8x",
+    "version_type": "release",
+    "loaders": [
+      "fabric"
+    ],
+    "filename": "noinventoryrecipebook-26.2-1.0.0.jar",
+    "source_filename": "noinventoryrecipebook-26.2-1.0.0.jar",
+    "url": "https://cdn.modrinth.com/data/jDIxaDfw/versions/MXPsJE8x/noinventoryrecipebook-26.2-1.0.0.jar",
+    "size": 20999,
+    "sha1": "3362fd714068e797fcab421b1fd9ededf54151fa",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "random",
+    "slug": "enchant-craft",
+    "project_id": "h5aoctBt",
+    "loader": "neoforge",
+    "version": "1.0.0",
+    "version_id": "Lo4YWmGs",
+    "version_type": "release",
+    "loaders": [
+      "neoforge"
+    ],
+    "filename": "enchantcraft-1.0.0.jar",
+    "source_filename": "enchantcraft-1.0.0.jar",
+    "url": "https://cdn.modrinth.com/data/h5aoctBt/versions/Lo4YWmGs/enchantcraft-1.0.0.jar",
+    "size": 5388,
+    "sha1": "133702b34e88951eef2674aa9c4761e2388e6b92",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "random",
+    "slug": "shelf-numbers",
+    "project_id": "riYx3Z0W",
+    "loader": "fabric",
+    "version": "0.0.5",
+    "version_id": "JeEL68kL",
+    "version_type": "beta",
+    "loaders": [
+      "fabric"
+    ],
+    "filename": "shelf_numbers-0.0.5.jar",
+    "source_filename": "shelf_numbers-0.0.5.jar",
+    "url": "https://cdn.modrinth.com/data/riYx3Z0W/versions/JeEL68kL/shelf_numbers-0.0.5.jar",
+    "size": 46886,
+    "sha1": "a649700dceea1e1f010a5b90ab36227b888750eb",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "random",
+    "slug": "better-list-for-litematica",
+    "project_id": "53JE9NaZ",
+    "loader": "fabric",
+    "version": "1.4.0+26.2",
+    "version_id": "O0kPIbm3",
+    "version_type": "release",
+    "loaders": [
+      "fabric"
+    ],
+    "filename": "betterlist-1.4.0+26.2.jar",
+    "source_filename": "betterlist-1.4.0+26.2.jar",
+    "url": "https://cdn.modrinth.com/data/53JE9NaZ/versions/O0kPIbm3/betterlist-1.4.0%2B26.2.jar",
+    "size": 578565,
+    "sha1": "3714e9e6fb94897fe7ed041566b1d17724b32095",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "random",
+    "slug": "loot-randomizer",
+    "project_id": "9sPujh2G",
+    "loader": "forge",
+    "version": "v1.5+mod",
+    "version_id": "IQHiwMnA",
+    "version_type": "release",
+    "loaders": [
+      "fabric",
+      "forge",
+      "neoforge",
+      "quilt"
+    ],
+    "filename": "loot-randomizer-v1.5.jar",
+    "source_filename": "loot-randomizer-v1.5.jar",
+    "url": "https://cdn.modrinth.com/data/9sPujh2G/versions/IQHiwMnA/loot-randomizer-v1.5.jar",
+    "size": 1168302,
+    "sha1": "df7fc98f09507d170dcb0ca4d8341205426c810f",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "random",
+    "slug": "schemaloader",
+    "project_id": "5GXr17lS",
+    "loader": "fabric",
+    "version": "1.4.0",
+    "version_id": "nHhKHSRZ",
+    "version_type": "release",
+    "loaders": [
+      "fabric"
+    ],
+    "filename": "SchemaLoader-fabric-26.2-1.0.0.jar",
+    "source_filename": "SchemaLoader-fabric-26.2-1.0.0.jar",
+    "url": "https://cdn.modrinth.com/data/5GXr17lS/versions/nHhKHSRZ/SchemaLoader-fabric-26.2-1.0.0.jar",
+    "size": 47034,
+    "sha1": "1b200bf1ce30ee4251cd028e27cba51a1c893e43",
+    "needed_by": "",
+    "sha1_ok": true
+  },
+  {
+    "kind": "random",
+    "slug": "clientcarts",
+    "project_id": "arTGZ6tX",
+    "loader": "fabric",
+    "version": "1.2+26.2",
+    "version_id": "7mp22Htx",
+    "version_type": "release",
+    "loaders": [
+      "fabric",
+      "quilt"
+    ],
+    "filename": "ClientCarts-1.2+26.2.jar",
+    "source_filename": "ClientCarts-1.2+26.2.jar",
+    "url": "https://cdn.modrinth.com/data/arTGZ6tX/versions/7mp22Htx/ClientCarts-1.2%2B26.2.jar",
+    "size": 187594,
+    "sha1": "dfdcdfdca3fa124f30210d3c06122d6aa98007fe",
+    "needed_by": "",
+    "sha1_ok": true
