@@ -298,3 +298,124 @@ public final class TransferWorldProbe {
 	/**
 	 * BaseContainerBlockEntity machines that leave their capabilities alone, the shape of most mod chests. A Fabric
 	 * mod's bin with no storage of its own is left to the generic Container view: Fabric API's own fallback for
+	 * Fabric consumers, the kernel's bridge of that same Container for NeoForge consumers, whose committed writes go
+	 * through the game's setItem. A kiln whose Container declares its own setItem is not offered to NeoForge at all.
+	 */
+	private static void checkGenericContainerViews(ServerLevel level) {
+		Machines.Bin fabricBin = place(level, FABRIC_BIN, Machines.BIN_BLOCKS.get(Machines.FABRIC), Machines.Bin.class);
+		Machines.Kiln kiln = place(level, FABRIC_KILN, Machines.kilnBlock(), Machines.Kiln.class);
+		for (Direction face : new Direction[] {Direction.NORTH, null}) {
+			ResourceHandler<ItemResource> neo = level.getCapability(Capabilities.Item.BLOCK, FABRIC_BIN, face);
+			yes(neo != null, "NeoForge cannot reach the Fabric bin's Container on face " + face);
+			try (var tx = net.neoforged.neoforge.transfer.transaction.Transaction.openRoot()) { equal(2, neo.insert(0, ItemResource.of(tagged(1)), 2, tx)); }
+			yes(fabricBin.isEmpty(), "an aborted NeoForge insert stayed in the Fabric bin");
+		}
+		ResourceHandler<ItemResource> neo = level.getCapability(Capabilities.Item.BLOCK, FABRIC_BIN, Direction.NORTH);
+		try (var tx = net.neoforged.neoforge.transfer.transaction.Transaction.openRoot()) { equal(3, neo.insert(0, ItemResource.of(tagged(1)), 3, tx)); tx.commit(); }
+		try (var tx = net.neoforged.neoforge.transfer.transaction.Transaction.openRoot()) { equal(1, neo.extract(0, ItemResource.of(tagged(1)), 1, tx)); tx.commit(); }
+		equal(2, fabricBin.getItem(0).getCount());
+		Storage<ItemVariant> fabric = ItemStorage.SIDED.find(level, FABRIC_BIN, Direction.NORTH);
+		yes(fabric != null, "Fabric cannot reach its own bin");
+		try (Transaction tx = Transaction.openOuter()) { equal(1, fabric.insert(ItemVariant.of(tagged(1)), 1, tx)); tx.commit(); }
+		equal(3, fabricBin.getItem(0).getCount());
+		yes(level.getCapability(Capabilities.Item.BLOCK, FABRIC_KILN, Direction.NORTH) == null, "NeoForge was given the kiln's Container, whose writes are its own");
+		equal(0, kiln.restarts);
+		System.out.println("[M33Transfer] PASS the generic Container view of a plain bin commits through the game's setItem; none for a kiln");
+	}
+
+	private static void moveItems(ServerLevel level, String source, String destination, Direction face) {
+		BlockPos from = POSITIONS.get(source), to = POSITIONS.get(destination); ItemStack stack = tagged(2);
+		switch (source) {
+			case Machines.FABRIC -> {
+				Storage<ItemVariant> a = ItemStorage.SIDED.find(level, from, face), b = ItemStorage.SIDED.find(level, to, face);
+				try (Transaction tx = Transaction.openOuter()) { equal(2, b.insert(ItemVariant.of(stack), 2, tx)); equal(2, a.extract(ItemVariant.of(stack), 2, tx)); tx.commit(); }
+			}
+			case Machines.NEO -> {
+				var a = level.getCapability(Capabilities.Item.BLOCK, from, face); var b = level.getCapability(Capabilities.Item.BLOCK, to, face);
+				try (var tx = net.neoforged.neoforge.transfer.transaction.Transaction.openRoot()) { equal(2, b.insert(0, ItemResource.of(stack), 2, tx)); equal(2, a.extract(0, ItemResource.of(stack), 2, tx)); tx.commit(); }
+			}
+			default -> throw new IllegalStateException(source);
+		}
+		equal(40, itemTotal(level));
+	}
+	private static void moveFluids(ServerLevel level, String source, String destination, Direction face) {
+		BlockPos from = POSITIONS.get(source), to = POSITIONS.get(destination);
+		switch (source) {
+			case Machines.FABRIC -> {
+				Storage<FluidVariant> a = FluidStorage.SIDED.find(level, from, face), b = FluidStorage.SIDED.find(level, to, face);
+				try (Transaction tx = Transaction.openOuter()) { long accepted = b.insert(FluidVariant.of(Fluids.WATER), 2 * 81 + 17, tx); equal(2 * 81, accepted); equal(accepted, a.extract(FluidVariant.of(Fluids.WATER), accepted, tx)); tx.commit(); }
+			}
+			case Machines.NEO -> {
+				var a = level.getCapability(Capabilities.Fluid.BLOCK, from, face); var b = level.getCapability(Capabilities.Fluid.BLOCK, to, face);
+				try (var tx = net.neoforged.neoforge.transfer.transaction.Transaction.openRoot()) { equal(2, b.insert(0, FluidResource.of(Fluids.WATER), 2, tx)); equal(2, a.extract(0, FluidResource.of(Fluids.WATER), 2, tx)); tx.commit(); }
+			}
+			default -> throw new IllegalStateException(source);
+		}
+		equal(FLUID_TOTAL, fluidTotal(level));
+	}
+
+	private static void checkInvalidation(ServerLevel level) {
+		BlockPos pos = new BlockPos(24, 80, 16); Machines.Machine old = place(level, pos, Machines.NEO);
+		Storage<ItemVariant> cachedFabric = ItemStorage.SIDED.find(level, pos, Direction.NORTH);
+		ResourceHandler<ItemResource> cachedNeo = level.getCapability(Capabilities.Item.BLOCK, pos, Direction.NORTH);
+		Storage<FluidVariant> cachedFabricFluid = FluidStorage.SIDED.find(level, pos, Direction.NORTH);
+		ResourceHandler<FluidResource> cachedNeoFluid = level.getCapability(Capabilities.Fluid.BLOCK, pos, Direction.NORTH);
+		yes(cachedFabric != null && cachedNeo != null && cachedFabricFluid != null && cachedNeoFluid != null, "missing foreign NeoForge views before replacement");
+		// No manual invalidation: removing the block entity must invalidate every cached view by itself.
+		level.setBlockAndUpdate(pos, Blocks.AIR.defaultBlockState()); Machines.Machine replacement = place(level, pos, Machines.NEO);
+		yes(old != replacement && old.isRemoved(), "world did not replace the block entity");
+		try (Transaction tx = Transaction.openOuter()) { equal(0, cachedFabric.insert(ItemVariant.of(tagged(1)), 1, tx)); equal(0, cachedFabricFluid.insert(FluidVariant.of(Fluids.WATER), 81, tx)); tx.commit(); }
+		try (var tx = net.neoforged.neoforge.transfer.transaction.Transaction.openRoot()) { equal(0, cachedNeo.insert(0, ItemResource.of(tagged(1)), 1, tx)); equal(0, cachedNeoFluid.insert(0, FluidResource.of(Fluids.WATER), 1, tx)); tx.commit(); }
+		equal(0, old.itemSnapshot().getCount()); equal(0, replacement.itemSnapshot().getCount()); equal(0, old.fluidUnits()); equal(0, replacement.fluidUnits());
+
+		BlockPos fabricPos = new BlockPos(26, 80, 16); Machines.Machine oldFabric = place(level, fabricPos, Machines.FABRIC);
+		var neoItems = level.getCapability(Capabilities.Item.BLOCK, fabricPos, Direction.NORTH);
+		var neoFluids = level.getCapability(Capabilities.Fluid.BLOCK, fabricPos, Direction.NORTH);
+		level.setBlockAndUpdate(fabricPos, Blocks.AIR.defaultBlockState()); place(level, fabricPos, Machines.FABRIC);
+		try (var tx = net.neoforged.neoforge.transfer.transaction.Transaction.openRoot()) { equal(0, neoItems.insert(0, ItemResource.of(tagged(1)), 1, tx)); equal(0, neoFluids.insert(0, FluidResource.of(Fluids.WATER), 1, tx)); tx.commit(); }
+		equal(0, oldFabric.itemSnapshot().getCount()); equal(0, oldFabric.fluidUnits());
+		System.out.println("[M33Transfer] PASS cached foreign views cannot write replaced block entities");
+	}
+
+	private static void checkQuantization(ServerLevel level) {
+		BlockPos pos = POSITIONS.get(Machines.FABRIC);
+		ResourceHandler<FluidResource> foreign = level.getCapability(Capabilities.Fluid.BLOCK, pos, Direction.NORTH);
+		yes(foreign != null, "missing Neo fluid provider for Fabric quantization probe");
+		try (var outer = net.neoforged.neoforge.transfer.transaction.Transaction.openRoot()) {
+			// The actual Fabric store initially returns 16,217 for a 16,281-unit request. The adapter must
+			// abort that fractional trial, retry 16,200, and expose exactly 200 mB while retaining 17 units.
+			equal(200, foreign.extract(0, FluidResource.of(Fluids.WATER), 201, outer));
+			equal(17, machine(level, pos).fluidUnits());
+			// Abort the outer scope too: the world inventory must recover its original complete amount.
+		}
+		checkPrimaryState(level);
+		System.out.println("[M33Transfer] PASS world fluid quantization retains 17 units and outer abort restores the inventory");
+	}
+
+	private static void checkPrimaryState(ServerLevel level) {
+		equal(40, itemTotal(level)); equal(FLUID_TOTAL, fluidTotal(level));
+		for (String family : FAMILIES) {
+			Machines.Machine be = machine(level, POSITIONS.get(family)); equal(20, be.itemSnapshot().getCount());
+			yes(ItemStack.isSameItemSameComponents(tagged(1), be.itemSnapshot()), "item component/NBT changed on " + family);
+			equal(200 * 81L + (family.equals(Machines.FABRIC) ? 17 : 0), be.fluidUnits());
+		}
+	}
+	private static Machines.Machine place(ServerLevel level, BlockPos pos, String family) {
+		return place(level, pos, Machines.BLOCKS.get(family), Machines.Machine.class);
+	}
+	private static <T> T place(ServerLevel level, BlockPos pos, net.minecraft.world.level.block.Block block, Class<T> type) {
+		level.getChunk(pos.getX() >> 4, pos.getZ() >> 4);
+		yes(level.setBlockAndUpdate(pos, block.defaultBlockState()), "could not place " + block + " at " + pos);
+		return type.cast(java.util.Objects.requireNonNull(level.getBlockEntity(pos), "missing block entity at " + pos));
+	}
+	private static Machines.Machine machine(ServerLevel level, BlockPos pos) { return (Machines.Machine) java.util.Objects.requireNonNull(level.getBlockEntity(pos), "missing machine at " + pos); }
+	private static long itemTotal(ServerLevel level) { return POSITIONS.values().stream().mapToLong(pos -> machine(level, pos).itemSnapshot().getCount()).sum(); }
+	private static long fluidTotal(ServerLevel level) { return POSITIONS.values().stream().mapToLong(pos -> machine(level, pos).fluidUnits()).sum(); }
+	private static ItemStack tagged(int amount) {
+		ItemStack stack = new ItemStack(Items.COBBLESTONE, amount); CompoundTag data = new CompoundTag(), nested = new CompoundTag();
+		nested.putInt("retained", 33); data.put("nested", nested); data.putString("probe", "m33-transfer"); stack.set(DataComponents.CUSTOM_DATA, CustomData.of(data)); return stack;
+	}
+	private static void equal(long expected, long actual) { yes(expected == actual, expected + " != " + actual); }
+	private static void yes(boolean condition, String message) { if (!condition) throw new IllegalStateException(message); }
+	private static String json(String text) { return "\"" + text.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r") + "\""; }
+}
