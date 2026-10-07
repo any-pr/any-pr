@@ -598,3 +598,239 @@ check "the early pass loads both boot-time config types" \
   "Forbric/Lifecycle\] loaded NeoForge configs \(COMMON\+CLIENT\)" "$LOG"
 check_absent "and no config is opened twice during boot" \
   "\[main/WARN\]: Opening a config that was already loaded" "$LOG"
+check_absent "and nothing read a config before it was loaded" \
+  "Cannot get config value before config is loaded" "$LOG"
+# The late pass opens only what has no loaded config yet. Re-opening one the early pass already did warns and
+# installs a SECOND file watcher, so every later edit of that file fires the reload twice.
+check_absent "and nothing was opened twice" "Attempted to load config .* more than once|Overwriting non-null config" "$LOG"
+
+step "a Fabric mod shipping its own copy of a Forge-family class is named (must PASS)"
+# ForgeConfigAPIPort ships net.neoforged.fml.config.* so Fabric mods can use NeoForge's config API. Under Forbric
+# that package is ALWAYS_GAME, so the carrier's copy wins and the port's own compiled call sites meet an API they
+# were not built against -- registerConfig takes a ModContainer here and a mod-id String there. Unreported, that
+# surfaces as a NoSuchMethodError in whichever mod registered a config, several steps later.
+check "the audit names the port and the class" \
+  "Forbric/PortAudit\] ForgeConfigAPIPort.*ConfigTracker.* does NOT match the carrier" "$LOG"
+check "and it says which member differs" \
+  "Forbric/PortAudit\].*registerConfig.*Lnet/neoforged/fml/ModContainer;" "$LOG"
+check_absent "nothing actually failed on that API" "NoSuchMethodError.*ConfigTracker" "$LOG"
+
+step "item tooltips have their component lines and Fabric's providers are drawn among them (must PASS)"
+# The merged ItemStack.addDetailsToTooltip is NeoForge's dispatcher over the appender lists ItemTooltipHandler.init
+# builds; the kernel's copy of GameData.postRegisterEvents' tail left init out, so tooltips showed only the name.
+# fabric-item-api's ItemStackMixin threads five injectors through vanilla's single body: R3 once moved three of them
+# into NeoForge's renamed addDetailsToTooltipComponents — which nothing calls — and one onto the tail, where it drew
+# every Fabric line at once above the id in F3+H. The five are pruned and the kernel draws Fabric's providers from
+# NeoForge's appenders (gate M51 renders them). RED with M9_EXTRA_JVM=-Dforbric.fabricTooltipBridge=off.
+check "NeoForge's tooltip appenders are built" \
+  "Tooltips\] NeoForge tooltip appenders built: 32 vanilla component appender" "$LOG"
+check "fabric-item-api's tooltip injectors are pruned" \
+  "GuestInjectorPruner\] pruned 5 injector\(s\) from net.fabricmc.fabric.mixin.item.ItemStackMixin" "$LOG"
+check "and Fabric's providers are drawn from NeoForge's appenders" \
+  "Tooltips\] fabric-item-api's component tooltip providers are drawn from NeoForge's appenders" "$LOG"
+check "a tooltip drawn in the world has its lore, attribute and durability lines" \
+  "ClientSmoke\] advanced tooltip of a damaged iron sword with lore: [0-9]+ line\(s\), lore true, attributes true, durability true" "$LOG"
+check_absent "the mixin is no longer retargeted into a body nothing calls" \
+  "retargeted guest mixin fabric-item-api-v1.*ItemStackMixin" "$LOG"
+check_absent "the stale 'recorded but not applied' claim is gone" \
+  "recorded but not applied" "$LOG"
+# malilib keeps its mods' number formats (%02d, %.2f) through a @ModifyArgs on Language.loadFromJson(InputStream,
+# BiConsumer) — on the merged base a stub passing a no-op lambda to NeoForge's three-argument body, which the rebind
+# now follows (gate M46 proves the formats). RED with M9_EXTRA_JVM=-Dforbric.mixinStubRebind=off.
+check "malilib's language format hook reaches the body the game calls" \
+  "MixinLanguage: malilib_onLoadCustomText now targets net.minecraft.locale.Language.loadFromJson\(Ljava/io/InputStream;Ljava/util/function/BiConsumer;Ljava/util/function/BiConsumer;\)V" "$LOG"
+# malilib's onGetTooltipComponentsLast (required: defaultRequire=1) is an @Inject after addToTooltip ordinal 23 of
+# vanilla's tooltip body, and on the merged base that body is only NeoForge's renamed addDetailsToTooltipComponents,
+# which nothing calls (NeoForge draws tooltips from its appenders). R3 moves the hook there to bind, and it is reported
+# as an injector that never runs: malilib's row is marked, and the strict acceptance below still holds. Kept out of that
+# body it bound nowhere, a confirmed required loss that stopped this STRICT client. RED with
+# M9_EXTRA_JVM=-Dforbric.mixinRetarget.renameCensus.uncalled=off: this check and the strict acceptance fail.
+check "malilib's last tooltip hook binds in the renamed tooltip body, where it never runs" \
+  "retargeted guest mixin malilib.*MixinItemStack — addDetailsToTooltip\(.* → addDetailsToTooltipComponents\(.*never runs" "$LOG"
+python3 - "$RUNDIR/.forbric-kernel/compatibility-report.json" <<'PY_MALILIB'
+import json, pathlib, sys
+report = json.loads(pathlib.Path(sys.argv[1]).read_text())
+last = [row for row in report['findings'] if 'fi.dy.masa.malilib.mixin.item.MixinItemStack#onGetTooltipComponentsLast' in row['id']]
+ok = last and all(row['confidence'] == 'CONFIRMED' and not row['required'] and 'never runs' in row['detail'] for row in last)
+print('[kernel] PASS malilib\'s last tooltip hook is reported as never running, not as a required loss' if ok
+      else '[kernel] FAIL malilib\'s last tooltip hook is not reported as never running: ' + str(last))
+raise SystemExit(0 if ok else 1)
+PY_MALILIB
+[ $? -eq 0 ] || FAIL=1
+
+step "an access directive the kernel already satisfies does not mark its mod (must PASS)"
+# fabric-biome-api's widener asks for ChunkGenerator.featuresPerStep as vanilla's Supplier. MinecraftForge
+# re-typed that field to its own ClearableLazy so refreshFeaturesPerStep() has something to invalidate, and the
+# merge kept only that declaration — so the widener matches nothing and the mod was marked.
+#
+# It loses nothing: the COREMOD repair gives the field vanilla's descriptor back AND makes it public non-final,
+# which is the widener's whole job. The ACCESS phase simply runs first. Both halves are asserted because either
+# alone passes with the judgement broken — the line must SAY what the field is now, and no row may be marked.
+check "the restored directive was replayed" \
+  "Forbric/Access\] replayed [1-9][0-9]* previously unmatched directive" "$LOG"
+check_absent "and its mod is not marked for it" \
+  "Forbric/Access\] AW directive from fabric-biome-api.*the mod is marked" "$LOG"
+
+step "no row says the same thing twice (must PASS)"
+# A reason is often SEVERAL clauses already joined with "; " — one repair naming two things it could not do —
+# and the dedup compared the whole incoming text to each existing clause, so the same multi-clause reason
+# arriving twice was printed twice. fabric-item-api's tooltip row read that way on the Mods screen and in the
+# load report. Checked over the whole report rather than that one row: a repeated reason is a reporting defect
+# wherever it appears, and pinning the row would go stale the moment the pack changes.
+# M9_LOAD_REPORT_DEDUP_BEGIN — the contract test runs this exact step against a fixture report.
+python3 - "$RUNDIR/.forbric-kernel/load-report.txt" <<'PY_DEDUP'
+from pathlib import Path
+import sys, json
+report = Path(sys.argv[1])
+if not report.is_file():
+    facts = report.with_name('compatibility-report.json')
+    if facts.is_file():
+        data = json.loads(facts.read_text(encoding='utf-8'))
+        mods = data.get('mods', [])
+        if data.get('schemaVersion') == 1 and data.get('confirmedRequired') == 0 and mods \
+                and all(mod['status'] == 'OK' for mod in mods) and not data.get('catalogFailures'):
+            print('[kernel] PASS all runtime mods report OK; no failure-only text report is expected')
+            raise SystemExit(0)
+    print(f'[kernel] FAIL no load report at {report}')
+    raise SystemExit(1)
+bad = []
+for line in report.read_text(encoding='utf-8').splitlines():
+    clauses = [c.strip() for c in line.split('; ') if c.strip()]
+    if len(clauses) != len(set(clauses)):
+        bad.append(line.strip()[:120])
+if bad:
+    for line in bad:
+        print(f'[kernel] FAIL a load-report row repeats a reason: {line}')
+    raise SystemExit(1)
+print('[kernel] PASS no load-report row repeats a reason')
+PY_DEDUP
+[ $? -eq 0 ] || FAIL=1
+# M9_LOAD_REPORT_DEDUP_END
+
+step "a mixin the kernel took over does not report a loss that did not happen (must PASS)"
+# fabric-resource-conditions' SimpleJsonResourceReloadListenerMixin cannot apply here: NeoForge's patch of
+# scanDirectory made the value Optional and reordered the lambda's captures, so the descriptor Mixin expects is
+# not the one the mod was built against. BOTH of that mixin's members are the fabric:load_conditions evaluator,
+# and the kernel does that job one level down on ConditionalOps' own funnel — covering every consumer instead of
+# this one call site.
+#
+# So the mod lost nothing, and marking it reports a loss that did not happen. A report that cries wolf is worse
+# than no report: the next real one is read the same way. RED with M9_EXTRA_JVM=-Dforbric.supersededMixins=off,
+# which turns it back into an ordinary marked failure — that is how the claim gets checked against the game.
+#
+# The failure is recorded like any other and resolved only when ConditionalOps is DEFINED with the kernel's wrap
+# in its bytes (SupersededMixins), so the line asserted is the resolution, not the handler's "stays marked until
+# that repair is seen" -- the table naming a repair is a claim. Also RED with -Dforbric.fabricConditions=off.
+# KernelMixinErrorHandlerTest runs this block against the handler's and the proof's own output.
+# M9_SUPERSEDED_MIXIN_BEGIN
+check "the failure is resolved as superseded, by the repair seen in the defined ConditionalOps" \
+  "Forbric/Mixin\].*SimpleJsonResourceReloadListenerMixin is superseded.*seen in the defined net\.neoforged\.neoforge\.common\.conditions\.ConditionalOps, so its mod is not marked" "$LOG"
+check_absent "and its mod is not marked" \
+  "Forbric/Mixin\].*SimpleJsonResourceReloadListenerMixin.*is marked" "$LOG"
+# M9_SUPERSEDED_MIXIN_END
+check "and the conditions are still judged by someone" \
+  "Forbric/Conditions\] Fabric's own resource-condition evaluator is live" "$LOG"
+
+step "each carrier's own screens have their own text (must PASS)"
+# The carriers keep a second translation table beside Minecraft's, because the text on it -- the loading screen,
+# the mod list, the branding line under the logo -- has to render before a resource pack exists. FMLTranslations
+# and ForgeI18n read only that table and NEVER the resource manager, and a missing key there renders as the key
+# itself. Each carrier fills it in exactly one place, and both are inside the client mod loader the kernel
+# replaces, so both tables stayed empty: a Forbric client showed "fml.menu.branding" under the logo and
+# "fml.button.continue.launch" on the button that leaves the loading screen.
+#
+# The probe key is asserted, not just the count: a table that loaded the WRONG file is still a broken screen, and
+# that failure used to look identical to a healthy one in the log.
+check "NeoForge's own screens have their text" \
+  "Forbric/Lang\] neoforge carrier: [0-9]+ built-in translation\(s\) loaded; 'fml.menu.branding' resolves" "$LOG"
+check "and MinecraftForge's do too" \
+  "Forbric/Lang\] forge carrier: [0-9]+ built-in translation\(s\) loaded; 'fml.menu.mods' resolves" "$LOG"
+check_absent "and no carrier loaded a table without its own keys in it" \
+  "Forbric/Lang\].*still does not resolve" "$LOG"
+# The other half of the same story, and the half that is NOT the carriers' private table: what the resource
+# manager can see. A pack served with no namespace of its own keeps its textures (fetched by path) and loses
+# everything found by listing — its language file among it. RED with M9_EXTRA_JVM=-Dforbric.clientResourcePreload=off.
+check "and both carriers' assets are visible to the resource manager" \
+  "Forbric/ClientResources\] [0-9]+ namespace\(s\) visible; the carriers' own: \[forge, neoforge\]" "$LOG"
+
+step "the world is on disk before the process ends (must PASS)"
+# A real player Alt+F4'd and lost a minute of play: IntegratedServer.stopServer runs teardownPublishedState
+# FIRST and unguarded, and MinecraftServer.stopServer -- which writes players and worlds -- second, so one throw
+# on the way out ended the process with level.dat at the last autosave. The repair is a two-instruction exception
+# range; what is asserted here is the OUTCOME, because a handler that exists and a save that runs are different
+# claims and only the second is the one that matters.
+# Fabric's own Hooks.startClient runs main and then client from inside Minecraft.<init>, after instance = this.
+# The kernel ran main in its pre-Minecraft registration window, where getInstance() is null -- so the thread name
+# is the assertion: "main" is the pre-Minecraft window, "Render thread" is the constructor.
+# A @Group is a mod's own statement that some of its alternatives are MEANT to miss — they are the shapes other
+# game versions have. Anything the kernel does to injection points has to leave those alone, and the cost of not
+# doing so is the whole mixin class: Iris' LevelRenderer group took every shader hook in it down with one.
+check_absent "no callback group is broken by a point the kernel moved" \
+  "Callback group @Group.*failed injection check" "$LOG"
+
+# Asserted on the POST, not on the transformer's line: the seam being in the bytecode is what the census proves,
+# and what a player gets is the event actually firing while a tooltip is built.
+# Asserted on the transformer, not the runtime line: the splitter only announces itself once a Fabric packet
+# context exists to bind, and this pack has no mod that needs one — what must hold here is that the seam is in.
+check "every block state's cache is computed" \
+  "\[Forbric/Lifecycle\] initialised [1-9][0-9]* block state cache\(s\)" "$LOG"
+
+# Lithium computes its per-state flags in ONE pass, fired from FuelValues.vanillaBurnTimes, and throws rather
+# than computing a state it missed later. The kernel registers blocks after that point, so the pass has to run
+# again over the whole map. (This pack has no traditional-Forge mod, so it has no SECOND wave of registrations:
+# that half, and the blockstate→id map it also broke, are asserted in M26, which does.)
+check "a mod's whole-registry block pass covers the late wave too" \
+  "\[Forbric/Lifecycle\] re-ran Lithium's block-info pass over all [1-9][0-9]* mapped block state\(s\)" "$LOG"
+
+check "NeoForge's splitter encodes in Fabric's packet context" \
+  "\[Forbric/Net\] .*GenericPacketSplitter.encode now runs inside the connection's Fabric packet context" "$LOG"
+
+check "a NeoForge mod can add a line to an item's tooltip" \
+  "\[Forbric/Tooltips\] NeoForge's ItemTooltipEvent is posted beside MinecraftForge's" "$LOG"
+
+check "Fabric main entrypoints run where Fabric runs them" \
+  "\[Render thread/INFO\]: \[Forbric/Fabric\] invoked [1-9][0-9]* Fabric main entrypoint\(s\) in the Minecraft.<init> window" "$LOG"
+check_absent "and not in the pre-Minecraft window" \
+  "\[main/INFO\]: \[Forbric/Fabric\] invoked [0-9]+ Fabric main entrypoint" "$LOG"
+
+# The datapack-registry declaration initialises RegistryDataLoader, whose initialiser runs Fabric mod code
+# (WorldWeaver's datapack entrypoints ride a TAIL injector there). Declared from the pre-Minecraft window it ran
+# before every Fabric main with minecraft:root frozen; on the sweep pack that threw "Registry is already frozen" and
+# poisoned world loading for the session. It follows the mains into Minecraft.<init>, so the thread is the evidence
+# again. -Dforbric.datapackDeclarationAfterFabric=off declares from the pre-Minecraft window and turns both red.
+check "datapack registries are declared after the Fabric mains" \
+  "\[Render thread/INFO\]: \[Forbric/Lifecycle\] posted datapack-registry declaration to" "$LOG"
+check_absent "and not before them" \
+  "\[main/INFO\]: \[Forbric/Lifecycle\] posted datapack-registry declaration" "$LOG"
+
+check "the save ran on the way out"        "Saving worlds"                                    "$LOG"
+check "and it finished"                    "ThreadedAnvilChunkStorage: All dimensions are saved" "$LOG"
+check_absent "nothing aborted the stop"    "Exception stopping the server"                    "$LOG"
+
+step "nothing leaked past main"
+# Vanilla logs this ~15s after main returns when a non-daemon thread is still alive — a leaked mod thread.
+check_absent "no thread leaked past main"   "Client shutdown from post-main"                   "$LOG"
+
+# M9_COMPATIBILITY_REPORT_BEGIN
+if python3 - "$RUNDIR/.forbric-kernel/compatibility-report.json" "$COMPAT_STARTED_NS" <<'PY_COMPAT'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+assert path.is_file() and path.stat().st_mtime_ns >= int(sys.argv[2]), 'missing or stale compatibility evidence'
+report = json.loads(path.read_text())
+assert report['schemaVersion'] == 1 and report['policy'] == 'STRICT', 'diagnostic continuation cannot satisfy acceptance'
+required = [row for row in report['findings'] if row['confidence'] == 'CONFIRMED' and row['required']]
+assert report['confirmedRequired'] == len(required) == 0, 'confirmed required losses: ' + str([row['id'] for row in required])
+assert not any(row['status'] == 'FAILED' for row in report.get('catalogFailures', [])), 'unclassified initialization failure'
+PY_COMPAT
+then echo "[kernel] PASS fresh strict compatibility evidence has no required losses"
+else echo "[kernel] FAIL strict compatibility acceptance — see compatibility-report.json"; FAIL=1
+fi
+# M9_COMPATIBILITY_REPORT_END
+
+step "M9 result"
+if [ "$FAIL" -eq 0 ]; then
+  echo "[kernel] ✅ M9 CLIENT GATE GREEN — tri-ecosystem client entered a world and left it cleanly"
+else
+  echo "[kernel] ❌ M9 CLIENT GATE RED — see $LOG"
+fi
+exit "$FAIL"
