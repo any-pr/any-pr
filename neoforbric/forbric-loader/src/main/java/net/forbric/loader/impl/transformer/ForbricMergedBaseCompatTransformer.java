@@ -298,3 +298,35 @@ public final class ForbricMergedBaseCompatTransformer implements ClassTransforme
 			first = cursor;
 			cursor = cursor.getPrevious();
 		}
+		return first;
+	}
+
+	private static AbstractInsnNode previousReal(AbstractInsnNode cursor) {
+		while (cursor != null && cursor.getOpcode() < 0) {
+			cursor = cursor.getPrevious();
+		}
+		return cursor;
+	}
+
+	private static boolean isLocalLoadFor(Type type, AbstractInsnNode insn) {
+		return insn instanceof VarInsnNode var && var.getOpcode() == loadOpcode(type);
+	}
+
+	private static int loadOpcode(Type type) {
+		return switch (type.getSort()) {
+			case Type.LONG -> Opcodes.LLOAD;
+			case Type.FLOAT -> Opcodes.FLOAD;
+			case Type.DOUBLE -> Opcodes.DLOAD;
+			case Type.ARRAY, Type.OBJECT -> Opcodes.ALOAD;
+			default -> Opcodes.ILOAD;
+		};
+	}
+
+	private static String prependArgument(Type argument, String methodDesc) {
+		Type[] oldArgs = Type.getArgumentTypes(methodDesc);
+		Type[] newArgs = new Type[oldArgs.length + 1];
+		newArgs[0] = argument;
+		System.arraycopy(oldArgs, 0, newArgs, 1, oldArgs.length);
+		return Type.getMethodDescriptor(Type.getReturnType(methodDesc), newArgs);
+	}
+}
