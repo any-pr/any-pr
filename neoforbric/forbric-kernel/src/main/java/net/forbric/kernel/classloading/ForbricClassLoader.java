@@ -598,3 +598,113 @@ public final class ForbricClassLoader extends URLClassLoader {
 	// Jars a launcher API added after boot, same keys; consulted by familyOfResource only (see addRuntimeJarFamily).
 	private final ConcurrentHashMap<String, LoaderProbePolicy.Family> runtimeJarFamilies = new ConcurrentHashMap<>();
 	private final ConcurrentHashMap<String, LoaderProbePolicy.Family> classFamilies = new ConcurrentHashMap<>();
+
+	// Classes synthesized by a transformer rather than read from a jar, keyed by binary name.
+	private final ConcurrentHashMap<String, byte[]> generatedClasses = new ConcurrentHashMap<>();
+
+	// Cache of jar path -> Manifest so the package version/vendor attributes are read once per jar.
+	private final ConcurrentHashMap<String, Manifest> manifestCache = new ConcurrentHashMap<>();
+	/** Classes recovered from a re-entrant definition; reported once each. See {@link #define}. */
+	private static final java.util.Set<String> REENTRANT = ConcurrentHashMap.newKeySet();
+
+	/**
+	 * {@code -Dforbric.traceClassDefine=<binary name>[,<binary name>…]} — the classes to dump a stack for the first
+	 * time this loader defines one.
+	 *
+	 * <p>Read ONCE. {@link #define} is the hottest path in the loader — thousands of classes a boot — and
+	 * {@code System.getProperty} goes through a synchronized {@code Hashtable}, so reading it per definition would
+	 * put a global lock in front of every class the game loads to serve a switch that is off.
+	 */
+	private static final java.util.Set<String> TRACE_DEFINE = traceDefineTargets();
+
+	/** Names already dumped, so a class defined twice reports once. Empty and untouched while tracing is off. */
+	private static final java.util.Set<String> TRACED = ConcurrentHashMap.newKeySet();
+
+	static java.util.Set<String> traceDefineTargets() {
+		String want = System.getProperty("forbric.traceClassDefine");
+		if (want == null || want.isBlank()) return java.util.Set.of();
+
+		java.util.Set<String> targets = new java.util.LinkedHashSet<>();
+		for (String raw : want.split(",")) {
+			String name = raw.trim();
+			if (!name.isEmpty()) targets.add(name);
+		}
+		return java.util.Set.copyOf(targets);
+	}
+
+	/**
+	 * Logs a stack trace the first time one of {@link #TRACE_DEFINE} is defined.
+	 *
+	 * <p>For one question, which keeps coming back: WHO loaded this class, and why so early? Mixin answers
+	 * "target … was loaded too early" and names neither the caller nor the moment. The load is almost never
+	 * direct — a guest mixin config plugin's constructor, or a {@code <clinit>} reached from one, pulls in a graph
+	 * whose verification drags a supertype along, and the class is defined before its own mixin config has been
+	 * prepared. The stack is the only thing that names the actual chain; it is how the Iris plugin's
+	 * {@code ServiceLoader} lookup was found sitting under {@code net.minecraft.world.level.BlockGetter}.
+	 */
+	private static void traceDefine(String name) {
+		if (TRACE_DEFINE.isEmpty() || !TRACE_DEFINE.contains(name) || !TRACED.add(name)) return;
+
+		ForbricLog.warn("[Forbric/Trace] defining %s — stack follows", name);
+		for (StackTraceElement frame : new Throwable().getStackTrace()) {
+			ForbricLog.warn("[Forbric/Trace]     at %s", frame);
+		}
+	}
+
+	private static final Manifest NO_MANIFEST = new Manifest();
+
+	/**
+	 * Defines the class's package with the owning jar's manifest attributes (spec/impl title, version, vendor),
+	 * so e.g. {@code Package.getImplementationVersion()} answers — genuine FML reads it (ForgeVersion's
+	 * {@code <clinit>} throws "invalid environment" on a null version). The kernel's equivalent of the old
+	 * substrate's package-manifest patch.
+	 */
+	private void definePackageIfNeeded(String className, URL classResource) {
+		int dot = className.lastIndexOf('.');
+		if (dot < 0) return;
+		String pkg = className.substring(0, dot);
+		if (getDefinedPackage(pkg) != null) return;
+
+		Manifest man = manifestFor(classResource);
+		Attributes main = man == NO_MANIFEST ? null : man.getMainAttributes();
+		Attributes perPkg = man == NO_MANIFEST ? null : man.getAttributes(pkg.replace('.', '/') + "/");
+		try {
+			definePackage(pkg,
+					attr(perPkg, main, Attributes.Name.SPECIFICATION_TITLE),
+					attr(perPkg, main, Attributes.Name.SPECIFICATION_VERSION),
+					attr(perPkg, main, Attributes.Name.SPECIFICATION_VENDOR),
+					attr(perPkg, main, Attributes.Name.IMPLEMENTATION_TITLE),
+					attr(perPkg, main, Attributes.Name.IMPLEMENTATION_VERSION),
+					attr(perPkg, main, Attributes.Name.IMPLEMENTATION_VENDOR),
+					null);
+		} catch (IllegalArgumentException alreadyDefined) {
+			// race: another thread defined it — fine.
+		}
+	}
+
+	private static String attr(Attributes perPkg, Attributes main, Attributes.Name name) {
+		String v = perPkg == null ? null : perPkg.getValue(name);
+		if (v == null && main != null) v = main.getValue(name);
+		return v;
+	}
+
+	/** Manifest of the jar containing {@code jar:file:...!/...} resource; cached per jar. NO_MANIFEST if none. */
+	private Manifest manifestFor(URL classResource) {
+		if (classResource == null || !"jar".equals(classResource.getProtocol())) return NO_MANIFEST;
+		String spec = classResource.getFile();
+		int bang = spec.indexOf("!/");
+		if (bang < 0) return NO_MANIFEST;
+		String jarSpec = spec.substring(0, bang); // file:/path/to.jar
+		return manifestCache.computeIfAbsent(jarSpec, js -> {
+			try {
+				String filePath = js.startsWith("file:") ? new java.io.File(java.net.URI.create(js)).getPath() : js;
+				try (JarFile jf = new JarFile(filePath)) {
+					Manifest m = jf.getManifest();
+					return m == null ? NO_MANIFEST : m;
+				}
+			} catch (Exception e) {
+				return NO_MANIFEST;
+			}
+		});
+	}
+}
