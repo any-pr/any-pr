@@ -298,3 +298,177 @@ namespace AmvTools
                     p.StandardOutput.ReadToEnd();
                     p.WaitForExit();
                     mi.HasVideo = Regex.IsMatch(err, @"Stream #\d+:\d+.*?: Video: ");
+                    mi.HasAudio = Regex.IsMatch(err, @"Stream #\d+:\d+.*?: Audio: ");
+                    Match m = Regex.Match(err, @"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)");
+                    if (m.Success)
+                    {
+                        try
+                        {
+                            mi.Duration = int.Parse(m.Groups[1].Value) * 3600
+                                        + int.Parse(m.Groups[2].Value) * 60
+                                        + double.Parse(m.Groups[3].Value, CultureInfo.InvariantCulture);
+                        }
+                        catch { }
+                    }
+                }
+            }
+            catch { }
+            return mi;
+        }
+
+        /// <summary>组装 ffmpeg 命令行参数</summary>
+        public static string BuildArguments(string input, string output, AmvOptions o, MediaInfo info)
+        {
+            string vf = (o.Deinterlace ? "yadif," : "")
+                + (o.Stretch
+                    ? "scale=" + o.Width + ":" + o.Height
+                    : "scale=" + o.Width + ":" + o.Height + ":force_original_aspect_ratio=decrease" +
+                      ",pad=" + o.Width + ":" + o.Height + ":(ow-iw)/2:(oh-ih)/2:color=black")
+                + ",fps=" + o.Fps;
+
+            StringBuilder a = new StringBuilder();
+            a.Append("-hide_banner -loglevel error -nostdin -progress pipe:1 ");
+            // 缩放算法: lanczos + 精确舍入, 缩小分辨率时比默认 bilinear 更清晰
+            a.Append("-sws_flags lanczos+accurate_rnd+full_chroma_int ");
+            a.Append(o.Overwrite ? "-y " : "-n ");
+
+            // 顺序很重要: 先写完全部输入, 再写输出选项(-map 等), 否则 -map 会被当成输入选项
+            StringBuilder inputs = new StringBuilder();
+            StringBuilder maps = new StringBuilder();
+            string tail = "";
+
+            if (info.IsImage)
+            {
+                inputs.Append("-loop 1 -framerate ").Append(o.Fps).Append(" -i \"").Append(input).Append("\" ");
+                if (info.HasAudio) maps.Append("-map 0:v -map 0:a ");
+                else
+                {
+                    inputs.Append("-f lavfi -i anullsrc=channel_layout=mono:sample_rate=22050 ");
+                    maps.Append("-map 0:v -map 1:a ");
+                }
+                tail = "-t " + o.Duration + " ";
+            }
+            else if (info.HasVideo)
+            {
+                inputs.Append("-i \"").Append(input).Append("\" ");
+                if (info.HasAudio) maps.Append("-map 0:v -map 0:a ");
+                else
+                {
+                    inputs.Append("-f lavfi -i anullsrc=channel_layout=mono:sample_rate=22050 ");
+                    maps.Append("-map 0:v -map 1:a ");
+                    tail = "-shortest ";
+                }
+            }
+            else
+            {
+                // 纯音频 → 配黑屏视频
+                inputs.Append("-f lavfi -i color=c=black:s=").Append(o.Width).Append("x").Append(o.Height)
+                      .Append(":r=").Append(o.Fps).Append(" -i \"").Append(input).Append("\" ");
+                maps.Append("-map 0:v -map 1:a ");
+                tail = "-shortest ";
+            }
+            a.Append(inputs).Append(maps).Append(tail);
+
+            a.Append("-map_metadata -1 ");
+            a.Append("-vf \"").Append(vf).Append("\" ");
+            a.Append("-c:v amv -q:v ").Append(o.Quality).Append(" -pix_fmt yuvj420p ");
+            // AMV 音频规格: adpcm_ima_amv 22050Hz 单声道, 块大小 = 采样率/帧率
+            a.Append("-c:a adpcm_ima_amv -ar 22050 -ac 1 -block_size ").Append(22050 / o.Fps).Append(" ");
+            a.Append("-f amv \"").Append(output).Append("\"");
+            return a.ToString();
+        }
+
+        // ------------------------------------------------------------ 执行
+
+        private static int RunFFmpeg(string ff, string args, double totalSeconds, Action<double, double> onProgress)
+        {
+            ProcessStartInfo psi = new ProcessStartInfo();
+            psi.FileName = ff;
+            psi.Arguments = args;
+            psi.UseShellExecute = false;
+            psi.CreateNoWindow = true;
+            psi.RedirectStandardOutput = true;
+            psi.RedirectStandardError = true;
+            psi.StandardOutputEncoding = Encoding.UTF8;
+            psi.StandardErrorEncoding = Encoding.UTF8;
+
+            StringBuilder errTail = new StringBuilder();
+            Process p = null;
+            try
+            {
+                p = Process.Start(psi);
+            }
+            catch (Exception ex)
+            {
+                LastError = "无法启动 ffmpeg (" + ff + "): " + ex.Message;
+                return 1;
+            }
+            try { _running[p.Id] = p; } catch { }
+
+            p.ErrorDataReceived += delegate(object s, DataReceivedEventArgs e)
+            {
+                if (e.Data == null) return;
+                lock (errTail)
+                {
+                    errTail.AppendLine(e.Data);
+                    if (errTail.Length > 8000) errTail.Remove(0, 4000);
+                }
+            };
+            p.OutputDataReceived += delegate(object s, DataReceivedEventArgs e)
+            {
+                if (e.Data == null || onProgress == null) return;
+                Match m = Regex.Match(e.Data, @"out_time_ms=(\d+)");   // 单位实际是微秒
+                if (!m.Success) return;
+                double sec;
+                if (!double.TryParse(m.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out sec)) return;
+                onProgress(sec / 1e6, totalSeconds);
+            };
+
+            p.BeginOutputReadLine();
+            p.BeginErrorReadLine();
+            p.WaitForExit();
+
+            Process removed;
+            try { _running.TryRemove(p.Id, out removed); } catch { }
+
+            int rc = p.ExitCode;
+            if (rc != 0)
+            {
+                lock (errTail)
+                {
+                    string tail = errTail.ToString().Trim();
+                    LastError = "ffmpeg 退出码 " + rc + (tail.Length > 0 ? ":\n" + tail : "");
+                }
+            }
+            return rc;
+        }
+
+        // ------------------------------------------------------------ 小工具
+
+        public static bool IsUrl(string s)
+        {
+            return !string.IsNullOrEmpty(s) && Regex.IsMatch(s, "^[a-zA-Z][a-zA-Z0-9+.-]*://");
+        }
+
+        public static bool IsImageExt(string path)
+        {
+            string ext = Path.GetExtension(path);
+            if (string.IsNullOrEmpty(ext)) return false;
+            return Array.IndexOf(ImageExtensions, ext.ToLowerInvariant()) >= 0;
+        }
+
+        public static bool IsMediaExt(string path)
+        {
+            string ext = Path.GetExtension(path);
+            if (string.IsNullOrEmpty(ext)) return false;
+            return Array.IndexOf(MediaExtensions, ext.ToLowerInvariant()) >= 0;
+        }
+
+        /// <summary>向下取 16 的倍数（AMV 编码器要求宽高为 16 的倍数）</summary>
+        public static int Round16(int n)
+        {
+            int v = n / 16 * 16;
+            return v < 16 ? 16 : v;
+        }
+    }
+}
