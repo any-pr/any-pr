@@ -298,3 +298,303 @@ class MixinFitLivenessCensusStagedTest {
 	static Map<String, byte[]> read(byte[] zip, java.util.function.Predicate<String> wanted) throws IOException {
 		Map<String, byte[]> out = new LinkedHashMap<>();
 		try (ZipInputStream in = new ZipInputStream(new ByteArrayInputStream(zip))) {
+			for (ZipEntry e; (e = in.getNextEntry()) != null; ) if (!e.isDirectory() && wanted.test(e.getName())) out.put(e.getName(), in.readAllBytes());
+		}
+		return out;
+	}
+
+	private static final Pattern TOML_CONFIG = Pattern.compile("(?m)^\\s*config\\s*=\\s*\"([^\"]+)\"");
+
+	/**
+	 * Each top-level mixin config of a unit and the ecosystem whose manifest declares it; a config two manifests declare
+	 * goes to the one MultiLoaderArbiter prefers by default (NeoForge, MinecraftForge, Fabric), one no manifest names to
+	 * the unit's only ecosystem.
+	 */
+	static Map<String, Ecosystem> configOwners(Map<String, byte[]> content) {
+		Map<String, Set<Ecosystem>> declared = new LinkedHashMap<>();
+		Set<Ecosystem> unit = new LinkedHashSet<>();
+		byte[] fabric = content.get("fabric.mod.json");
+		if (fabric != null) {
+			unit.add(Ecosystem.FABRIC);
+			UnmodifiableConfig json = parse(fabric);
+			if (json != null && json.get(List.of("mixins")) instanceof List<?> list) {
+				for (Object o : list) {
+					String name = o instanceof String s ? s : o instanceof UnmodifiableConfig c ? c.<String>get(List.of("config")) : null;
+					if (name != null) declared.computeIfAbsent(name, k -> new LinkedHashSet<>()).add(Ecosystem.FABRIC);
+				}
+			}
+		}
+		for (Map.Entry<String, Ecosystem> toml : Map.of("META-INF/mods.toml", Ecosystem.NEOFORGE, "META-INF/neoforge.mods.toml", Ecosystem.NEOFORGE).entrySet()) {
+			byte[] bytes = content.get(toml.getKey());
+			if (bytes == null) continue;
+			unit.add(toml.getValue());
+			Matcher m = TOML_CONFIG.matcher(new String(bytes, StandardCharsets.UTF_8));
+			while (m.find()) declared.computeIfAbsent(m.group(1), k -> new LinkedHashSet<>()).add(toml.getValue());
+		}
+		byte[] manifest = content.get("META-INF/MANIFEST.MF");
+		if (manifest != null) {
+			for (String line : new String(manifest, StandardCharsets.UTF_8).replace("\r\n ", "").split("\r?\n")) {
+				if (!line.startsWith("MixinConfigs:")) continue;
+				for (String name : line.substring("MixinConfigs:".length()).split(",")) {
+					if (!name.isBlank()) declared.computeIfAbsent(name.trim(), k -> new LinkedHashSet<>()).add(unit.contains(Ecosystem.NEOFORGE) ? Ecosystem.NEOFORGE : Ecosystem.NEOFORGE);
+				}
+			}
+		}
+		Map<String, Ecosystem> out = new TreeMap<>();
+		Set<String> candidates = new LinkedHashSet<>(declared.keySet());
+		for (String name : content.keySet()) if (name.indexOf('/') < 0 && name.endsWith(".json") && name.contains("mixin")) candidates.add(name);
+		for (String name : candidates) {
+			if (!content.containsKey(name)) continue;
+			Set<Ecosystem> by = declared.getOrDefault(name, unit.size() == 1 ? unit : Set.of());
+			for (Ecosystem preferred : List.of(Ecosystem.NEOFORGE, Ecosystem.NEOFORGE, Ecosystem.FABRIC)) {
+				if (by.contains(preferred) && (by.size() == 1 || unit.contains(preferred))) { out.put(name, preferred); break; }
+			}
+		}
+		return out;
+	}
+
+	static List<String> entries(UnmodifiableConfig config) {
+		List<String> out = new ArrayList<>();
+		for (String key : List.of("mixins", "client", "server")) {
+			if (config.get(List.of(key)) instanceof List<?> list) for (Object o : list) if (o instanceof String s && !s.isBlank()) out.add(s.trim());
+		}
+		return out;
+	}
+
+	static UnmodifiableConfig parse(byte[] json) {
+		try (Reader reader = new InputStreamReader(new ByteArrayInputStream(json), StandardCharsets.UTF_8)) {
+			return JsonFormat.fancyInstance().createParser().parse(reader);
+		} catch (RuntimeException | IOException notJson) {
+			return null;
+		}
+	}
+
+	// ---------------------------------------------------------------------------------------------------------------
+	// Vanilla anchors the merged base lost
+
+	/** {@code "name=dir;name=dir"}: census these corpora too — the pure-Fabric A/B set, the compat packs — report only. */
+	private static final String ANCHOR_PACKS = "FORBRIC_ANCHOR_PACKS";
+
+	/**
+	 * fabric-api's anchors that resolve on stock 26.2 and not on the merged base as the kernel's verdict judges it, as
+	 * {@code config:mixin | anchor} — 66 of them. Each is a loss the kernel replaces elsewhere (its networking codec and
+	 * configuration wraps are PayloadInterop's, its HUD layers KernelHudBridge's, its fuel, hopper, use-on and sound hooks
+	 * bridges or adapters of their own that the verdict does not ask, its item tooltip hooks the Fabric tooltip bridge's
+	 * over NeoForge's appenders) or reports as the mixin's PARTIAL line. Four of item-api's tooltip anchors read as bound
+	 * only while R3 moved them, on the bytes alone, into NeoForge's addDetailsToTooltipComponents — a renamed tooltip body
+	 * nothing calls; the carrier-rename census keeps them out of it, so they are lost, honestly, where they never ran. Two are
+	 * names that bind a lambda the handler was not written for, which Mixin rejects: loot-api's
+	 * {@code ReloadableServerRegistriesMixin} (suppressed by name; KernelLootBridge serves its callbacks) and
+	 * resource-conditions' {@code SimpleJsonResourceReloadListenerMixin} (SupersededMixins; KernelFabricConditions judges
+	 * the conditions at ConditionalOps' funnel). Both read FIT until the verdict asked whether the handler fits. The decorator
+	 * line is the anchor CreativeCore's required redirect also lost, but it is pinned here as fabric-networking's accepted
+	 * loss (its wrap stays unbound on purpose: PayloadInterop serves the play-phase channels), so this set could never have
+	 * flagged CreativeCore: a third-party mod's lost anchor shows only in the report of a corpus someone names.
+	 * A new line fails this, and so does one that stops being lost: delete it then.
+	 */
+	static final Set<String> FABRIC_API_LOST = Set.of(
+			"fabric-content-registries-v0.mixins.json:FuelValuesMixin | @At(INVOKE) net.minecraft.world.level.block.entity.FuelValues$Builder.remove in FuelValues.vanillaBurnTimes",
+			"fabric-content-registries-v0.mixins.json:fluid.AbstractBoatMixin | @At(INVOKE) net.minecraft.world.level.material.FluidState.is in AbstractBoat.checkInWater",
+			"fabric-content-registries-v0.mixins.json:fluid.EntityMixin | @At(INVOKE) Entity.isUnderWater in updateSwimming",
+			"fabric-content-registries-v0.mixins.json:fluid.EntityMixin | @At(INVOKE) net.minecraft.world.level.material.FluidState.is in Entity.updateSwimming",
+			"fabric-content-registries-v0.mixins.json:fluid.LivingEntityMixin | @At(INVOKE) LivingEntity.isEyeInFluid in baseTick",
+			"fabric-content-registries-v0.mixins.json:fluid.LivingEntityMixin | @At(INVOKE) LivingEntity.travelInLava in travelInFluid",
+			"fabric-crash-report-info-v1.mixins.json:ServerWatchdogMixin | @At(INVOKE) java.lang.StringBuilder.append in ServerWatchdog.createWatchdogCrashReport",
+			"fabric-data-generation-api-v1.client.mixins.json:ModelProviderMixin | @At(INVOKE) net.minecraft.client.data.models.BlockModelGenerators.run in ModelProvider.run",
+			"fabric-data-generation-api-v1.client.mixins.json:ModelProviderMixin | @At(INVOKE) net.minecraft.client.data.models.ItemModelGenerators.run in ModelProvider.run",
+			"fabric-data-generation-api-v1.mixins.json:TagsProviderMixin | @At(INVOKE) net.minecraft.tags.TagFile.<init> in TagsProvider.lambda$run$5",
+			"fabric-entity-events-v1.mixins.json:LivingEntityMixin | @At(INVOKE) net.minecraft.world.level.Level.setBlock in LivingEntity.lambda$stopSleeping$0",
+			"fabric-entity-events-v1.mixins.json:LivingEntityMixin | @At(INVOKE) net.minecraft.world.level.block.BedBlock.getBedOrientation in LivingEntity.getBedOrientation",
+			"fabric-entity-events-v1.mixins.json:effect.LivingEntityMixin | @At(INVOKE) LivingEntity.canBeAffected in forceAddEffect",
+			"fabric-entity-events-v1.mixins.json:effect.LivingEntityMixin | @At(INVOKE) com.google.common.collect.Maps.newHashMap in LivingEntity.removeAllEffects",
+			"fabric-entity-events-v1.mixins.json:effect.LivingEntityMixin | @At(INVOKE) java.util.Map.clear in LivingEntity.removeAllEffects",
+			"fabric-events-interaction-v0.mixins.json:ItemStackMixin | @At(INVOKE) net.minecraft.world.item.Item.useOn in ItemStack.useOn",
+			"fabric-events-interaction-v0.mixins.json:ServerPlayerGameModeMixin | @At(INVOKE) net.minecraft.world.level.block.Block.destroy in ServerPlayerGameMode.destroyBlock",
+			"fabric-item-api-v1.client.mixins.json:MultiPlayerGameModeMixin | @At(INVOKE) net.minecraft.world.item.ItemStack.isSameItemSameComponents in MultiPlayerGameMode.sameDestroyTarget",
+			"fabric-item-api-v1.mixins.json:AbstractFurnaceBlockEntityMixin | @At(INVOKE) net.minecraft.world.item.Item.getCraftingRemainder in AbstractFurnaceBlockEntity.consumeFuel",
+			"fabric-item-api-v1.mixins.json:AnvilMenuMixin | @At(INVOKE) net.minecraft.world.item.enchantment.Enchantment.canEnchant in AnvilMenu.createResult",
+			"fabric-item-api-v1.mixins.json:BrewingStandBlockEntityMixin | @At(INVOKE) net.minecraft.world.item.Item.getCraftingRemainder in BrewingStandBlockEntity.doBrew",
+			"fabric-item-api-v1.mixins.json:CraftingRecipeMixin | @At(INVOKE) net.minecraft.world.item.Item.getCraftingRemainder in CraftingRecipe.defaultCraftingReminder",
+			"fabric-item-api-v1.mixins.json:CraftingRecipeMixin | @At(INVOKE) net.minecraft.world.item.ItemStack.getItem in CraftingRecipe.defaultCraftingReminder",
+			"fabric-item-api-v1.mixins.json:EnchantCommandMixin | @At(INVOKE) net.minecraft.world.item.enchantment.Enchantment.canEnchant in EnchantCommand.enchant",
+			"fabric-item-api-v1.mixins.json:EnchantRandomlyFunctionMixin | @At(INVOKE) net.minecraft.world.item.enchantment.Enchantment.canEnchant in EnchantRandomlyFunction.lambda$run$1",
+			"fabric-item-api-v1.mixins.json:EnchantmentHelperMixin | @At(INVOKE) net.minecraft.world.item.enchantment.Enchantment.isPrimaryItem in EnchantmentHelper.lambda$getAvailableEnchantmentResults$0",
+			"fabric-item-api-v1.mixins.json:ItemStackMixin | @At(INVOKE) ItemStack.addAttributeTooltips in addDetailsToTooltip",
+			"fabric-item-api-v1.mixins.json:ItemStackMixin | @At(INVOKE) ItemStack.addToTooltip in addDetailsToTooltip",
+			"fabric-item-api-v1.mixins.json:ItemStackMixin | @At(INVOKE) net.minecraft.core.DefaultedRegistry.getKey in ItemStack.addDetailsToTooltip",
+			"fabric-item-api-v1.mixins.json:ItemStackMixin | @At(INVOKE) net.minecraft.world.item.TooltipFlag.isAdvanced in ItemStack.addDetailsToTooltip",
+			"fabric-item-api-v1.mixins.json:ItemStackMixin | @At(INVOKE) net.minecraft.world.item.component.TooltipDisplay.shows in ItemStack.addDetailsToTooltip",
+			"fabric-loot-api-v3.mixins.json:ReloadableServerRegistriesMixin | @Inject target ReloadableServerRegistries.lambda$scheduleRegistryLoad$0 binds lambda$scheduleRegistryLoad$0(Lnet/minecraft/world/level/storage/loot/LootDataType;Lnet/minecraft/resources/RegistryOps;Lnet/minecraft/server/packs/resources/ResourceManager;)Lnet/minecraft/core/WritableRegistry;, which the handler was not written for",
+			"fabric-model-loading-api-v1.mixins.json:ModelManagerMixin | @At(INVOKE) net.minecraft.client.resources.model.cuboid.CuboidModel.fromStream in ModelManager.lambda$loadBlockModels$2",
+			"fabric-networking-api-v1.mixins.json:ClientboundCustomPayloadPacketMixin | @At(INVOKE) net.minecraft.network.protocol.common.custom.CustomPacketPayload.codec in ClientboundCustomPayloadPacket.<clinit>",
+			"fabric-networking-api-v1.mixins.json:ServerConfigurationPacketListenerImplMixin | @At(INVOKE) net.minecraft.network.RegistryFriendlyByteBuf.decorator in ServerConfigurationPacketListenerImpl.handleConfigurationFinished",
+			"fabric-networking-api-v1.mixins.json:ServerboundCustomPayloadPacketMixin | @At(INVOKE) net.minecraft.network.protocol.common.custom.CustomPacketPayload.codec in ServerboundCustomPayloadPacket.<clinit>",
+			"fabric-object-builder-v1.client.mixins.json:HangingSignEditScreenMixin | @At(INVOKE) net.minecraft.resources.Identifier.withDefaultNamespace in HangingSignEditScreen.<init>",
+			"fabric-object-builder-v1.client.mixins.json:SignEditScreenMixin | @At(INVOKE) net.minecraft.resources.Identifier.withDefaultNamespace in SignEditScreen.<init>",
+			"fabric-registry-sync-v0.mixins.json:RegistryDataLoaderMixin | @At(INVOKE) RegistryDataLoader.load in load",
+			"fabric-registry-sync-v0.mixins.json:RegistryPatchGeneratorMixin | @At(FIELD) net.minecraft.resources.RegistryDataLoader.WORLDGEN_REGISTRIES in RegistryPatchGenerator.lambda$createLookup$0",
+			"fabric-renderer-api-v1.mixins.json:block.model.SimpleModelWrapperMixin | @At(INVOKE) SimpleModelWrapper.findNonBlockSprites in bake",
+			"fabric-renderer-api-v1.mixins.json:block.render.LevelExtractorMixin | @At(INVOKE) net.minecraft.client.renderer.block.dispatch.BlockStateModel.hasMaterialFlag in LevelExtractor.extractBlockOutline",
+			"fabric-renderer-api-v1.mixins.json:block.render.LevelRendererMixin | @At(INVOKE) net.minecraft.client.renderer.block.dispatch.BlockStateModel.collectParts in LevelRenderer.submitBlockDestroyAnimation",
+			"fabric-renderer-api-v1.mixins.json:block.render.SectionCompilerMixin | @At(INVOKE) net.minecraft.client.renderer.block.ModelBlockRenderer.tesselateBlock in SectionCompiler.compile",
+			"fabric-renderer-api-v1.mixins.json:block.render.SectionCompilerMixin | @At(INVOKE) net.minecraft.core.BlockPos.betweenClosed in SectionCompiler.compile",
+			"fabric-renderer-api-v1.mixins.json:submit.SubmitNodeCollectionMixin | @At(INVOKE) net.minecraft.client.renderer.block.dispatch.BlockStateModel.hasMaterialFlag in SubmitNodeCollection.submitMovingBlock",
+			"fabric-rendering-v1.mixins.json:DebugOptionsScreenOptionListMixin | @At(INVOKE) java.lang.String.contains in DebugOptionsScreen$OptionList.updateSearch",
+			"fabric-rendering-v1.mixins.json:HudMixin | @At(INVOKE) Hud.extractBossOverlay in extractRenderState",
+			"fabric-rendering-v1.mixins.json:HudMixin | @At(INVOKE) Hud.extractCameraOverlays in extractRenderState",
+			"fabric-rendering-v1.mixins.json:HudMixin | @At(INVOKE) Hud.extractChat in extractRenderState",
+			"fabric-rendering-v1.mixins.json:HudMixin | @At(INVOKE) Hud.extractCrosshair in extractRenderState",
+			"fabric-rendering-v1.mixins.json:HudMixin | @At(INVOKE) Hud.extractDemoOverlay in extractRenderState",
+			"fabric-rendering-v1.mixins.json:HudMixin | @At(INVOKE) Hud.extractEffects in extractRenderState",
+			"fabric-rendering-v1.mixins.json:HudMixin | @At(INVOKE) Hud.extractOverlayMessage in extractRenderState",
+			"fabric-rendering-v1.mixins.json:HudMixin | @At(INVOKE) Hud.extractScoreboardSidebar in extractRenderState",
+			"fabric-rendering-v1.mixins.json:HudMixin | @At(INVOKE) Hud.extractSleepOverlay in extractRenderState",
+			"fabric-rendering-v1.mixins.json:HudMixin | @At(INVOKE) Hud.extractTabList in extractRenderState",
+			"fabric-rendering-v1.mixins.json:HudMixin | @At(INVOKE) Hud.extractTitle in extractRenderState",
+			"fabric-rendering-v1.mixins.json:RenderPipelineBuilderMixin | @At(NEW) RenderPipeline$Builder.RenderPipeline$Snippet: handler wraps a 11-arg constructor, the call site constructs with 12 in buildSnippet",
+			"fabric-resource-conditions-api-v1.mixins.json:RegistryLoadTaskPendingRegistrationMixin | @At(INVOKE) com.mojang.serialization.Decoder.parse in RegistryLoadTask$PendingRegistration.loadFromResource",
+			"fabric-resource-conditions-api-v1.mixins.json:SimpleJsonResourceReloadListenerMixin | @Inject target SimpleJsonResourceReloadListener.lambda$scanDirectory$0 binds lambda$scanDirectory$0(Lnet/minecraft/resources/Identifier;Lnet/minecraft/resources/Identifier;Ljava/util/Map;Ljava/util/Optional;)V, which the handler was not written for",
+			"fabric-resource-loader-v1.mixins.json:server.LanguageMixin | @At(INVOKE) java.util.Map.copyOf in Language.loadDefault",
+			"fabric-screen-api-v1.mixins.json:GuiMixin | @At(INVOKE) net.minecraft.client.gui.screens.Screen.extractRenderStateWithTooltipAndSubtitles in Gui.extractRenderState",
+			"fabric-sound-api-v1.mixins.json:SoundEngineMixin | @At(INVOKE) net.minecraft.client.sounds.SoundBufferLibrary.getStream in SoundEngine.play",
+			"fabric-transfer-api-v1.mixins.json:HopperBlockEntityMixin | @At(INVOKE_ASSIGN) HopperBlockEntity.getAttachedContainer in ejectItems",
+			"fabric-transfer-api-v1.mixins.json:HopperBlockEntityMixin | @At(INVOKE_ASSIGN) HopperBlockEntity.getSourceContainer in suckInItems");
+
+	@Test
+	void vanillaAnchorsTheMergedBaseLostArePinned() throws Exception {
+		Path vanilla = TestFixtures.vanillaJar();
+		for (Path p : List.of(MERGED, INTEROP, NEO_RUNTIME)) TestFixtures.require(Fixture.STAGED, Files.isRegularFile(p), p + " required");
+		TestFixtures.require(Fixture.MC_LIBRARIES, Files.isRegularFile(vanilla), vanilla + " required");
+		Path fabricApi = TestFixtures.fabricApi();
+		TestFixtures.require(Fixture.STAGED, Files.isRegularFile(fabricApi), fabricApi + " required");
+		Map<String, List<Path>> corpora = new LinkedHashMap<>();
+		corpora.put("fabric-api", List.of(fabricApi));
+		String other = System.getenv(ANCHOR_PACKS);
+		if (other != null) {
+			for (String pack : other.split(";")) {
+				if (!pack.contains("=")) continue;
+				try (Stream<Path> s = Files.list(Path.of(pack.substring(pack.indexOf('=') + 1)))) {
+					corpora.put(pack.substring(0, pack.indexOf('=')), s.filter(p -> p.toString().endsWith(".jar")).sorted().toList());
+				}
+			}
+		}
+		Function<String, byte[]> before = vanillaResolver(vanilla), after = mergedResolver();
+
+		StringBuilder report = new StringBuilder();
+		Map<String, Set<String>> lost = new LinkedHashMap<>();
+		for (Map.Entry<String, List<Path>> corpus : corpora.entrySet()) {
+			Set<String> lines = new java.util.TreeSet<>();
+			Set<String> seen = new java.util.HashSet<>();
+			for (Path jar : corpus.getValue()) {
+				for (Map.Entry<String, Map<String, byte[]>> unit : units(jar).entrySet()) {
+					Map<String, byte[]> content = unit.getValue();
+					for (Map.Entry<String, Ecosystem> config : configOwners(content).entrySet()) {
+						if (config.getValue() != Ecosystem.FABRIC) continue;
+						UnmodifiableConfig parsed = parse(content.get(config.getKey()));
+						if (parsed == null) continue;
+						String pkg = String.valueOf(parsed.<Object>get(List.of("package")));
+						for (String entry : entries(parsed)) {
+							String path = pkg.replace('.', '/') + "/" + entry.replace('.', '/') + ".class";
+							byte[] bytes = content.get(path);
+							if (bytes == null || !seen.add(config.getKey() + ":" + entry)) continue;
+							MixinStubRebind.noteEcosystem(path.substring(0, path.length() - ".class".length()), Ecosystem.FABRIC);
+							for (String anchor : lostAnchors(bytes, before, after)) {
+								lines.add(config.getKey() + ":" + entry + " | " + anchor);
+								report.append(corpus.getKey()).append("  ").append(unit.getKey()).append("  ").append(config.getKey())
+										.append(':').append(entry).append("  ").append(anchor).append('\n');
+							}
+						}
+					}
+				}
+			}
+			lost.put(corpus.getKey(), lines);
+		}
+		StringBuilder summary = new StringBuilder("vanilla anchor census: anchors that resolve on stock 26.2 and not on the merged base\n");
+		for (var corpus : lost.entrySet()) summary.append("  ").append(corpus.getKey()).append(": ").append(corpus.getValue().size()).append('\n');
+		report.insert(0, summary.append('\n'));
+		Files.createDirectories(Path.of("build/reports"));
+		Files.writeString(Path.of("build/reports/vanilla-anchor-census.txt"), report.toString());
+		System.out.println(report);
+		assertEquals(FABRIC_API_LOST, lost.get("fabric-api"), report.toString());
+	}
+
+	/**
+	 * The census can fail: debugify's MC-121706 shape, the anchor lost to the field the merge widened, is a census line
+	 * exactly when MixinSubtypeOwnerRetarget's widened-field rule is off.
+	 */
+	@Test
+	void theAnchorCensusSeesALostAnchorAndItsRepair() throws Exception {
+		Path vanilla = TestFixtures.vanillaJar();
+		for (Path p : List.of(MERGED, INTEROP, NEO_RUNTIME)) TestFixtures.require(Fixture.STAGED, Files.isRegularFile(p), p + " required");
+		TestFixtures.require(Fixture.MC_LIBRARIES, Files.isRegularFile(vanilla), vanilla + " required");
+		Function<String, byte[]> before = vanillaResolver(vanilla), after = mergedResolver();
+		byte[] debugify = debugifyShaped();
+		assertEquals(List.of(), lostAnchors(debugify, before, after), "the widened field's owner change is repaired");
+		System.setProperty(MixinSubtypeOwnerRetarget.RETYPED_FIELD_PROPERTY, "off");
+		try {
+			assertEquals(List.of("@At(INVOKE) net.minecraft.world.entity.monster.Monster.lookAt in RangedBowAttackGoal.tick"),
+					lostAnchors(debugify, before, after));
+		} finally {
+			System.clearProperty(MixinSubtypeOwnerRetarget.RETYPED_FIELD_PROPERTY);
+		}
+	}
+
+	/**
+	 * The census sees a name the carrier took over without asking the REPLACED rows, which only move it:
+	 * MoogsStructureLib's HEAD of {@code placeEntities}, alone in its mixin. Of no known ecosystem (a config two mods
+	 * claim: no row applies) it is a line; a Fabric mod's is moved by R7 and is none; with R7 off it is a line again, the
+	 * row naming the replacement. With the handler-fit rule off the name binds and nothing is seen — the hole this closed.
+	 */
+	@Test
+	void theAnchorCensusSeesANameTheCarrierTookOver() throws Exception {
+		Path vanilla = TestFixtures.vanillaJar();
+		for (Path p : List.of(MERGED, INTEROP, NEO_RUNTIME)) TestFixtures.require(Fixture.STAGED, Files.isRegularFile(p), p + " required");
+		TestFixtures.require(Fixture.MC_LIBRARIES, Files.isRegularFile(vanilla), vanilla + " required");
+		Function<String, byte[]> before = vanillaResolver(vanilla), after = mergedResolver();
+		byte[] head = moogsHeadShaped();
+		MergedBaseCalleeSwaps.Replaced row = MergedBaseCalleeSwaps.REPLACED.getFirst();
+		String template = row.owner().substring(row.owner().lastIndexOf('/') + 1);
+		String bound = MixinFit.parse(after.apply(row.owner() + ".class")).methods.stream()
+				.filter(m -> m.name.equals("placeEntities")).findFirst().orElseThrow().desc;
+		String binds = "binds placeEntities" + bound + ", which the handler was not written for";
+
+		assertEquals(List.of("@Inject target " + template + ".placeEntities " + binds), lostAnchors(head, before, after));
+		MixinStubRebind.noteEcosystem(MOOGS_HEAD, Ecosystem.FABRIC);
+		assertEquals(List.of(), lostAnchors(head, before, after), "R7 moves a Fabric mod's");
+		try {
+			System.setProperty(MixinRetarget.REPLACED_CALL_PROPERTY, "off");
+			assertEquals(List.of("@Inject target " + template + "." + row.vanilla() + " is gone: the carrier replaced it with "
+					+ "addEntitiesToWorld, and the name " + binds), lostAnchors(head, before, after));
+			System.setProperty(MixinFit.HANDLER_FIT_PROPERTY, "off");
+			assertEquals(List.of(), lostAnchors(head, before, after), "RED control: the name binds, and that was all it asked");
+		} finally {
+			System.clearProperty(MixinRetarget.REPLACED_CALL_PROPERTY);
+			System.clearProperty(MixinFit.HANDLER_FIT_PROPERTY);
+		}
+	}
+
+	private static final String MOOGS_HEAD = "test/census/EntityProcessorMixin";
+
+	/** MoogsStructureLib's EntityProcessorMixin with only its HEAD injector, as compiled: placeEntities by name. */
+	private static byte[] moogsHeadShaped() {
+		MergedBaseCalleeSwaps.Replaced row = MergedBaseCalleeSwaps.REPLACED.getFirst();
+		ClassNode mixin = new ClassNode();
+		mixin.version = org.objectweb.asm.Opcodes.V21;
+		mixin.access = org.objectweb.asm.Opcodes.ACC_PUBLIC;
+		mixin.name = MOOGS_HEAD;
+		mixin.superName = "java/lang/Object";
+		AnnotationNode type = new AnnotationNode("Lorg/spongepowered/asm/mixin/Mixin;");
+		type.values = new ArrayList<>(List.of("value", new ArrayList<>(List.of(org.objectweb.asm.Type.getObjectType(row.owner())))));
+		mixin.invisibleAnnotations = new ArrayList<>(List.of(type));
+		AnnotationNode at = new AnnotationNode("Lorg/spongepowered/asm/mixin/injection/At;");
+		at.values = new ArrayList<>(List.of("value", "HEAD"));
+		AnnotationNode inject = new AnnotationNode("Lorg/spongepowered/asm/mixin/injection/Inject;");
+		inject.values = new ArrayList<>(List.of("method", new ArrayList<>(List.of("placeEntities")), "at",
+				new ArrayList<>(List.of(at)), "cancellable", true));
+		String vanilla = row.vanilla().substring(row.vanilla().indexOf('('));
+		org.objectweb.asm.Type[] args = org.objectweb.asm.Type.getArgumentTypes(vanilla);
+		org.objectweb.asm.Type[] params = java.util.Arrays.copyOf(args, args.length + 1);
+		params[args.length] = org.objectweb.asm.Type.getType("Lorg/spongepowered/asm/mixin/injection/callback/CallbackInfo;");
+		MethodNode handler = new MethodNode(org.objectweb.asm.Opcodes.ACC_PRIVATE, "processAndPlaceEntities",
+				org.objectweb.asm.Type.getMethodDescriptor(org.objectweb.asm.Type.VOID_TYPE, params), null, null);
+		handler.visibleAnnotations = new ArrayList<>(List.of(inject));
