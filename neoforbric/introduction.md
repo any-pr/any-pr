@@ -898,3 +898,303 @@ boot code, the game UI and release checks. Producers include the dependency audi
 ecosystems — no single resolver runs over the combined set), arbitration, Mixin preflight/apply, missing bridges,
 deferred-work failures, the static audits of §3.2, `KernelTransferInterop`, and late server/client findings.
 
+### 12.2 Files — all under `<gameDir>/.forbric-kernel/`
+
+| File | Written |
+| --- | --- |
+| `load-report.txt` | at the pre-game boundary as evidence, again after the setup lifecycle, again at `ServerStartedEvent` (the world is up; integrated servers post it too) and when late findings arrive (`-Dforbric.loadReportRewrite=off` keeps the first write); a shutdown hook writes it if loading never finishes. In the system language |
+| `compatibility-report.json` | beside it, the machine-readable findings |
+| `merge-report.txt` | when two jars claimed one mod id (§4.3) |
+| `crash-analysis.txt` | after a crash report: which mods the stack points at, including both mods of a mixin overlap in a method on the stack (`CrashAttribution`, §7.6; `-Dforbric.crashAnalysis=off`). The Forge `Suspected Mods:` line depends on a module layer the kernel does not build |
+| `crash-suspects.json` | beside it: `{schema:1, report, clash, suspects:[{modId,name,jar,reason,depth}]}`. On the next client launch, before arbitration, `CrashSuspectOffer` offers to start without those jars (for a clash, every side but the first-named), appends them to `<gameDir>/forbric-disabled.txt` on "Start without", and renames the file `crash-suspects.offered.json` whatever the answer. A server, a headless run and `-Dforbric.dependencyDialog=off` only log the lines |
+
+Working directories in the same place: `lib/` (extracted bundled jars), `jij/`, `jarjar/`, `candidates/`.
+
+### 12.3 Dependency dialog
+
+`ui.DependencyDialog` shows unmet hard dependencies and cross-mod mixin breaks to the player. The window is a
+**separate JVM** (`DependencyDialogMain`, launched with the kernel jar as its only classpath entry) because on macOS
+the game runs with `-XstartOnFirstThread` and AWT cannot share thread one with GLFW. Parent and child share only
+the tab-separated file format in `DependencyReport`; strings are in `DialogLang` (system language,
+`-Dforbric.dialogLanguage=<code>` forces one). `-Dforbric.dependencyDialog=on` (default) | `off` | `dryRun` (forks
+the real child with AWT disabled — what gates assert on). The child times out after 10 minutes. The confirmation's
+exit code is `0` continue, `4` quit or closed, and anything else (`3` cannot draw, the launcher's own `1`) a window
+nobody could answer. The same child
+has a third window, `--isolation`: the crash-suspects offer of §12.2, whose exit code `2` means start without them;
+anything but its two explicit buttons starts with every mod.
+
+### 12.4 Policy — `-Dforbric.compatibilityPolicy`
+
+`ui.CompatibilityDecision.policy()`:
+
+| Value | A confirmed required loss… |
+| --- | --- |
+| `ask` (default) | asks the player once in the dialog (the dependency notice folded in); only an explicit Continue approves, and Quit or closing it refuses. On a client whose dialog cannot be shown — no runnable `java.home/bin/java` (Android launchers such as FCL), a child that cannot start or draw, no answer within 10 minutes — the question moves into the game: nothing is approved, and `KernelCompatibilityPrompts` asks on the title screen with the dialog's own buttons, where Quit stops the game. Not approved instead when the launch opens a world straight away (`--quickPlaySingleplayer`/`Multiplayer`/`Realms`: the world would load before the game could ask) or under `-Dforbric.dependencyDialog=off`. A dedicated server has nobody to ask → not approved |
+| `continue` | is accepted and recorded; the notice may still be shown |
+| `strict` | stops the launch; no window is shown |
+| anything else | treated as `strict` (fail closed) |
+
+The decision is asked at the pre-game boundary (§3.2 step 18), again at the end of loading (§3.4 step 3b on the
+server, `fireClientSetupLifecycle` on the client), and at `ServerStartedEvent` on a dedicated server (a required
+failure during world loading halts the server normally). A refusal throws `CompatibilityDecision.LaunchStopped`;
+`CompatibilityLaunchBoundary` turns it into exit code **78** and prints the report path; inside
+`Minecraft.<init>` it leaves through `SilentInitException`, so it is not reported as a crash. Findings that appear after boot never fork Swing or exit the JVM: on the server they are
+consumed at the completed-tick boundary (`LateServerCompatibility`), on the client on a render-thread tick by a
+native Minecraft screen (`KernelCompatibilityPrompts`, `KernelCompatibilityScreen`). An installed profile passes no
+JVM arguments, so players get `ask`; `run/launch-kernel-{client,server}.sh` default to `strict` (and the client
+script to `-Dforbric.dependencyDialog=off`).
+
+## 13. The installer — `forbric-kernel-installer/`
+
+Pure JDK, no dependencies, bytecode release 17, version `0.3.1-beta2`.
+
+```
+java -jar forbric-kernel-installer.jar                     # window (InstallerGui)
+java -jar forbric-kernel-installer.jar --dir DIR [options] # headless install
+    --mc 26.2  --artifacts DIR  --jdk PATH  --remote  --release TAG  --mirror PREFIX  --offline
+java -jar forbric-kernel-installer.jar --doctor [--dir DIR] [--jdk PATH]
+```
+
+### 13.1 Building the game artifacts on the player's machine
+
+`ArtifactBuilder.build` runs under `<mcDir>/.forbric-build/`, resuming at the first unfinished step:
+
+```
+forge userdev ─┬→ forge-runtime ───────────────┬→ patched-mc-forge ─┐
+               └───────────────────────────────┘                    ├→ patched-mc-merged
+neoforge userdev ─┬→ neoforge-runtime ──────────────────────────────┤
+                  └→ NFRT → patched-mc-neoforge ────────────────────┘
+vanilla 26.2.jar ───────────────────────────────────────────────────┘
+forge-runtime ────────────────────────────────→ forge-runtime-interop   (what is staged)
+```
+
+- `ForgeRuntimeBuilder`, `PatchedMcBuilder` (Forge's `installertools`/`mergetool`/`binarypatcher` as child JVMs,
+  Forge's `AccessTransformerEngine` in-process), `NeoForgeRuntimeBuilder`, `NfrtRunner` (NeoFormRuntime, result
+  `gameJarNoRecomp` — binary patches, no decompiler, no `javac`).
+- `MergedBaseTool` unpacks `forbric-merge-tools.jar` from the installer's resources and runs
+  `net.forbric.tools.MergedBaseBuilder` (`-Xmx4g`), `RuntimeInteropPatcher`, then `MergedLinkChecker` against the
+  packaged reviewed baseline. **An install fails unless the link check reports `new 0`.**
+- `--artifacts DIR` ("Built artifacts (leave empty)" in the window) is for developers only and skips the build.
+  `GameArtifacts` takes the three jars from that directory alone and opens each before anything is downloaded or
+  written: the merged base must be Minecraft 26.2 whose `net/minecraft/` classes refer to both
+  `net/minecraftforge/` and `net/neoforged/`; each runtime must hold its family's core class and its mod loader
+  (`FMLLoader`, `IModInfo`), and name the pinned version as its manifest's main `Implementation-Version`
+  (`Pins.NEOFORGE`; for MinecraftForge the FML half of `Pins.FORGE`, `65.0.1`); and the MinecraftForge runtime
+  must be the interop-patched one, whose `NamespacedWrapper$3` declares `contents()`. Only then the link check,
+  which on its own passes any jar that refers to nothing outside itself (issue #13); a supplied set that fails it
+  is reported as files that do not fit together, with the same way out.
+- `Pins`: `MINECRAFT = "26.2"` (the only supported version), `FORGE = "26.2-65.0.1"`, `NEOFORGE = "26.2.0.88"`,
+  `NFRT = "2.0.18"`, `NFRT_RESULT = "gameJarNoRecomp"`, each with its reason in the source. `BuildStamp` keys every
+  cached artifact to the pin set, so a pin bump cannot be served from cache.
+- `JdkLocator` needs Java ≥ 21 for the build tools (NeoFormRuntime is class-file 65); it tries the running JVM,
+  then the launcher's runtimes, then the system, and never downloads a JDK. The game itself needs Java 25.
+
+### 13.2 The profile
+
+`Installer` writes `versions/26.2-forbric/26.2-forbric.json`:
+
+- `inheritsFrom: "26.2"`, `mainClass: net.forbric.kernel.boot.KernelClientLaunch`, no JVM arguments;
+- game arguments `--gameJar <merged>`, `--runtimeJar <forge-runtime><sep><neoforge-runtime>` (one flag),
+  `--libraryPath <every vanilla library for this platform>`;
+- `libraries`: the bundled Forbric jars and the kernel's third-party dependencies (from the kernel's own
+  `printBootClasspath`), plus the three game artifacts staged as `net.forbric:patched-mc-merged`,
+  `net.forbric:forge-runtime`, `net.forbric:neoforge-runtime`;
+- a `forbric` block, metadata only, declaring `net.fabricmc:fabric-loader:0.19.3` so launchers that detect a
+  loader by searching the JSON's text treat the instance as modded (and give it its own mods folder).
+
+Mods for all three ecosystems go in `<mcDir>/mods` (or `versions/26.2-forbric/mods` under an isolating launcher).
+
+### 13.3 Where Forbric's own jars come from
+
+The default build bundles them (`bundleForbric` writes `forbric-kernel-libraries.json` with SHA-1s). `-Pslim`
+builds carry none and fetch at install time through `RemoteSource`: Forbric's jars from the GitHub release, other
+libraries from Maven first. `-PreleasePin` compiles `forbric-release.properties` (tag, repo, `manifestSha256`) into
+the jar — the digest of the manifest is the trust anchor, which is why release is two steps (`releaseAssets`,
+then the pinned slim build). `releaseAssets` refuses to write assets unless `run/compat/evidence.py release-check`
+confirms the kernel and merge-tools jars are byte-identical to the accepted candidate.
+
+### 13.4 `--doctor`
+
+`Doctor.examine` writes nothing, creates nothing, downloads nothing: platform, JVMs found, whether the base
+version is installed, pins, which artifacts are present or will be built, expected disk, and a one-line verdict.
+
+## 14. What `forbric-loader/` is still for
+
+- **The merge tools.** `forbric-loader/src/tools/java/net/forbric/tools/` — `MergedBaseBuilder`,
+  `MergedLinkChecker`, `RuntimeInteropPatcher`, plus `AdditiveMethodMerger`, `MergeabilityCensus`,
+  `LostHookAttribution`, `EffectiveHookEvidence` — built by `:mergeToolsJar` into `forbric-merge-tools-0.1.0.jar`,
+  which the installer ships and runs. The reviewed link baseline is
+  `forbric-loader/src/test/resources/merge/link-check-baseline.txt`.
+- **The developer pipeline.** `run/build-patched-forge.sh`, `assemble-minecraftforge-runtime.sh`,
+  `assemble-neoforge-runtime.sh`, `build-merged-base.sh`, `check-merged-links.sh` produce the staged artifacts
+  under `forbric-loader/run/{merged-base,forge-runtime,neoforge-runtime}/` that the kernel's game side compiles
+  against and every gate runs on. `FORBRIC_OLD` (or `-Pforbric.stagedRoot`) points another worktree at them. The
+  committed `run/merged-base/merge-conflicts.txt` is the merge's report.
+- **Test inputs.** The canary mod sources in `run/livemod-src*`/`testmod-src` (`build-testmods.sh`), and the
+  mod sets in its run directories that gate-m0's discovery oracle reads.
+- **Installer payload.** The installer's bundle manifest still includes `net.forbric:forbric-loader` and
+  `net.forbric:forbricruntime`, so an installed profile lists them as libraries. No kernel code names a
+  `net.forbric.loader` class; the only reference is the retargeting in §6.
+
+Its own boot path (Knot host, eight fabric-loader substrate patches applied by `bootstrap.sh`) is not used by the
+kernel. The weld's design is documented in `forbric-loader/README.md` and `forbric-loader/run/README.md`.
+`forbric-installer/` is the weld's installer and is not the one released.
+
+## 15. Repository layout
+
+```
+Forbric/
+├── README.md                      player-facing, describes the latest release
+├── introduction.md                this document, describes main
+├── LICENSE, NOTICE
+├── bootstrap.sh                   clones ./fabric-loader for forbric-loader (not needed by the kernel)
+├── MOD_TEST_FAILURES.md           per-mod compatibility results (Chinese)
+├── .github/workflows/build.yml    CI: job `build` (bootstrap + forbric-loader) and job `kernel`
+│
+├── forbric-kernel/                THE KERNEL — own Gradle build and wrapper
+│   ├── build.gradle               boot jar (release 21), runtimeJar, transferTest, staged-artifact wiring
+│   ├── gradle.properties          ASM, sponge-mixin, MixinExtras, SAT4J, NightConfig … versions
+│   ├── src/main/java/net/forbric/api/          the unified API (15 files)
+│   ├── src/main/java/net/forbric/kernel/       boot (73), transform (99), mixin (50), fabric (12),
+│   │                                           metadata (11), access (7), classloading (5), discovery (4),
+│   │                                           interop (5), ui (5), util (5), mapping (3), soak (2)
+│   ├── src/main/java/net/fabricmc/             vendored Fabric API surface (37 files)
+│   ├── src/main/resources/                     Mixin service registrations; mixin census tables
+│   ├── src/runtime/                            GAME side, net.forbric.kernel.runtime (+ soak/, transfer/)
+│   ├── src/test/, src/transferTest/            unit tests; transfer-engine tests
+│   ├── canary/                                 canary mods the gates build and load
+│   └── run/                                    gate-m*.sh, launch-kernel-{client,server}.sh, lib.sh,
+│                                               diff-oracle.sh, mixin-inventory.sh, merge-packs.sh,
+│                                               build-*-canary.sh, compat/ (sweep and evidence tooling)
+│
+├── forbric-kernel-installer/      THE INSTALLER — src/main/java/net/forbric/installer/kernel/, packaging/
+│
+├── forbric-loader/                first generation; merge tools + artifact pipeline (§14)
+├── forbric-installer/             the first generation's installer
+└── fabric-loader/                 gitignored upstream checkout for forbric-loader
+```
+
+## 16. Build and test
+
+The current development entry point is `python3 tools/dev.py client` (Windows: `py tools/dev.py client`).
+It prepares isolated game inputs under `forbric-kernel/.dev/` with the installer's artifact pipeline, resolves
+libraries/assets and the pinned compile APIs, then builds and launches the current kernel. JDK 25+ and
+Python 3.9+ are required. Gradle exposes `prepareDev`, `runClient`, `runServer` and `devDoctor`; preparation
+and launch must be separate Gradle invocations because the game-side wiring is configured before tasks run.
+See [the development guide](forbric-kernel/run/README.md) for commands and configuration.
+
+`check` also runs development/evidence-tool self-tests and the packaged link gate's synthetic controls.
+`integrationTest` requires the staged game and transfer suites and rejects any skipped test; ordinary `test`
+still permits absent local fixtures and prints its executed/skipped counts. The complete integration suite
+requires its named mod fixtures in addition to the base game; preparing the game is not a claim that every
+compatibility pack or real-instance gate has run.
+
+```sh
+cd forbric-kernel
+./gradlew --offline jar        # boot jar; nests forbric-kernel-runtime.jar only when the staged artifacts exist
+./gradlew --offline test       # unit suite (depends on compileRuntimeJava)
+./gradlew --offline check      # + transferTest (real Fabric/NeoForge transaction engines)
+./run/gate-m0.sh               # build + suite from the JUnit XML + scan + link check + discovery oracle
+java -cp <boot-cp> net.forbric.kernel.boot.Main --scan --mods <dir> --report out.json
+```
+
+- **Staged artifacts.** The game side compiles against `forbric-loader/run/merged-base/patched-mc-merged-26.2.jar`,
+  `…/forge-runtime/forge-runtime.jar`, `…/neoforge-runtime/neoforge-runtime.jar`, plus brigadier, datafixerupper
+  and gson from a local Minecraft install, a fabric-api jar for the transfer modules (`-Pforbric.fabricApi`), and
+  Team Reborn Energy 5.0.0 pinned by SHA-256 (`run/energy-api/energy-5.0.0.jar` or `-Pforbric.rebornEnergy`).
+  Without the staged jars `compileRuntimeJava` is skipped and `jar` produces a boot jar with no game side — which
+  is what CI builds. `KernelRuntimeClasses.verify` is what catches such a jar at launch.
+- **Unit tests.** Counted from source, not run: `src/test` has 2 624 `@Test` methods and 2 `@ParameterizedTest`
+  methods (two cases each) in 438 `*Test.java` files; `src/transferTest` has 61 `@Test` methods in 4 files
+  (annotations at line start, `grep` over tracked files). Many tests read the staged jars; gate-m0 fails on
+  *any* skipped test, because a skip there means the tests did not look at the real base.
+- **Gates.** 58 scripts, `forbric-kernel/run/gate-m*.sh`, each asserting on the real logs and files of a real
+  instance, most with named negative controls (a `-D…=off` or input removal that must turn exactly the named
+  checks red). `run/compat/gates-all.sh` discovers them by glob; `gates-parallel.py` overlaps them using each
+  gate's `# GATE-PARALLEL: rundirs=… mem=…` line (55 of 58 carry one; a gate without it runs alone), giving each
+  slot its own port block.
+
+| Gate | Asserts |
+| --- | --- |
+| m0 | build, the whole suite, `--scan`, merged-base link check, discovery oracle, tool self-tests, transfer suite |
+| m1, m3 | merged base to `Done` with zero mods and no genuine lifecycle; both Forge-family baselines + a real `@Mod` |
+| m2, m2b | a real Fabric mod, then full fabric-api, with no Fabric Loader |
+| m4, m4-canary, m7-neo | real mods of all three ecosystems in one server; pure NeoForge jars |
+| m8, m10 | multiloader `pack.mcmeta` sections do not delete or break a pack |
+| m9, m27 | client into a world and out cleanly with the 97-jar pack; a fresh non-black frame |
+| m11 | a config-driven mod stack on a dedicated server |
+| m12–m16 | client↔server over a real socket; a Paper anti-cheat; a pure Fabric server; MinecraftForge channels and handshake |
+| m17 | the installer's profile, launched the way a launcher does |
+| m18, m19, m20 | cross-ecosystem presence; a nested library initialised once; unmet dependency reaches the player |
+| m21, m26, m28, m29 | MinecraftForge setup, client registration events, configs + live file watcher, capabilities |
+| m22, m23 | quitting survives a replaced kernel jar; elytra flight |
+| m24, m24b, m30 | a failing mod, a mod whose metadata cannot be read, and a partly failing mod, attributed on every surface |
+| m24c | a jar listed in `forbric-disabled.txt` is loaded by nobody and named in the load report; a server only logs the crash-suspects offer |
+| m25, m31, m32 | both biome-modifier pipelines; zero-mod worldgen parity with vanilla; a save opens with a mod removed |
+| m33, m39, m40, m52 | item/fluid/energy transfer across ecosystems; hoppers into Fabric storages |
+| m34 | ≥ 7200 s occupied simulation soak with retention checks |
+| m35–m38, m41–m51, m53 | per-surface behaviour: mixin outcome, entity callbacks, enchantments, event chain, coremod parity, block break and loot, interaction, everyday actions, stub rebind, damage/server/world events, load predicates, tooltips, widened `NEW` anchors |
+| m54 | a NeoForge mod's play-phase packet reaches the server: Carry On, with fabric-api installed, carries a chest and a pig through real key and mouse input; the same run with the repair off must pick nothing up (third-party jars: `M54_CARRYON`, `M54_FABRIC_API`) |
+| m55 | the creative inventory's search finds items after a Fabric mod refreshed the search trees the vanilla way, judged from the screen's own grid, with a switched-off negative control |
+
+- **Compatibility sweeps.** `run/compat/PROTOCOL.md` is the procedure for running random/popular Modrinth sets on
+  a Windows machine through the installed profile (`push-and-run.sh`, `win/*.py`, `pick_mods.py`, `evidence.py`),
+  plus static tools (`abi-audit.py`, `field-drift.py`, `fapi-usage.py`, `hook-worklist.sh`, `repair-drift.sh`,
+  `control-diff.sh` — same Fabric mods on native Fabric vs Forbric).
+- **CI** (`.github/workflows/build.yml`): job `build` bootstraps and builds `forbric-loader/`. Job `kernel` (JDK 21,
+  no game files) runs `./gradlew build -Pforbric.skipBaseline=ci-unstaged` in `forbric-kernel/`: the boot side
+  compiles and the unit tests that need no game files run. About a third of the suite skips without game files,
+  and that skipped set must equal `src/test/skip-baseline/ci-unstaged.tsv` line for line (`skipRatchet`,
+  `tools/junit_report.py`): a test that starts skipping fails the job, and a line that stops skipping has to be
+  deleted. The run page shows tests / executed / skipped with the most common skip reasons, and the JUnit reports
+  are uploaded as `kernel-test-results`; regenerate the baseline from that artifact's `skips-actual-ci-unstaged.tsv`
+  or with `-Pforbric.writeSkipBaseline`. Job `kernel-prepared` (JDK 25) first builds the game files on the runner
+  with `tools/dev.py prepare --no-assets` (Minecraft from Mojang, Forge and NeoForge from their own mavens, the
+  merged base and carriers built there, plus the two canary mods and the merge report the unit tests read; only
+  upstream downloads are cached and nothing derived is uploaded), then runs the same suite plus `transferTest` with
+  `-Pforbric.requireFixtures=staged,game-side,mc-libraries,java-25`: every kind of fixture except third-party mod
+  packs is present there, so a skip for any other kind, or an untagged skip, fails the job at the test that skipped.
+  The 136 tests that still skip all need third-party mod packs that are not in this repository, held to
+  `ci-prepared.tsv` the same way. Job `development-tools` runs
+  `tools/dev.py tool-test` and the packaged link gate on Windows, Linux and macOS. kernel-prepared then runs four
+  real dedicated-server gates on the same files: m1, m36, m46 and m53, whose mods are canaries built from this
+  repository. The other gates (client, third-party packs, soak) need the developer's Mac: `tools/nightly/` runs
+  them there every night from launchd (02:30, the soak on Sundays), commits each night's summary to the branch
+  `ci-results` and sets the commit status `nightly/dev-mac` on the tested commit.
+
+## 17. System properties
+
+Set with `-D` on the JVM. The installed profile sets none. There are about 250 distinct `forbric.*` names in
+`src/main` and `src/runtime`; almost every repair has an `-Dforbric.<name>=off` switch, and turning one off logs a
+WARN stating what is lost. Those switches exist for bisecting and for gates' negative controls. The ones a
+developer reaches for:
+
+**Policy and reporting**
+
+| Property | Effect |
+| --- | --- |
+| `forbric.compatibilityPolicy` | `ask` (default), `continue`, `strict`; anything else = `strict` |
+| `forbric.dependencyDialog` | `on` (default), `off`, `dryRun` |
+| `forbric.dialogLanguage` | force the dialog's language (e.g. `ja`) |
+| `forbric.loadReportRewrite` | `off`: first write of `load-report.txt` wins |
+| `forbric.crashAnalysis` | `off`: no `crash-analysis.txt` |
+| `forbric.debug` | enable `ForbricLog.debug` lines |
+
+**Arbitration and order**
+
+| Property | Effect |
+| --- | --- |
+| `forbric.multiLoaderPreference` | per-jar ecosystem order, default `neoforge,minecraftforge,fabric` |
+| `forbric.dupeIdPreference`, `forbric.nestedDupePreference` | cross-jar order for top-level / nested duplicates |
+| `forbric.modOwner` | `id=loader,…` pins; also `<rundir>/forbric-mods.txt` |
+| `forbric.crossJarArbitration` | `off`: two jars with one id both load |
+| `forbric.nestedRequirements` | `off`: a nested Fabric mod whose `minecraft`/`java` range excludes this game loads anyway; `off:<id>,…`: only those ids do |
+| `forbric.arbitrationMaxNodes` | selector work bound (default 100 000, capped at 1 000 000) |
+| `forbric.modOrder` | `name`: file-name construction order |
+| `forbric.fabricOrder` | `off`: Fabric mods follow the topological order instead of mod-id order |
+| `forbric.fabricMainInConstructor` | `off`: client Fabric `main` entrypoints run in the pre-`Minecraft` window |
+| `forbric.loaderProbes`, `forbric.crossEcosystemPresence` | `off`: platform probes / presence answer as a single loader would |
+
+**Mixin**
+
+| Property | Effect |
