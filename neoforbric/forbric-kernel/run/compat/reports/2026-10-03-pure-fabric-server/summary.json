@@ -1,0 +1,300 @@
+{
+ "kernelSha256": "80ad82d119433056c73926d763c1072c038e2ca64ac5e9070ef86e8e532f7fa8",
+ "nativeLauncherSha256": "f1d2bafd0b3b97630b0cdd8e890cd102db3dbe60877a38a5c813aa929e691127",
+ "subjects": 130,
+ "jars": 165,
+ "pack": {
+  "verdict": "BOTH_FAIL",
+  "native": {
+   "outcome": "FAILED_TO_START",
+   "signature": "EXIT:0",
+   "modSetSha256": "d0b4943136cfb06ba144c25f7e52d0da42c5cea541ab0debc9aa4aa6dad8ec25",
+   "jars": 165,
+   "seconds": 60.6,
+   "secondsToDone": null,
+   "gametime": null,
+   "exitCode": 0,
+   "lingeredAfterStop": false,
+   "otherThreadFailures": []
+  },
+  "forbric": {
+   "outcome": "FAILED_TO_START",
+   "signature": "POLICY_STOP:beilin-data-portability:initialization:entrypoint:main,beilin-entry-control:initialization:entrypoint:main,creativecore:mixin-injector:creativecore.fabric.mixins.json:team.creative.creativecore.mixin.ServerConfigurationPacketListenerImplMixin#handleConfigurationFinished(Lnet/minecraft/core/RegistryAccess;)Ljava/util/function/Function;@net.minecraft.server.network.ServerConfigurationPacketListenerImpl,debugify:mixin-injector:debugify.mixins.json:dev.isxander.debugify.mixins.basic.mc121706.RangedBowAttackGoalMixin#lookAtTarget(Lorg/spongepowered/asm/mixin/injection/callback/CallbackInfo;)V@net.minecraft.world.entity.ai.goal.RangedBowAttackGoal,gmm:initialization:entrypoint:main,moreladders:initialization:entrypoint:main,viafabric-mc26-2:initialization:entrypoint:main",
+   "modSetSha256": "d0b4943136cfb06ba144c25f7e52d0da42c5cea541ab0debc9aa4aa6dad8ec25",
+   "jars": 165,
+   "seconds": 130.0,
+   "secondsToDone": null,
+   "gametime": null,
+   "exitCode": 78,
+   "lingeredAfterStop": false,
+   "otherThreadFailures": []
+  },
+  "attempts": [
+   {
+    "engine": "native",
+    "outcome": "FAILED_TO_START",
+    "signature": "EXIT:0"
+   },
+   {
+    "engine": "forbric",
+    "outcome": "FAILED_TO_START",
+    "signature": "POLICY_STOP:beilin-data-portability:initialization:entrypoint:main,beilin-entry-control:initialization:entrypoint:main,creativecore:mixin-injector:creativecore.fabric.mixins.json:team.creative.creativecore.mixin.ServerConfigurationPacketListenerImplMixin#handleConfigurationFinished(Lnet/minecraft/core/RegistryAccess;)Ljava/util/function/Function;@net.minecraft.server.network.ServerConfigurationPacketListenerImpl,debugify:mixin-injector:debugify.mixins.json:dev.isxander.debugify.mixins.basic.mc121706.RangedBowAttackGoalMixin#lookAtTarget(Lorg/spongepowered/asm/mixin/injection/callback/CallbackInfo;)V@net.minecraft.world.entity.ai.goal.RangedBowAttackGoal,gmm:initialization:entrypoint:main,moreladders:initialization:entrypoint:main,viafabric-mc26-2:initialization:entrypoint:main"
+   }
+  ]
+ },
+ "packs": {
+  "pack": {
+   "verdict": "BOTH_FAIL",
+   "native": {
+    "outcome": "FAILED_TO_START",
+    "signature": "EXIT:0",
+    "modSetSha256": "d0b4943136cfb06ba144c25f7e52d0da42c5cea541ab0debc9aa4aa6dad8ec25",
+    "jars": 165,
+    "seconds": 60.6,
+    "secondsToDone": null,
+    "gametime": null,
+    "exitCode": 0,
+    "lingeredAfterStop": false,
+    "otherThreadFailures": []
+   },
+   "forbric": {
+    "outcome": "FAILED_TO_START",
+    "signature": "POLICY_STOP:beilin-data-portability:initialization:entrypoint:main,beilin-entry-control:initialization:entrypoint:main,creativecore:mixin-injector:creativecore.fabric.mixins.json:team.creative.creativecore.mixin.ServerConfigurationPacketListenerImplMixin#handleConfigurationFinished(Lnet/minecraft/core/RegistryAccess;)Ljava/util/function/Function;@net.minecraft.server.network.ServerConfigurationPacketListenerImpl,debugify:mixin-injector:debugify.mixins.json:dev.isxander.debugify.mixins.basic.mc121706.RangedBowAttackGoalMixin#lookAtTarget(Lorg/spongepowered/asm/mixin/injection/callback/CallbackInfo;)V@net.minecraft.world.entity.ai.goal.RangedBowAttackGoal,gmm:initialization:entrypoint:main,moreladders:initialization:entrypoint:main,viafabric-mc26-2:initialization:entrypoint:main",
+    "modSetSha256": "d0b4943136cfb06ba144c25f7e52d0da42c5cea541ab0debc9aa4aa6dad8ec25",
+    "jars": 165,
+    "seconds": 130.0,
+    "secondsToDone": null,
+    "gametime": null,
+    "exitCode": 78,
+    "lingeredAfterStop": false,
+    "otherThreadFailures": []
+   },
+   "attempts": [
+    {
+     "engine": "native",
+     "outcome": "FAILED_TO_START",
+     "signature": "EXIT:0"
+    },
+    {
+     "engine": "forbric",
+     "outcome": "FAILED_TO_START",
+     "signature": "POLICY_STOP:beilin-data-portability:initialization:entrypoint:main,beilin-entry-control:initialization:entrypoint:main,creativecore:mixin-injector:creativecore.fabric.mixins.json:team.creative.creativecore.mixin.ServerConfigurationPacketListenerImplMixin#handleConfigurationFinished(Lnet/minecraft/core/RegistryAccess;)Ljava/util/function/Function;@net.minecraft.server.network.ServerConfigurationPacketListenerImpl,debugify:mixin-injector:debugify.mixins.json:dev.isxander.debugify.mixins.basic.mc121706.RangedBowAttackGoalMixin#lookAtTarget(Lorg/spongepowered/asm/mixin/injection/callback/CallbackInfo;)V@net.minecraft.world.entity.ai.goal.RangedBowAttackGoal,gmm:initialization:entrypoint:main,moreladders:initialization:entrypoint:main,viafabric-mc26-2:initialization:entrypoint:main"
+    }
+   ]
+  },
+  "pack-native-pass": {
+   "verdict": "FORBRIC_ONLY",
+   "native": {
+    "outcome": "DONE",
+    "signature": null,
+    "modSetSha256": "27d90369753d534f1113538413983a69ccf9e476ae88c62ddea0a400574d06c5",
+    "jars": 159,
+    "seconds": 103.8,
+    "secondsToDone": 35.5,
+    "gametime": [
+     1,
+     1212
+    ],
+    "exitCode": 0,
+    "lingeredAfterStop": false,
+    "otherThreadFailures": []
+   },
+   "forbric": {
+    "outcome": "FAILED_TO_START",
+    "signature": "POLICY_STOP:creativecore:mixin-injector:creativecore.fabric.mixins.json:team.creative.creativecore.mixin.ServerConfigurationPacketListenerImplMixin#handleConfigurationFinished(Lnet/minecraft/core/RegistryAccess;)Ljava/util/function/Function;@net.minecraft.server.network.ServerConfigurationPacketListenerImpl,debugify:mixin-injector:debugify.mixins.json:dev.isxander.debugify.mixins.basic.mc121706.RangedBowAttackGoalMixin#lookAtTarget(Lorg/spongepowered/asm/mixin/injection/callback/CallbackInfo;)V@net.minecraft.world.entity.ai.goal.RangedBowAttackGoal,moreladders:initialization:entrypoint:main,viafabric-mc26-2:initialization:entrypoint:main",
+    "modSetSha256": "27d90369753d534f1113538413983a69ccf9e476ae88c62ddea0a400574d06c5",
+    "jars": 159,
+    "seconds": 51.6,
+    "secondsToDone": null,
+    "gametime": null,
+    "exitCode": 78,
+    "lingeredAfterStop": false,
+    "otherThreadFailures": []
+   },
+   "attempts": [
+    {
+     "engine": "native",
+     "outcome": "DONE",
+     "signature": null
+    },
+    {
+     "engine": "forbric",
+     "outcome": "FAILED_TO_START",
+     "signature": "POLICY_STOP:creativecore:mixin-injector:creativecore.fabric.mixins.json:team.creative.creativecore.mixin.ServerConfigurationPacketListenerImplMixin#handleConfigurationFinished(Lnet/minecraft/core/RegistryAccess;)Ljava/util/function/Function;@net.minecraft.server.network.ServerConfigurationPacketListenerImpl,debugify:mixin-injector:debugify.mixins.json:dev.isxander.debugify.mixins.basic.mc121706.RangedBowAttackGoalMixin#lookAtTarget(Lorg/spongepowered/asm/mixin/injection/callback/CallbackInfo;)V@net.minecraft.world.entity.ai.goal.RangedBowAttackGoal,moreladders:initialization:entrypoint:main,viafabric-mc26-2:initialization:entrypoint:main"
+    }
+   ]
+  },
+  "pack-matched-pass": {
+   "verdict": "MATCHED_PASS",
+   "native": {
+    "outcome": "DONE",
+    "signature": null,
+    "modSetSha256": "54c7d20c6156c59610c074bea1a44a1e4927f50bc77bdcd097e4b687539ef189",
+    "jars": 149,
+    "seconds": 153.0,
+    "secondsToDone": 67.1,
+    "gametime": [
+     1,
+     1206
+    ],
+    "exitCode": 0,
+    "lingeredAfterStop": false,
+    "otherThreadFailures": []
+   },
+   "forbric": {
+    "outcome": "DONE",
+    "signature": null,
+    "modSetSha256": "54c7d20c6156c59610c074bea1a44a1e4927f50bc77bdcd097e4b687539ef189",
+    "jars": 149,
+    "seconds": 226.7,
+    "secondsToDone": 139.5,
+    "gametime": [
+     1,
+     1240
+    ],
+    "exitCode": 0,
+    "lingeredAfterStop": false,
+    "otherThreadFailures": []
+   },
+   "attempts": [
+    {
+     "engine": "native",
+     "outcome": "DONE",
+     "signature": null
+    },
+    {
+     "engine": "forbric",
+     "outcome": "DONE",
+     "signature": null
+    }
+   ]
+  }
+ },
+ "perModCounts": {
+  "MATCHED_PASS": 119,
+  "FORBRIC_ONLY": 7,
+  "BOTH_FAIL": 4
+ },
+ "perModNotMatched": {
+  "notenoughcrashes-fabric-4.4.9+26.2.jar": {
+   "verdict": "FORBRIC_ONLY",
+   "native": {
+    "outcome": "DONE",
+    "signature": null,
+    "modSetSha256": "382b6eb30cc658aa0a07aea5c0e291fd58a6f99f4cfeb4dc7eda63f2527be23b",
+    "jars": 1,
+    "seconds": 24.8,
+    "secondsToDone": 13.7,
+    "gametime": [
+     5,
+     208
+    ],
+    "exitCode": 0,
+    "lingeredAfterStop": false,
+    "otherThreadFailures": []
+   },
+   "forbric": {
+    "outcome": "FAILED_TO_START",
+    "signature": "POLICY_STOP:notenoughcrashes:mixin:notenoughcrashes.mixins.json:fudge.notenoughcrashes.mixins.MixinTileEntity",
+    "modSetSha256": "382b6eb30cc658aa0a07aea5c0e291fd58a6f99f4cfeb4dc7eda63f2527be23b",
+    "jars": 1,
+    "seconds": 3.1,
+    "secondsToDone": null,
+    "gametime": null,
+    "exitCode": 78,
+    "lingeredAfterStop": false,
+    "otherThreadFailures": []
+   },
+   "attempts": [
+    {
+     "engine": "native",
+     "outcome": "DONE",
+     "signature": null
+    },
+    {
+     "engine": "forbric",
+     "outcome": "FAILED_TO_START",
+     "signature": "POLICY_STOP:notenoughcrashes:mixin:notenoughcrashes.mixins.json:fudge.notenoughcrashes.mixins.MixinTileEntity"
+    },
+    {
+     "engine": "native",
+     "outcome": "DONE",
+     "signature": null
+    },
+    {
+     "engine": "forbric",
+     "outcome": "FAILED_TO_START",
+     "signature": "POLICY_STOP:notenoughcrashes:mixin:notenoughcrashes.mixins.json:fudge.notenoughcrashes.mixins.MixinTileEntity"
+    }
+   ]
+  },
+  "debugify-26.2.0.1.jar": {
+   "verdict": "FORBRIC_ONLY",
+   "native": {
+    "outcome": "DONE",
+    "signature": null,
+    "modSetSha256": "be45bb60ea07ca38864d0299ca513e6aa3fc6cf917a0faf78c4ecd25a24bf48a",
+    "jars": 2,
+    "seconds": 45.3,
+    "secondsToDone": 32.1,
+    "gametime": [
+     1,
+     236
+    ],
+    "exitCode": 0,
+    "lingeredAfterStop": false,
+    "otherThreadFailures": []
+   },
+   "forbric": {
+    "outcome": "FAILED_TO_START",
+    "signature": "POLICY_STOP:debugify:mixin-injector:debugify.mixins.json:dev.isxander.debugify.mixins.basic.mc121706.RangedBowAttackGoalMixin#lookAtTarget(Lorg/spongepowered/asm/mixin/injection/callback/CallbackInfo;)V@net.minecraft.world.entity.ai.goal.RangedBowAttackGoal",
+    "modSetSha256": "be45bb60ea07ca38864d0299ca513e6aa3fc6cf917a0faf78c4ecd25a24bf48a",
+    "jars": 2,
+    "seconds": 40.7,
+    "secondsToDone": null,
+    "gametime": null,
+    "exitCode": 78,
+    "lingeredAfterStop": false,
+    "otherThreadFailures": []
+   },
+   "attempts": [
+    {
+     "engine": "native",
+     "outcome": "DONE",
+     "signature": null
+    },
+    {
+     "engine": "forbric",
+     "outcome": "FAILED_TO_START",
+     "signature": "POLICY_STOP:debugify:mixin-injector:debugify.mixins.json:dev.isxander.debugify.mixins.basic.mc121706.RangedBowAttackGoalMixin#lookAtTarget(Lorg/spongepowered/asm/mixin/injection/callback/CallbackInfo;)V@net.minecraft.world.entity.ai.goal.RangedBowAttackGoal"
+    },
+    {
+     "engine": "native",
+     "outcome": "DONE",
+     "signature": null
+    },
+    {
+     "engine": "forbric",
+     "outcome": "FAILED_TO_START",
+     "signature": "POLICY_STOP:debugify:mixin-injector:debugify.mixins.json:dev.isxander.debugify.mixins.basic.mc121706.RangedBowAttackGoalMixin#lookAtTarget(Lorg/spongepowered/asm/mixin/injection/callback/CallbackInfo;)V@net.minecraft.world.entity.ai.goal.RangedBowAttackGoal"
+    }
+   ]
+  },
+  "MoogsEndStructures-universal-1.21-2.1.1.jar": {
+   "verdict": "FORBRIC_ONLY",
+   "native": {
+    "outcome": "DONE",
+    "signature": null,
+    "modSetSha256": "715bfc2e0f585ba0ab2314a64ce122c5f585b47051bd8f088fd84b1125127568",
+    "jars": 3,
+    "seconds": 42.2,
+    "secondsToDone": 30.5,
+    "gametime": [
+     1,
+     203
+    ],
+    "exitCode": 0,
+    "lingeredAfterStop": false,
+    "otherThreadFailures": []
+   },
+   "forbric": {
