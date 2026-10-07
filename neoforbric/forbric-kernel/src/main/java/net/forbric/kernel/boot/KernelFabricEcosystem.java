@@ -598,3 +598,263 @@ public final class KernelFabricEcosystem {
 	 */
 	public static Side physicalSide() {
 		KernelFabricLoader current = loader;
+		return current == null ? null : Side.parse(String.valueOf(current.getEnvironmentType()));
+	}
+
+	/**
+	 * Runs the Fabric {@code client} entrypoints, exactly once. Called from within {@code Minecraft.<init>} (after the
+	 * singleton is set, before {@code Options} is built) by {@code ClientEntrypointHookInjector} — the window Fabric
+	 * itself uses, so mods that touch {@code Minecraft.getInstance()} (keymappings, renderers) see a live instance.
+	 *
+	 * @return true if this call ran them, false if already run or off the client
+	 */
+	public static boolean runClientEntrypoints() {
+		if (loader == null || loader.getEnvironmentType() != EnvType.CLIENT) return false;
+		adoptFabricStorage();
+		if (!CLIENTS_RAN.compareAndSet(false, true)) return false;
+		PHASES_RAN.add("client");
+
+		int client = invoke("client", ClientModInitializer.class, ClientModInitializer::onInitializeClient);
+		ForbricLog.info("[Forbric/Fabric] invoked %d Fabric client entrypoint(s) (Minecraft.<init> window)", client);
+		reportActiveRenderer();
+		return true;
+	}
+
+	/**
+	 * Names whichever mod ended up owning the Fabric Rendering API's single renderer slot.
+	 *
+	 * <p>That slot takes exactly one occupant — {@code RendererManager.registerRenderer} throws on a second — and
+	 * on a normal Fabric instance Sodium takes it and Indigo stands down. Every party to that handover is
+	 * cross-ecosystem here (a NeoForge Sodium declaring itself to a Fabric Indigo through the kernel's metadata),
+	 * and when it goes wrong NOTHING says so at the time: the wrong renderer registers quietly and the first
+	 * frame that draws a mesh-emitting model dies with {@code MutableQuadViewWrapper cannot be cast to
+	 * MutableQuadViewImpl}, inside a mod, with no mention of a renderer. So the handover is stated out loud at the
+	 * one moment both candidates have had their say.
+	 *
+	 * <p>Reflective, and silent when FRAPI is not installed — most instances have no renderer slot at all.
+	 */
+	private static void reportActiveRenderer() {
+		try {
+			if (loader == null || loader.getModContainer("fabric-renderer-api-v1").isEmpty()) return;
+			ClassLoader mods = Thread.currentThread().getContextClassLoader();
+			Class<?> manager = Class.forName("net.fabricmc.fabric.impl.client.renderer.RendererManager", false, mods);
+			java.lang.reflect.Field active = manager.getDeclaredField("activeRenderer");
+			active.setAccessible(true);
+			Object renderer = active.get(null);
+			if (renderer == null) {
+				ForbricLog.warn("[Forbric/Fabric] the Fabric Rendering API has NO renderer registered — the next "
+						+ "model that emits a mesh will die on \"Attempted to retrieve active rendering plug-in "
+						+ "before one was registered\"");
+				return;
+			}
+			ForbricLog.info("[Forbric/Fabric] the Fabric Rendering API renderer is %s — the one slot is taken, and "
+					+ "whoever lost it must have stood down rather than registered", renderer.getClass().getName());
+		} catch (ClassNotFoundException | NoSuchFieldException absent) {
+			// A different FRAPI version keeps its renderer somewhere else; a diagnostic must not invent a finding.
+		} catch (Throwable t) {
+			ForbricLog.warn("[Forbric/Fabric] could not read the active Fabric renderer", t);
+		}
+	}
+
+	/** Whether the Fabric main entrypoints have already run. */
+	public static boolean mainsAlreadyRan() {
+		return MAINS_RAN.get();
+	}
+
+	/** The switch that puts the client's {@code main} entrypoints back in the pre-{@code Minecraft} window. */
+	public static final String MAIN_WINDOW_SWITCH = "forbric.fabricMainInConstructor";
+
+	/**
+	 * Whether the client's {@code main} entrypoints run inside {@code Minecraft.<init>}, where Fabric runs them.
+	 *
+	 * <p>Fabric's own {@code Hooks.startClient} invokes {@code main} and then {@code client}, and its game patch
+	 * inserts that call before the {@code Thread.currentThread()} in the constructor — after {@code instance = this}.
+	 * So on Fabric a {@code main} entrypoint always sees a live {@code Minecraft.getInstance()}.
+	 *
+	 * <p>The kernel used to run them in its own pre-{@code Minecraft} registration window instead, because that
+	 * window is where the registries are unfrozen. {@code getInstance()} is null there, and a mod that caches it —
+	 * ClickCrystals holds it in a {@code static final} interface field read from the first line of its
+	 * {@code onInitialize} — cached null for the rest of the process and took the game down inside the constructor
+	 * with an NPE naming neither the loader nor the window. The client-entrypoint hook already reopens the
+	 * registries and rebuilds what the reopen invalidates, so the two phases now run there together, in Fabric's
+	 * order and at very nearly Fabric's instruction.
+	 *
+	 * <p>{@code -Dforbric.fabricMainInConstructor=off} puts them back in the pre-{@code Minecraft} window.
+	 */
+	public static boolean mainsRunInConstructor() {
+		return !"off".equalsIgnoreCase(System.getProperty(MAIN_WINDOW_SWITCH, "on"));
+	}
+
+	/**
+	 * Invokes one entrypoint key, isolating failures per mod: a mod whose {@code onInitialize} throws is reported
+	 * and skipped rather than aborting the remaining mods' initialization (and with them the whole server boot).
+	 */
+	/** Spectre's NeoForge global-load phase does not discover Fabric's custom config entries. */
+	static void initializeSpectreConfigs() {
+		if (!net.forbric.kernel.transform.SpectreConfigContractInjector.needed()) return;
+		int count = invoke("spectrelib-config", net.forbric.kernel.interop.SpectreConfigInitializer.class,
+				net.forbric.kernel.interop.SpectreConfigInitializer::onInitializeConfig);
+		if (count > 0) ForbricLog.info("[Forbric/Spectre] initialized %d Fabric config entrypoint(s) before the selected NeoForge library loads global configs", count);
+	}
+
+	private static <T> int invoke(String key, Class<T> type, java.util.function.Consumer<T> action) {
+		int count = 0;
+
+		for (EntrypointContainer<T> c : loader.getEntrypointContainers(key, type)) {
+			String id = c.getProvider().getMetadata().getId();
+
+			try {
+				T entrypoint = c.getEntrypoint();
+				// With a NeoForge ModContainer active for THIS mod, because a Fabric mod can be holding the
+				// NeoForge build of a multi-loader library: only one copy of a class exists, so the build the
+				// nested-jar arbitration kept is the build every host gets. Without this, EntityCulling's
+				// onInitializeClient asked tr7zw's TRansition to register a keybind, that build asked
+				// ModLoadingContext for the active container, got NeoForge's "minecraft" fallback whose
+				// getEventBus() is null by design, and threw out of its first line — losing the whole entrypoint.
+				// The MOD's loader, not the kernel's: the runtime half and NeoForge itself are transform-loaded,
+				// and the kernel's own boot classloader cannot see either of them.
+				KernelForeignShimContext.with(entrypoint.getClass().getClassLoader(), id,
+						() -> action.accept(entrypoint));
+				count++;
+				ForbricLog.info("[Forbric/Fabric] invoked %s entrypoint of %s", key, id);
+				reportSwallowedFailure(key, id, entrypoint);
+			} catch (Throwable t) {
+				ForbricLog.error("[Forbric/Fabric] " + key + " entrypoint of " + id + " failed", t);
+				ModCatalog.mark(id, ModCatalog.Status.FAILED, "its " + key + " entrypoint threw");
+			}
+		}
+
+		KernelForeignShimContext.report();
+		return count;
+	}
+
+	/**
+	 * Reports an initialization failure a mod caught and parked in one of its own fields instead of rethrowing.
+	 *
+	 * <p>{@code try { loadCommon(); loadClient(); } catch (Throwable t) { this.firstStageError = t; }} is a common
+	 * shape, and it turns a loader problem into a lie: the entrypoint returns normally, the kernel logs it as
+	 * invoked, and the mod then dies far away with something that names neither the cause nor the mod's own init.
+	 * Xaero's World Map does exactly this — its swallowed failure surfaced a hundred ticks later as
+	 * {@code "xaero.map.WorldMap.events" is null} inside {@code Minecraft.runTick}, with nothing in between.
+	 *
+	 * <p>So after a successful-looking entrypoint, any non-null {@code Throwable} field on the instance is surfaced
+	 * once, at the point it actually happened. This reads fields the mod declared on itself; it changes nothing.
+	 */
+	private static void reportSwallowedFailure(String key, String id, Object entrypoint) {
+		if (entrypoint == null) return;
+
+		for (java.lang.reflect.Field field : entrypoint.getClass().getDeclaredFields()) {
+			if (java.lang.reflect.Modifier.isStatic(field.getModifiers())
+					|| !Throwable.class.isAssignableFrom(field.getType())) {
+				continue;
+			}
+			try {
+				field.setAccessible(true);
+				Throwable parked = (Throwable) field.get(entrypoint);
+
+				if (parked != null) {
+					ForbricLog.warn("[Forbric/Fabric] " + key + " entrypoint of " + id + " returned normally but "
+							+ "caught its own failure into " + field.getName() + " — the mod is only PARTLY "
+							+ "initialised and will fail later somewhere unrelated", parked);
+					ModCatalog.mark(id, ModCatalog.Status.DEGRADED,
+							"its " + key + " entrypoint swallowed its own failure");
+				}
+			} catch (Throwable inaccessible) {
+				// A mod that hides the field from reflection simply keeps its secret; this is diagnostics only.
+			}
+		}
+	}
+
+	/**
+	 * A Forge-family mod's {@code [modproperties.<id>]} table, as Fabric custom values.
+	 *
+	 * <p>The two ecosystems spell the same declaration differently and each family's loader only ever exposed its
+	 * own spelling, so a Fabric mod asking a NeoForge mod what it offers was told "nothing" — the answer a mod
+	 * reads as "not installed", by a different route.
+	 *
+	 * <p>The measured case: Sodium's NeoForge build declares {@code "fabric-renderer-api-v1:contains_renderer" =
+	 * true}, which is the ONLY way Indigo (fabric-renderer-indigo) learns that another rendering plug-in is
+	 * present — {@code IndigoMixinConfigPlugin} walks {@code FabricLoader.getAllMods()} and calls
+	 * {@code ModMetadata.containsCustomValue} on that exact key. Told nothing, Indigo registered ITSELF as the
+	 * FRAPI renderer, so a connected-texture mod built its mesh with Indigo's encoding and Sodium's feature
+	 * renderer then handed that mesh Sodium's own emitter: {@code MutableQuadViewWrapper cannot be cast to
+	 * MutableQuadViewImpl}, every frame, the instant a CTM block was on screen.
+	 *
+	 * <p>The key names are not a coincidence to be exploited — the {@code modproperties} table is where the Forge
+	 * family agreed cross-loader declarations live, and mods write Fabric's namespaced keys into it verbatim.
+	 */
+	private static Map<String, CustomValue> customValuesOf(DiscoveredMod mod) {
+		Map<String, Object> properties = mod == null ? null : mod.getModProperties();
+		if (properties == null || properties.isEmpty()) return Map.of();
+
+		Map<String, CustomValue> values = new LinkedHashMap<>();
+		for (Map.Entry<String, Object> entry : properties.entrySet()) {
+			values.put(entry.getKey(), KernelCustomValue.of(entry.getValue()));
+		}
+		if (values.containsKey(CONTAINS_RENDERER) && !keepsRendererPromise(mod)) values.remove(CONTAINS_RENDERER);
+		if (values.isEmpty()) return Map.of();
+		ForbricLog.info("[Forbric/Fabric] %s's %d [modproperties] key(s) are now Fabric custom values %s — a Fabric "
+				+ "mod asking this mod what it offers (Indigo asking Sodium whether a renderer is already here) "
+				+ "reads the same declaration its own family would have written", mod.getId(), values.size(),
+				values.keySet());
+		return values;
+	}
+
+	static final String CONTAINS_RENDERER = "fabric-renderer-api-v1:contains_renderer";
+
+	/**
+	 * Forwarding {@code contains_renderer} makes Indigo stand down, so it is forwarded only when the loaded build can
+	 * keep the promise (see {@link FrapiRendererEvidence}). Unreadable jars keep the declaration, as before.
+	 */
+	static boolean keepsRendererPromise(DiscoveredMod mod) {
+		String source = mod.getSource();
+		if (source == null || !Files.isRegularFile(Path.of(source))) return true;
+		try {
+			if (FrapiRendererEvidence.registersRenderer(Path.of(source))) return true;
+		} catch (IOException | RuntimeException unreadable) {
+			ForbricLog.warn("[Forbric/Fabric] could not check whether %s registers a Fabric renderer; keeping its "
+					+ "declaration", mod.getId(), unreadable);
+			return true;
+		}
+		ForbricLog.warn("[Forbric/Fabric] %s declares %s, but the build that loaded never registers a Fabric renderer "
+				+ "— not forwarding it, so Indigo takes the slot instead of leaving it empty", mod.getId(), CONTAINS_RENDERER);
+		return false;
+	}
+
+	/**
+	 * Cross-jar winners are recorded by the arbiter; a single universal jar has no contested id and hence
+	 * no owner-map entry. Its presence alias must still read the loaded family's jar (LambDynamicLights
+	 * reads its default config this way through Yumi), before the later foreign-mod loop skips that alias.
+	 */
+	static Path presenceSource(String id, DuplicateModArbiter.Decision dupes) {
+		Path winner = dupes.ownerByModId().get(id);
+		if (winner != null) return winner;
+		for (DiscoveredMod mod : ModPresence.forgeFamilyMods()) {
+			if (id.equals(mod.getId())) return loadedFrom(mod);
+		}
+		return null;
+	}
+
+	/** The jar a Forge-family mod was discovered in, when it is one this machine can read. */
+	private static Path loadedFrom(DiscoveredMod mod) {
+		try {
+			Path source = mod.getSource() == null ? null : Path.of(mod.getSource());
+			return source != null && (Files.isRegularFile(source) || Files.isDirectory(source)) ? source : null;
+		} catch (RuntimeException unusable) {
+			return null;
+		}
+	}
+
+	/**
+	 * The same table, found by mod id — for the arbitration aliases, where the losing FABRIC jar supplies the
+	 * identity but the WINNING Forge-family jar supplies the declaration. Sodium arrives this way whenever both
+	 * builds are installed, which is the configuration that crashed.
+	 */
+	private static Map<String, CustomValue> foreignCustomValues(String id) {
+		if (id == null) return Map.of();
+		for (DiscoveredMod mod : ModPresence.forgeFamilyMods()) {
+			if (id.equals(mod.getId())) return customValuesOf(mod);
+		}
+		return Map.of();
+	}
+}
