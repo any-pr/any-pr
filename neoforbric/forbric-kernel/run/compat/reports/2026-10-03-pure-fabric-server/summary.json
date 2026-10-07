@@ -298,3 +298,303 @@
     "otherThreadFailures": []
    },
    "forbric": {
+    "outcome": "CRASH",
+    "signature": "EXIT:0",
+    "modSetSha256": "715bfc2e0f585ba0ab2314a64ce122c5f585b47051bd8f088fd84b1125127568",
+    "jars": 3,
+    "seconds": 58.7,
+    "secondsToDone": 57.7,
+    "gametime": null,
+    "exitCode": 0,
+    "lingeredAfterStop": false,
+    "otherThreadFailures": []
+   },
+   "attempts": [
+    {
+     "engine": "native",
+     "outcome": "DONE",
+     "signature": null
+    },
+    {
+     "engine": "forbric",
+     "outcome": "CRASH",
+     "signature": "EXIT:0"
+    },
+    {
+     "engine": "native",
+     "outcome": "DONE",
+     "signature": null
+    },
+    {
+     "engine": "forbric",
+     "outcome": "CRASH",
+     "signature": "EXIT:0"
+    }
+   ]
+  },
+  "EnhancedVisuals_FABRIC_v1.8.30_mc26.2.jar": {
+   "verdict": "FORBRIC_ONLY",
+   "native": {
+    "outcome": "DONE",
+    "signature": null,
+    "modSetSha256": "6ba5f7969034b7d54941814ba6dfed32e23718ea79d20b78ff766cf7c643c0ea",
+    "jars": 3,
+    "seconds": 32.0,
+    "secondsToDone": 20.3,
+    "gametime": [
+     3,
+     207
+    ],
+    "exitCode": 0,
+    "lingeredAfterStop": false,
+    "otherThreadFailures": []
+   },
+   "forbric": {
+    "outcome": "FAILED_TO_START",
+    "signature": "POLICY_STOP:creativecore:mixin-injector:creativecore.fabric.mixins.json:team.creative.creativecore.mixin.ServerConfigurationPacketListenerImplMixin#handleConfigurationFinished(Lnet/minecraft/core/RegistryAccess;)Ljava/util/function/Function;@net.minecraft.server.network.ServerConfigurationPacketListenerImpl",
+    "modSetSha256": "6ba5f7969034b7d54941814ba6dfed32e23718ea79d20b78ff766cf7c643c0ea",
+    "jars": 3,
+    "seconds": 52.6,
+    "secondsToDone": null,
+    "gametime": null,
+    "exitCode": 78,
+    "lingeredAfterStop": false,
+    "otherThreadFailures": []
+   },
+   "attempts": [
+    {
+     "engine": "native",
+     "outcome": "DONE",
+     "signature": null
+    },
+    {
+     "engine": "forbric",
+     "outcome": "FAILED_TO_START",
+     "signature": "POLICY_STOP:creativecore:mixin-injector:creativecore.fabric.mixins.json:team.creative.creativecore.mixin.ServerConfigurationPacketListenerImplMixin#handleConfigurationFinished(Lnet/minecraft/core/RegistryAccess;)Ljava/util/function/Function;@net.minecraft.server.network.ServerConfigurationPacketListenerImpl"
+    },
+    {
+     "engine": "native",
+     "outcome": "DONE",
+     "signature": null
+    },
+    {
+     "engine": "forbric",
+     "outcome": "FAILED_TO_START",
+     "signature": "POLICY_STOP:creativecore:mixin-injector:creativecore.fabric.mixins.json:team.creative.creativecore.mixin.ServerConfigurationPacketListenerImplMixin#handleConfigurationFinished(Lnet/minecraft/core/RegistryAccess;)Ljava/util/function/Function;@net.minecraft.server.network.ServerConfigurationPacketListenerImpl"
+    }
+   ]
+  },
+  "ViaVersion-5.12.1-SNAPSHOT.jar": {
+   "verdict": "FORBRIC_ONLY",
+   "native": {
+    "outcome": "DONE",
+    "signature": null,
+    "modSetSha256": "6fef6019a7acfa3f2cb4f1cdc8685a7606877916aa4c2999b2a7385ec4e2bc94",
+    "jars": 3,
+    "seconds": 40.2,
+    "secondsToDone": 29.0,
+    "gametime": [
+     2,
+     205
+    ],
+    "exitCode": 0,
+    "lingeredAfterStop": false,
+    "otherThreadFailures": []
+   },
+   "forbric": {
+    "outcome": "FAILED_TO_START",
+    "signature": "POLICY_STOP:viafabric-mc26-2:initialization:entrypoint:main",
+    "modSetSha256": "6fef6019a7acfa3f2cb4f1cdc8685a7606877916aa4c2999b2a7385ec4e2bc94",
+    "jars": 3,
+    "seconds": 45.4,
+    "secondsToDone": null,
+    "gametime": null,
+    "exitCode": 78,
+    "lingeredAfterStop": false,
+    "otherThreadFailures": []
+   },
+   "attempts": [
+    {
+     "engine": "native",
+     "outcome": "DONE",
+     "signature": null
+    },
+    {
+     "engine": "forbric",
+     "outcome": "FAILED_TO_START",
+     "signature": "POLICY_STOP:viafabric-mc26-2:initialization:entrypoint:main"
+    },
+    {
+     "engine": "native",
+     "outcome": "DONE",
+     "signature": null
+    },
+    {
+     "engine": "forbric",
+     "outcome": "FAILED_TO_START",
+     "signature": "POLICY_STOP:viafabric-mc26-2:initialization:entrypoint:main"
+    }
+   ]
+  },
+  "andonium-2.2.1+26.2-fabric.jar": {
+   "verdict": "BOTH_FAIL",
+   "native": {
+    "outcome": "FAILED_TO_START",
+    "signature": "EXIT:0",
+    "modSetSha256": "3e8f9cf25ef63732266431752655a2d0788bbca1153d4a1d39defebc076ab099",
+    "jars": 2,
+    "seconds": 12.7,
+    "secondsToDone": null,
+    "gametime": null,
+    "exitCode": 0,
+    "lingeredAfterStop": false,
+    "otherThreadFailures": []
+   },
+   "forbric": {
+    "outcome": "FAILED_TO_START",
+    "signature": "POLICY_STOP:andonium:initialization:entrypoint:main",
+    "modSetSha256": "3e8f9cf25ef63732266431752655a2d0788bbca1153d4a1d39defebc076ab099",
+    "jars": 2,
+    "seconds": 38.2,
+    "secondsToDone": null,
+    "gametime": null,
+    "exitCode": 78,
+    "lingeredAfterStop": false,
+    "otherThreadFailures": []
+   },
+   "attempts": [
+    {
+     "engine": "native",
+     "outcome": "FAILED_TO_START",
+     "signature": "EXIT:0"
+    },
+    {
+     "engine": "forbric",
+     "outcome": "FAILED_TO_START",
+     "signature": "POLICY_STOP:andonium:initialization:entrypoint:main"
+    }
+   ]
+  },
+  "moreladders-fabric-26.2-3.0.0.jar": {
+   "verdict": "FORBRIC_ONLY",
+   "native": {
+    "outcome": "DONE",
+    "signature": null,
+    "modSetSha256": "a4978579f44a24432360408beb7307db96e22fee9ff5c6f799a232e8d6abda2d",
+    "jars": 2,
+    "seconds": 27.5,
+    "secondsToDone": 16.3,
+    "gametime": [
+     2,
+     206
+    ],
+    "exitCode": 0,
+    "lingeredAfterStop": false,
+    "otherThreadFailures": []
+   },
+   "forbric": {
+    "outcome": "FAILED_TO_START",
+    "signature": "POLICY_STOP:moreladders:initialization:entrypoint:main",
+    "modSetSha256": "a4978579f44a24432360408beb7307db96e22fee9ff5c6f799a232e8d6abda2d",
+    "jars": 2,
+    "seconds": 17.8,
+    "secondsToDone": null,
+    "gametime": null,
+    "exitCode": 78,
+    "lingeredAfterStop": false,
+    "otherThreadFailures": []
+   },
+   "attempts": [
+    {
+     "engine": "native",
+     "outcome": "DONE",
+     "signature": null
+    },
+    {
+     "engine": "forbric",
+     "outcome": "FAILED_TO_START",
+     "signature": "POLICY_STOP:moreladders:initialization:entrypoint:main"
+    },
+    {
+     "engine": "native",
+     "outcome": "DONE",
+     "signature": null
+    },
+    {
+     "engine": "forbric",
+     "outcome": "FAILED_TO_START",
+     "signature": "POLICY_STOP:moreladders:initialization:entrypoint:main"
+    }
+   ]
+  },
+  "creepertweaks-1.1.0+26.2.jar": {
+   "verdict": "BOTH_FAIL",
+   "native": {
+    "outcome": "FAILED_TO_START",
+    "signature": "EXIT:0",
+    "modSetSha256": "9810a6c1e034d3fa5ba0b2400d21257a26a870cf14a9b01805f67a109baf7583",
+    "jars": 1,
+    "seconds": 12.2,
+    "secondsToDone": null,
+    "gametime": null,
+    "exitCode": 0,
+    "lingeredAfterStop": false,
+    "otherThreadFailures": []
+   },
+   "forbric": {
+    "outcome": "FAILED_TO_START",
+    "signature": "POLICY_STOP:creepertweaks:initialization:entrypoint:main",
+    "modSetSha256": "9810a6c1e034d3fa5ba0b2400d21257a26a870cf14a9b01805f67a109baf7583",
+    "jars": 1,
+    "seconds": 36.0,
+    "secondsToDone": null,
+    "gametime": null,
+    "exitCode": 78,
+    "lingeredAfterStop": false,
+    "otherThreadFailures": []
+   },
+   "attempts": [
+    {
+     "engine": "native",
+     "outcome": "FAILED_TO_START",
+     "signature": "EXIT:0"
+    },
+    {
+     "engine": "forbric",
+     "outcome": "FAILED_TO_START",
+     "signature": "POLICY_STOP:creepertweaks:initialization:entrypoint:main"
+    }
+   ]
+  },
+  "meowantixray-fabric-1.6.0.jar": {
+   "verdict": "FORBRIC_ONLY",
+   "native": {
+    "outcome": "DONE",
+    "signature": null,
+    "modSetSha256": "6cf2ea83aa47d553cd59687bc99e56548b56eed54bcb171f177bac139d2af2a3",
+    "jars": 2,
+    "seconds": 33.0,
+    "secondsToDone": 21.9,
+    "gametime": [
+     5,
+     209
+    ],
+    "exitCode": 0,
+    "lingeredAfterStop": false,
+    "otherThreadFailures": []
+   },
+   "forbric": {
+    "outcome": "CRASH",
+    "signature": "java.lang.IllegalStateException: Failed to resolve block id minecraft:diamond_ore",
+    "modSetSha256": "6cf2ea83aa47d553cd59687bc99e56548b56eed54bcb171f177bac139d2af2a3",
+    "jars": 2,
+    "seconds": 35.1,
+    "secondsToDone": 33.1,
+    "gametime": null,
+    "exitCode": 0,
+    "lingeredAfterStop": false,
+    "otherThreadFailures": []
+   },
+   "attempts": [
+    {
+     "engine": "native",
