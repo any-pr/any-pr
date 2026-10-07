@@ -598,3 +598,15 @@ def main():
                                    "expectedActions": 3, "sources": sources()})
                 print(f"{family} infrastructure failure, retained {failed}: {failure}", file=sys.stderr)
                 outcomes.append(False)
+        return 0 if all(outcomes) else 1
+    elif args.action == "compare":
+        return 0 if compare(args.results) else 1
+    elif args.action == "run-set":
+        result = run_set(args.engine, args.family, args.mods, args.ticks, args.timeout, args.xmx, args.level_type, args.policy, args.keep)
+        print(json.dumps({k: result[k] for k in ("engine", "outcome", "signature", "modSetSha256", "jars", "seconds", "result")}))
+        return 0 if result["outcome"] == DONE else 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
