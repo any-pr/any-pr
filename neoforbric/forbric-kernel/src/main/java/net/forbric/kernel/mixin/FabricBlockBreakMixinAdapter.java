@@ -298,3 +298,129 @@ public final class FabricBlockBreakMixinAdapter {
 			if (insn instanceof MethodInsnNode call && ("L" + call.owner + ";" + call.name + call.desc).equals(BLOCK_DESTROY)) calls++;
 		}
 		return calls;
+	}
+
+	/** apoli-legacy: the harvest check is the only boolean at {@code mineBlock} in NeoForge's body — ordinal 0. */
+	private static int harvestOrdinal(ClassNode mixin, MethodNode destroy) {
+		MethodNode handler = method(mixin, "modifyEffectiveTool", "(Z)Z");
+		if (handler == null || grouped(handler)) return 0;
+		AnnotationNode modify = MixinFit.injectorOf(handler);
+		if (modify == null || !MODIFY_VARIABLE.equals(modify.desc) || !only(modify, "destroyBlock")
+				|| !Integer.valueOf(1).equals(MixinFit.value(modify, "ordinal"))
+				|| MixinFit.value(modify, "index") != null || MixinFit.value(modify, "name") != null
+				|| MixinFit.value(modify, "argsOnly") != null) return 0;
+		List<AnnotationNode> points = MixinFit.atNodes(modify);
+		if (points.size() != 1 || !"INVOKE".equals(MixinFit.value(points.getFirst(), "value"))
+				|| !MINE_BLOCK.equals(MixinFit.value(points.getFirst(), "target"))
+				|| MixinFit.value(points.getFirst(), "ordinal") != null) return 0;
+
+		AbstractInsnNode point = null;
+		for (AbstractInsnNode insn : destroy.instructions) {
+			if (!(insn instanceof MethodInsnNode call)) continue;
+			if (call.name.equals("hasCorrectToolForDrops")) return 0;    // vanilla's check is still here
+			if (call.name.equals("mineBlock") && ("L" + call.owner + ";" + call.name + call.desc).equals(MINE_BLOCK)) {
+				if (point != null) return 0;
+				point = insn;
+			}
+		}
+		if (point == null) return 0;
+		List<LocalVariableNode> frame = inScope(destroy, point);
+		if (frame == null) return 0;
+		List<LocalVariableNode> booleans = frame.stream().filter(local -> local.desc.equals("Z")).toList();
+		if (booleans.size() != 1 || !storedFrom(destroy, booleans.getFirst().index, Opcodes.ISTORE, STATE, "canHarvestBlock",
+				"(Lnet/minecraft/world/level/BlockGetter;Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/entity/player/Player;)Z")) return 0;
+
+		for (int i = 0; i + 1 < modify.values.size(); i += 2) {
+			if ("ordinal".equals(modify.values.get(i))) modify.values.set(i + 1, 0);
+		}
+		return 1;
+	}
+
+	/**
+	 * The method's locals after its arguments that the local variable table has in scope at {@code point}, by slot.
+	 * Null when two entries claim one slot there — the table is not one this can read.
+	 */
+	private static List<LocalVariableNode> inScope(MethodNode method, AbstractInsnNode point) {
+		int at = method.instructions.indexOf(point);
+		int first = Type.getArgumentsAndReturnSizes(method.desc) >> 2;    // includes `this`
+		if ((method.access & Opcodes.ACC_STATIC) != 0) first--;
+		List<LocalVariableNode> found = new ArrayList<>();
+		for (LocalVariableNode local : method.localVariables) {
+			if (local.index < first) continue;
+			if (method.instructions.indexOf(local.start) > at || method.instructions.indexOf(local.end) <= at) continue;
+			for (LocalVariableNode other : found) if (other.index == local.index) return null;
+			found.add(local);
+		}
+		found.sort((a, b) -> Integer.compare(a.index, b.index));
+		return found;
+	}
+
+	private static LocalVariableNode onlyOfType(List<LocalVariableNode> frame, String internalName) {
+		LocalVariableNode only = null;
+		for (LocalVariableNode local : frame) {
+			if (!local.desc.equals("L" + internalName + ";")) continue;
+			if (only != null) return null;
+			only = local;
+		}
+		return only;
+	}
+
+	/** Whether {@code slot} is written exactly once, from {@code this.level.<name>(pos)}. */
+	private static boolean readFromLevel(MethodNode method, int slot, String name) {
+		if (!storedFrom(method, slot, Opcodes.ASTORE, LEVEL, name, "(Lnet/minecraft/core/BlockPos;)L"
+				+ (name.equals("getBlockState") ? STATE : BLOCK_ENTITY) + ";")) return false;
+		for (AbstractInsnNode insn : method.instructions) {
+			if (insn instanceof VarInsnNode store && store.getOpcode() == Opcodes.ASTORE && store.var == slot) {
+				AbstractInsnNode argument = real(real(store.getPrevious()).getPrevious());
+				return argument instanceof VarInsnNode pos && pos.getOpcode() == Opcodes.ALOAD && pos.var == 1;
+			}
+		}
+		return false;
+	}
+
+	/** Whether the only {@code opcode} store to {@code slot} takes the result of the named call straight off the stack. */
+	private static boolean storedFrom(MethodNode method, int slot, int opcode, String owner, String name, String desc) {
+		VarInsnNode only = null;
+		for (AbstractInsnNode insn : method.instructions) {
+			if (!(insn instanceof VarInsnNode store) || store.var != slot || store.getOpcode() != opcode) continue;
+			if (only != null) return false;
+			only = store;
+		}
+		return only != null && real(only.getPrevious()) instanceof MethodInsnNode call
+				&& call.owner.equals(owner) && call.name.equals(name) && call.desc.equals(desc);
+	}
+
+	/** {@code insn} or the nearest real instruction before it (labels, frames and line numbers skipped). */
+	private static AbstractInsnNode real(AbstractInsnNode insn) {
+		while (insn != null && insn.getOpcode() < 0) insn = insn.getPrevious();
+		return insn;
+	}
+
+	private static boolean only(AnnotationNode injector, String method) {
+		return MixinFit.stringList(MixinFit.value(injector, "method")).equals(List.of(method));
+	}
+
+	private static boolean grouped(MethodNode handler) {
+		for (List<AnnotationNode> annotations : java.util.Arrays.asList(handler.visibleAnnotations, handler.invisibleAnnotations)) {
+			if (annotations != null && annotations.stream().anyMatch(a -> GROUP.equals(a.desc))) return true;
+		}
+		return false;
+	}
+
+	private static MethodNode method(ClassNode owner, String name, String desc) {
+		if (owner.methods == null) return null;
+		for (MethodNode method : owner.methods) {
+			if (method.name.equals(name) && method.desc.equals(desc)) return method;
+		}
+		return null;
+	}
+
+	private static List<AnnotationNode> without(List<AnnotationNode> annotations, String desc) {
+		if (annotations == null) return null;
+		List<AnnotationNode> kept = new ArrayList<>();
+		for (AnnotationNode annotation : annotations) {
+			if (!desc.equals(annotation.desc)) kept.add(annotation);
+		}
+		return kept;
+	}
+}
