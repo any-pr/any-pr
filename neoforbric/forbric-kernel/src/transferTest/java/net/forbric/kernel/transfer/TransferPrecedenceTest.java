@@ -1,0 +1,104 @@
+package net.forbric.kernel.transfer;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.util.ArrayList;
+import java.util.List;
+
+import org.junit.jupiter.api.Test;
+
+import net.forbric.api.Ecosystem;
+import net.forbric.api.ModCatalog;
+import net.forbric.kernel.runtime.transfer.TransferPrecedence;
+import net.forbric.kernel.runtime.transfer.TransferPrecedence.Answer;
+import net.forbric.kernel.runtime.transfer.TransferPrecedence.Source;
+
+/**
+ * The owner of a block entity answers first, and Fabric's generic Container fallback (which wraps ANY Container,
+ * on every face, as a writable store) never speaks for a NeoForge machine. BlockTransferBridge asks
+ * TransferPrecedence.answer for every foreign query; these tests ask it the same way, through a Site that answers
+ * from a table instead of a loaded world.
+ */
+class TransferPrecedenceTest {
+	private static final String GENERIC = "Fabric's generic Container view", EXPLICIT = "Fabric provider for this block";
+
+	/**
+	 * What a consumer receives, given what each source would answer. Nulls are "nothing on this face". Fabric's
+	 * lookup is modelled as Fabric implements it (its providers for the block, then its generic fallbacks); which of
+	 * the two the bridge may ask is TransferPrecedence's decision, recorded in the Site's log.
+	 */
+	private static String resolve(Ecosystem consumer, Ecosystem owner, String neo, String fabricExplicit, String fabricGeneric) {
+		return resolve(consumer, new Table(owner, neo, fabricExplicit, fabricGeneric));
+	}
+	private static String resolve(Ecosystem consumer, Table site) {
+		Answer answer = TransferPrecedence.answer(consumer, site);
+		if (answer == null) return null;
+		return switch (answer) {
+			case NEOFORGE -> site.neo;
+			case FABRIC -> site.fabricExplicit != null ? site.fabricExplicit : site.fabricGeneric;
+			case FABRIC_EXPLICIT -> site.fabricExplicit;
+		};
+	}
+	/** A Site that answers from a table and records every question the bridge's precedence asked it, in order. */
+	static final class Table implements TransferPrecedence.Site {
+		final Ecosystem owner; final String neo, fabricExplicit, fabricGeneric;
+		final List<String> asked = new ArrayList<>();
+		Table(Ecosystem owner, String neo, String fabricExplicit, String fabricGeneric) {
+			this.owner = owner; this.neo = neo; this.fabricExplicit = fabricExplicit; this.fabricGeneric = fabricGeneric;
+		}
+		public Ecosystem owner() { return owner; }
+		public boolean neo() { asked.add("neo"); return neo != null; }
+		public boolean fabric(boolean generic) {
+			asked.add(generic ? "fabric" : "fabric-explicit");
+			return fabricExplicit != null || generic && fabricGeneric != null;
+		}
+	}
+
+	@Test void aNeoForgeConsumerNeverGetsFabricsGenericViewOfANeoForgeMachine() {
+		// The machine refused this face: nothing, as in NeoForge.
+		assertNull(resolve(Ecosystem.NEOFORGE, Ecosystem.NEOFORGE, null, null, GENERIC));
+		// An explicit Fabric provider for exactly that block is still a real provider.
+		assertEquals(EXPLICIT, resolve(Ecosystem.NEOFORGE, Ecosystem.NEOFORGE, null, EXPLICIT, GENERIC));
+	}
+	@Test void fabricModsAndVanillaContainersKeepFabricsGenericFallback() {
+		assertTrue(TransferPrecedence.fabricGenericAllowed(Ecosystem.FABRIC));
+		assertTrue(TransferPrecedence.fabricGenericAllowed(null));
+		assertFalse(TransferPrecedence.fabricGenericAllowed(Ecosystem.NEOFORGE));
+		assertEquals(GENERIC, resolve(Ecosystem.NEOFORGE, Ecosystem.FABRIC, "neo", null, GENERIC));
+		assertEquals(GENERIC, resolve(Ecosystem.NEOFORGE, null, "neo", null, GENERIC));
+	}
+	@Test void aFabricConsumerReachesAForeignOwnerBeforeFabricsGenericFallbacks() {
+		assertFalse(TransferPrecedence.fabricAsksBeforeGeneric(Ecosystem.FABRIC));
+		assertFalse(TransferPrecedence.fabricAsksBeforeGeneric(null));
+		assertTrue(TransferPrecedence.fabricAsksBeforeGeneric(Ecosystem.NEOFORGE));
+		assertEquals(List.of(Source.NEOFORGE), TransferPrecedence.order(Ecosystem.FABRIC, Ecosystem.NEOFORGE));
+		assertEquals(List.of(Source.NEOFORGE), TransferPrecedence.order(Ecosystem.FABRIC, null));
+		assertEquals(List.of(Source.FABRIC), TransferPrecedence.order(Ecosystem.NEOFORGE, Ecosystem.NEOFORGE));
+	}
+	/** The questions the bridge asks, in order: a later source is never consulted once an earlier one answered. */
+	@Test void eachConsumerAsksTheOwnersEcosystemFirstAndStopsAtTheFirstAnswer() {
+		// A NeoForge consumer of a NeoForge machine: its capability, then only Fabric's providers for the block.
+		Table neoMachine = new Table(Ecosystem.NEOFORGE, null, null, GENERIC);
+		assertNull(resolve(Ecosystem.NEOFORGE, neoMachine));
+		assertEquals(List.of("neo", "fabric-explicit"), neoMachine.asked);
+		// ...and of a Fabric-owned block entity: Fabric's whole lookup, which answers.
+		Table fabricChest = new Table(Ecosystem.FABRIC, "neo", null, GENERIC);
+		assertEquals(GENERIC, resolve(Ecosystem.NEOFORGE, fabricChest));
+		assertEquals(List.of("fabric"), fabricChest.asked);
+		// A Fabric consumer never asks Fabric through the bridge; a NeoForge owner's capability answers.
+		Table neoOwned = new Table(Ecosystem.NEOFORGE, null, EXPLICIT, GENERIC);
+		assertNull(resolve(Ecosystem.FABRIC, new Table(Ecosystem.NEOFORGE, null, null, GENERIC)));
+		assertEquals(EXPLICIT, resolve(Ecosystem.FABRIC, neoOwned));
+	}
+	@Test void theOwnerIsTheModThatRegisteredTheTypeNamespace() {
+		var mods = List.of(entry(Ecosystem.FABRIC, "forbrictransferfabric"), entry(Ecosystem.NEOFORGE, "forbrictransferneo"));
+		assertEquals(Ecosystem.NEOFORGE, TransferPrecedence.ownerOf("forbrictransferneo", mods));
+		assertEquals(Ecosystem.FABRIC, TransferPrecedence.ownerOf("forbrictransferfabric", mods));
+		assertNull(TransferPrecedence.ownerOf("minecraft", mods));
+		assertNull(TransferPrecedence.ownerOf("unknownmod", mods));
+		assertNull(TransferPrecedence.ownerOf(null, mods));
+	}
+	private static ModCatalog.Entry entry(Ecosystem ecosystem, String id) {
+		return new ModCatalog.Entry(ecosystem, id, id, "1", "", List.of(), id + ".jar", "", "");
+	}
+}
