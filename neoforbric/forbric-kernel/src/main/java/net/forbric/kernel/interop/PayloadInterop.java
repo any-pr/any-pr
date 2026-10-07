@@ -298,3 +298,303 @@ public final class PayloadInterop {
 			Method startNextTask = findMethod(listener.getClass(), "startNextTask");
 			if (startNextTask == null) return false;
 			startNextTask.setAccessible(true);
+			startNextTask.invoke(listener);
+			ForbricLog.debug("[Forbric] completed equivalent common-networking task " + requested
+					+ " while vanilla current task was " + current);
+			return true;
+		} catch (ReflectiveOperationException | RuntimeException e) {
+			ForbricLog.warn("[Forbric] could not complete equivalent common-networking task " + requested
+					+ " while current task was " + current, e);
+			return false;
+		}
+	}
+
+	private record MirrorRegistration(Object id, Object type, Object codec, Object protocol, Object flow,
+			String source) {
+	}
+
+	private static void mirrorMergedPayloadRegistries(ClassLoader loader) {
+		if (load(loader, NEO_NETWORK_REGISTRY) == null) {
+			probe(() -> "mirror pass: NeoForge's NetworkRegistry is not visible from " + loader + "; nothing to mirror into");
+			return;
+		}
+
+		int mirrored = 0;
+		List<MirrorRegistration> local = reflectPacketLocalRegistrations(loader);
+		List<MirrorRegistration> fabric = reflectFabricRegistrations(loader);
+		for (MirrorRegistration registration : local) {
+			if (mirrorPayloadIntoNeo(loader, registration)) mirrored++;
+		}
+		for (MirrorRegistration registration : fabric) {
+			if (mirrorPayloadIntoNeo(loader, registration)) mirrored++;
+		}
+		int mirroredCount = mirrored;
+		probe(() -> "mirror pass on " + loader + ": " + local.size() + " merged + " + fabric.size()
+				+ " Fabric registration(s) seen, " + mirroredCount + " mirrored into NeoForge");
+		if (mirrored > 0) {
+			ForbricLog.info("[Forbric] mirrored " + mirrored
+					+ " merged/Fabric custom payload registration(s) into NeoForge's decode registry");
+		}
+	}
+
+	private static List<MirrorRegistration> reflectPacketLocalRegistrations(ClassLoader loader) {
+		List<MirrorRegistration> out = new ArrayList<>();
+		collectPacketRegistrations(loader, CLIENTBOUND_CUSTOM_PAYLOAD_PACKET, "GAMEPLAY_STREAM_CODEC", out);
+		collectPacketRegistrations(loader, CLIENTBOUND_CUSTOM_PAYLOAD_PACKET, "CONFIG_STREAM_CODEC", out);
+		collectPacketRegistrations(loader, SERVERBOUND_CUSTOM_PAYLOAD_PACKET, "STREAM_CODEC", out);
+		collectPacketRegistrations(loader, SERVERBOUND_CUSTOM_PAYLOAD_PACKET, "CONFIG_STREAM_CODEC", out);
+		return out;
+	}
+
+	private static void collectPacketRegistrations(ClassLoader loader, String packetClassName, String fieldName,
+			List<MirrorRegistration> out) {
+		Class<?> packetClass = load(loader, packetClassName);
+		if (packetClass == null) return;
+		try {
+			Field streamCodec = packetClass.getField(fieldName);
+			streamCodec.setAccessible(true);
+			collectCodecRegistrations(streamCodec.get(null), "local/" + packetClass.getSimpleName() + "." + fieldName, out);
+		} catch (ReflectiveOperationException | RuntimeException e) {
+			ForbricLog.warn("[Forbric] could not inspect merged packet codec " + packetClassName + "::" + fieldName, e);
+		}
+	}
+
+	private static void collectCodecRegistrations(Object codecHolder, String source, List<MirrorRegistration> out) {
+		if (codecHolder == null) return;
+		Object idToType = fieldValue(codecHolder, "val$idToType");
+		Object protocol = fieldValue(codecHolder, "val$protocol");
+		Object flow = fieldValue(codecHolder, "val$packetFlow");
+		if (!(idToType instanceof Map<?, ?> map) || protocol == null || flow == null) return;
+
+		for (Map.Entry<?, ?> entry : map.entrySet()) {
+			Object typeAndCodec = entry.getValue();
+			Object type = typeAndCodecType(typeAndCodec);
+			Object codec = typeAndCodecCodec(typeAndCodec);
+			if (entry.getKey() == null || type == null || codec == null) continue;
+			out.add(new MirrorRegistration(entry.getKey(), type, codec, protocol, flow, source));
+		}
+	}
+
+	private static List<MirrorRegistration> reflectFabricRegistrations(ClassLoader loader) {
+		List<MirrorRegistration> out = new ArrayList<>();
+		Class<?> registryClass = load(loader, FABRIC_REGISTRY);
+		if (registryClass == null) return out;
+		Field packetTypesField = findField(registryClass, "packetTypes");
+		if (packetTypesField == null) return out;
+		packetTypesField.setAccessible(true);
+
+		for (String fieldName : List.of("SERVERBOUND_CONFIGURATION", "CLIENTBOUND_CONFIGURATION", "SERVERBOUND_PLAY",
+				"CLIENTBOUND_PLAY")) {
+			Object registry = staticField(registryClass, fieldName);
+			if (registry == null) continue;
+			try {
+				Object packetTypes = packetTypesField.get(registry);
+				if (!(packetTypes instanceof Map<?, ?> map)) continue;
+				Object protocol = invokeNoArg(registry, "getProtocol");
+				Object flow = invokeNoArg(registry, "getFlow");
+				for (Map.Entry<?, ?> entry : map.entrySet()) {
+					Object typeAndCodec = entry.getValue();
+					Object type = typeAndCodecType(typeAndCodec);
+					Object codec = typeAndCodecCodec(typeAndCodec);
+					if (entry.getKey() == null || type == null || codec == null || protocol == null || flow == null) continue;
+					out.add(new MirrorRegistration(entry.getKey(), type, codec, protocol, flow, "fabric/" + fieldName));
+				}
+			} catch (ReflectiveOperationException | RuntimeException e) {
+				ForbricLog.warn("[Forbric] could not inspect Fabric payload registry " + fieldName, e);
+			}
+		}
+		return out;
+	}
+
+	private static boolean mirrorPayloadIntoNeo(ClassLoader loader, MirrorRegistration registration) {
+		Class<?> registryClass = load(loader, NEO_NETWORK_REGISTRY);
+		Class<?> payloadRegistrationClass = load(loader, NEO_PAYLOAD_REGISTRATION);
+		if (registryClass == null || payloadRegistrationClass == null) return false;
+		try {
+			Field registrationsField = findField(registryClass, "PAYLOAD_REGISTRATIONS");
+			Field clientboundHandlersField = findField(registryClass, "CLIENTBOUND_HANDLERS");
+			Field serverboundHandlersField = findField(registryClass, "SERVERBOUND_HANDLERS");
+			if (registrationsField == null || clientboundHandlersField == null || serverboundHandlersField == null) return false;
+			registrationsField.setAccessible(true);
+			clientboundHandlersField.setAccessible(true);
+			serverboundHandlersField.setAccessible(true);
+
+				@SuppressWarnings("unchecked")
+				Map<Object, Map<Object, Object>> registrations = (Map<Object, Map<Object, Object>>) registrationsField.get(null);
+				Map<Object, Object> protocolMap = registrations.get(registration.protocol());
+				if (protocolMap == null) return false;
+
+				Constructor<?> ctor = payloadRegistrationClass.getConstructor(
+						load(loader, "net.minecraft.network.protocol.common.custom.CustomPacketPayload$Type"),
+					load(loader, "net.minecraft.network.codec.StreamCodec"),
+					List.class,
+					Optional.class,
+					String.class,
+					boolean.class);
+				Object payloadRegistration = ctor.newInstance(registration.type(), registration.codec(),
+						List.of(registration.protocol()), Optional.of(registration.flow()),
+						FORBRIC_MIRROR_VERSION + ":" + registration.source(), Boolean.TRUE);
+				Object existing = protocolMap.get(registration.id());
+				if (existing != null) {
+					if (!mergeNeoPayloadFlowIfNeeded(protocolMap, registration, existing, ctor)) return false;
+					mirrorNoopHandler(loader, clientboundHandlersField, serverboundHandlersField, registration);
+					return true;
+				}
+				protocolMap.put(registration.id(), payloadRegistration);
+				mirrorNoopHandler(loader, clientboundHandlersField, serverboundHandlersField, registration);
+				return true;
+			} catch (UnsupportedOperationException e) {
+				return false;
+			} catch (ReflectiveOperationException | RuntimeException e) {
+				ForbricLog.warn("[Forbric] could not mirror payload " + registration.id() + " into NeoForge", e);
+				return false;
+		}
+	}
+
+	private static boolean mergeNeoPayloadFlowIfNeeded(Map<Object, Object> protocolMap, MirrorRegistration registration,
+			Object existing, Constructor<?> ctor) throws ReflectiveOperationException {
+		Object existingFlow = invokeNoArg(existing, "flow");
+		if (!(existingFlow instanceof Optional<?> optional) || optional.isEmpty()) return false;
+		if (optional.get() == registration.flow()) return false;
+
+		Object merged = ctor.newInstance(invokeNoArg(existing, "type"), invokeNoArg(existing, "codec"),
+				List.of(registration.protocol()), Optional.empty(), FORBRIC_MIRROR_VERSION + ":" + registration.source(),
+				Boolean.TRUE);
+		protocolMap.put(registration.id(), merged);
+		return true;
+	}
+
+	private static void mirrorNoopHandler(ClassLoader loader, Field clientboundHandlersField, Field serverboundHandlersField,
+			MirrorRegistration registration) throws ReflectiveOperationException {
+		Class<?> handlerClass = load(loader, "net.neoforged.neoforge.network.handling.IPayloadHandler");
+		if (handlerClass == null) return;
+		Object handler = Proxy.newProxyInstance(loader, new Class<?>[] { handlerClass }, (proxy, method, args) -> null);
+
+			Field targetField = "CLIENTBOUND".equals(enumName(registration.flow())) ? clientboundHandlersField : serverboundHandlersField;
+			@SuppressWarnings("unchecked")
+			Map<Object, Map<Object, Object>> handlers = (Map<Object, Map<Object, Object>>) targetField.get(null);
+			Map<Object, Object> protocolHandlers = handlers.get(registration.protocol());
+			if (protocolHandlers == null) return;
+			protocolHandlers.putIfAbsent(registration.id(), handler);
+	}
+
+	private static Object mirrorNeoPayloadIntoFabricRegistry(ClassLoader loader, Object id, Object protocol, Object packetFlow) {
+		Object registration = neoRegistration(loader, id, protocol, packetFlow);
+		if (registration == null) return null;
+		Class<?> registryClass = load(loader, FABRIC_REGISTRY);
+		if (registryClass == null) return null;
+
+		String field = fabricRegistryField(protocol, packetFlow);
+		if (field == null) return null;
+		Object registry = staticField(registryClass, field);
+		if (registry == null) return null;
+		Object existing = invoke(registry, "get", id);
+		if (existing != null) return existing;
+
+		Object type = invokeNoArg(registration, "type");
+		Object codec = invokeNoArg(registration, "codec");
+		if (type == null || codec == null) return null;
+		Object mirrored = invoke(registry, "register", type, codec);
+		return mirrored != null ? mirrored : invoke(registry, "get", id);
+	}
+
+	private static Object neoRegistration(ClassLoader loader, Object id, Object protocol, Object packetFlow) {
+		Class<?> registryClass = load(loader, NEO_NETWORK_REGISTRY);
+		if (registryClass == null) return null;
+		try {
+			Field registrationsField = findField(registryClass, "PAYLOAD_REGISTRATIONS");
+			if (registrationsField == null) return null;
+			registrationsField.setAccessible(true);
+			@SuppressWarnings("unchecked")
+			Map<Object, Map<Object, Object>> registrations = (Map<Object, Map<Object, Object>>) registrationsField.get(null);
+			Map<Object, Object> protocolMap = registrations.get(protocol);
+			if (protocolMap == null) {
+				probe(() -> "  neo: no registrations at all for protocol " + protocol + " (known: " + registrations.keySet() + ")");
+				return null;
+			}
+			Object registration = protocolMap.get(id);
+			if (registration == null) {
+				probe(() -> "  neo: " + protocolMap.size() + " registration(s) under " + protocol + ", none for " + id);
+				return null;
+			}
+			Object expectedFlow = invokeNoArg(registration, "flow");
+			if (expectedFlow instanceof Optional<?> optional && optional.isPresent() && optional.get() != packetFlow) {
+				probe(() -> "  neo: " + id + " is registered for flow " + optional.get() + ", asked for " + packetFlow);
+				return null;
+			}
+			return registration;
+		} catch (ReflectiveOperationException | RuntimeException e) {
+			probe(() -> "  neo: registry lookup threw " + e);
+			return null;
+		}
+	}
+
+	private static final class CodecInvocationHandler implements InvocationHandler {
+		private final CandidateSet candidates;
+
+		/**
+		 * The codec's own exception, not reflection's wrapper of it: an encoder failure used to surface as
+		 * UndeclaredThrowableException → InvocationTargetException → the real cause, three frames deep.
+		 */
+		private static Object forward(Method method, Object codec, Object[] args) throws Throwable {
+			try {
+				return method.invoke(codec, args);
+			} catch (java.lang.reflect.InvocationTargetException thrown) {
+				throw thrown.getCause() == null ? thrown : thrown.getCause();
+			}
+		}
+
+		private CodecInvocationHandler(CandidateSet candidates) {
+			this.candidates = candidates;
+		}
+
+		@Override
+		public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+			String name = method.getName();
+			if ("encode".equals(name) && args != null && args.length == 2) {
+				Object codec = candidates.selectEncode(args[1]);
+				if (codec == null) throw new IllegalStateException("No custom payload codec for " + candidates.id);
+				return forward(method, codec, args);
+			}
+			if ("decode".equals(name) && args != null && args.length == 1) {
+				Object codec = candidates.selectDecode();
+				if (codec == null) throw new IllegalStateException("No custom payload codec for " + candidates.id);
+				return forward(method, codec, args);
+			}
+			if ("cast".equals(name) && (args == null || args.length == 0)) return proxy;
+			if ("toString".equals(name) && (args == null || args.length == 0)) {
+				return "ForbricCustomPayloadCodec[" + candidates.id + "]";
+			}
+			if ("hashCode".equals(name) && (args == null || args.length == 0)) return System.identityHashCode(proxy);
+			if ("equals".equals(name) && args != null && args.length == 1) return proxy == args[0];
+			throw new UnsupportedOperationException("Unsupported StreamCodec method: " + method);
+		}
+	}
+
+	private static final class CandidateSet {
+		private final Object id;
+		private final Object local;
+		private final Object fabricType;
+		private final Object fabric;
+		private final Object neo;
+		private final Object fallback;
+
+		private CandidateSet(Object id, Object local, Object fabricEntry, Object fabric, Object neo,
+				Object fallback) {
+			this.id = id;
+			this.local = local;
+			this.fabricType = typeAndCodecType(fabricEntry);
+			this.fabric = fabric;
+			this.neo = neo;
+			this.fallback = fallback;
+		}
+
+		private Object selectEncode(Object payload) {
+			if (payload != null) {
+				String payloadClass = payload.getClass().getName();
+				if (payloadClass.startsWith("net.neoforged.")) return firstNonNull(neo, local, fabric, fallback);
+				if (payloadClass.startsWith("net.fabricmc.")) return firstNonNull(fabric, local, neo, fallback);
+				Object payloadType = invokeNoArg(payload, "type");
+				if (fabric != null && fabricType != null && fabricType.equals(payloadType)) return fabric;
+				if (fabric != null && !payloadClass.startsWith("net.neoforged.")) return fabric;
+			}
