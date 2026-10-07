@@ -298,3 +298,57 @@ class MergedBaseKeyMappingFaceTest {
 				urls.add(jar.toUri().toURL());
 			}
 		}
+		return new java.net.URLClassLoader(urls.toArray(new java.net.URL[0]),
+				ClassLoader.getPlatformClassLoader());
+	}
+
+	/** The same library tree {@code build.gradle} resolves brigadier from. */
+	private static Path mcLibraries() {
+		String configured = System.getProperty("forbric.mcLibraries");
+		Path root = configured != null ? Path.of(configured) : TestFixtures.minecraftDir().resolve("libraries");
+		return Files.isDirectory(root) ? root : null;
+	}
+
+	private static Object enumConstant(Class<?> type, String name) throws Exception {
+		return type.getField(name).get(null);
+	}
+
+	private static Object enumOrField(Class<?> type, String name) {
+		try {
+			return type.getField(name).get(null);
+		} catch (ReflectiveOperationException absent) {
+			return null;
+		}
+	}
+
+	private static String name(Object enumConstant) throws Exception {
+		return (String) enumConstant.getClass().getMethod("name").invoke(enumConstant);
+	}
+
+	private static MethodNode find(ClassNode node, String name, String desc) {
+		for (MethodNode m : node.methods) {
+			if (m.name.equals(name) && m.desc.equals(desc)) return m;
+		}
+		return null;
+	}
+
+	private static ClassNode repaired() throws IOException {
+		byte[] out = new ForbricMergedBaseCompatTransformer()
+				.transform("net.minecraft.client.KeyMapping", original(), null);
+		ClassNode node = new ClassNode();
+		new ClassReader(out).accept(node, 0);
+		return node;
+	}
+
+	private static byte[] original() throws IOException {
+		byte[] bytes = TestFixtures.requireEntry(Fixture.STAGED, MERGED, KEY_MAPPING + ".class");
+		ClassNode node = new ClassNode();
+		new ClassReader(bytes).accept(node, ClassReader.SKIP_CODE);
+		boolean split = node.fields.stream().anyMatch(f -> "keyConflictContext".equals(f.name)
+						&& MF_CONTEXT.equals(f.desc))
+				&& node.fields.stream().anyMatch(f -> "keyConflictContext".equals(f.name)
+						&& NEO_CONTEXT.equals(f.desc));
+		assertTrue(split, "content drift: this base no longer splits KeyMapping's conflict context");
+		return bytes;
+	}
+}
