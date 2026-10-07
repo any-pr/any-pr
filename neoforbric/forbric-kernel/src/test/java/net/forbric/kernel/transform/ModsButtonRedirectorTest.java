@@ -298,3 +298,199 @@ class ModsButtonRedirectorTest {
 		for (Map.Entry<String, byte[]> e : carriers().entrySet()) {
 			if (constants(parse(e.getValue())).contains(marker)) return e;
 		}
+		throw new AssertionError("content drift: no class in the staged jars carries " + marker);
+	}
+
+	/**
+	 * Every class in the staged jars that mentions a mods-button marker, excluding the screens being replaced.
+	 * Scanned once: the merged base alone is tens of thousands of entries.
+	 */
+	private static Map<String, byte[]> carriers() throws Exception {
+		if (CARRIERS != null) return CARRIERS;
+		TestFixtures.require(Fixture.STAGED, Files.isRegularFile(MERGED_BASE) && Files.isRegularFile(NEO_RUNTIME),
+				"staged jars absent");
+		Map<String, byte[]> found = new TreeMap<>();
+		for (Path jar : List.of(MERGED_BASE, NEO_RUNTIME)) {
+			try (ZipFile zip = new ZipFile(jar.toFile())) {
+				for (ZipEntry entry : zip.stream().toList()) {
+					if (!entry.getName().endsWith(".class")) continue;
+					String internal = entry.getName().substring(0, entry.getName().length() - 6);
+					if (NEO.equals(internal)) continue;
+					byte[] bytes;
+					try (InputStream in = zip.getInputStream(entry)) {
+						bytes = in.readAllBytes();
+					}
+					String raw = new String(bytes, java.nio.charset.StandardCharsets.ISO_8859_1);
+					if (raw.contains("ModListScreen") || raw.contains(ModsButtonRedirector.FML_MODS_KEY)
+							|| raw.contains(ModsButtonRedirector.FML_SPRITE_PATH)) {
+						found.putIfAbsent(internal, bytes);
+					}
+				}
+			}
+		}
+		assertFalse(found.isEmpty(), "content drift: no class in the staged jars opens a mod list or carries the mods button");
+		CARRIERS = found;
+		return found;
+	}
+
+	private static Map<String, byte[]> CARRIERS;
+
+	private static byte[] transform(String internal, byte[] bytes) {
+		return new ModsButtonRedirector().transform(internal.replace('/', '.'), bytes, null);
+	}
+
+	private static ClassNode parse(byte[] bytes) {
+		ClassNode node = new ClassNode();
+		new ClassReader(bytes).accept(node, 0);
+		return node;
+	}
+
+	private static byte[] readClass(Path jar, String entry) throws Exception {
+		try (ZipFile zip = new ZipFile(jar.toFile())) {
+			ZipEntry e = zip.getEntry(entry);
+			assertTrue(e != null, entry + " must be in " + jar.getFileName());
+			try (InputStream in = zip.getInputStream(e)) {
+				return in.readAllBytes();
+			}
+		}
+	}
+
+	/**
+	 * The reject path, pinned directly because it is invisible from behaviour: a class with no marker and a class
+	 * that was parsed and found to need nothing both come back byte-identical. Only the COST differs, and this is
+	 * the only place that difference is assertable.
+	 */
+	@org.junit.jupiter.api.Test
+	void aClassMentioningNoneOfTheMarkersIsRejectedFromItsBytes() {
+		org.objectweb.asm.ClassWriter cw = new org.objectweb.asm.ClassWriter(0);
+		cw.visit(Opcodes.V17, Opcodes.ACC_PUBLIC, "com/example/Unrelated", null, "java/lang/Object", null);
+		cw.visitEnd();
+
+		assertFalse(ModsButtonRedirector.carriesAMarker(cw.toByteArray()));
+		assertFalse(ModsButtonRedirector.carriesAMarker(new byte[0]));
+		assertFalse(ModsButtonRedirector.carriesAMarker(null));
+	}
+
+	/**
+	 * A mod built against a NeoForge older than 26.2.0.88 still constructs the name NeoForge has since moved, and
+	 * on this instance that class does not exist. titlescreenfixer's mixin puts exactly this constructor inside
+	 * {@code TitleScreen}, so the client died in {@code Minecraft.<init>} with NoClassDefFoundError before drawing
+	 * anything — a whole dead client for one renamed class. Re-pointing it costs nothing: every construction of it
+	 * was going to open a mods list, and the kernel's is the one this instance wants.
+	 */
+	@org.junit.jupiter.api.Test
+	void theNameNeoForgeMovedIsRePointedToo() {
+		String moved = "net/neoforged/neoforge/client/gui/ModListScreen";
+		org.objectweb.asm.ClassWriter cw = new org.objectweb.asm.ClassWriter(0);
+		cw.visit(Opcodes.V17, Opcodes.ACC_PUBLIC, "com/example/OldMod", null, "java/lang/Object", null);
+		org.objectweb.asm.MethodVisitor mv = cw.visitMethod(Opcodes.ACC_PUBLIC, "open",
+				"(Lnet/minecraft/client/gui/screens/Screen;)V", null, null);
+		mv.visitCode();
+		mv.visitTypeInsn(Opcodes.NEW, moved);
+		mv.visitInsn(Opcodes.DUP);
+		mv.visitVarInsn(Opcodes.ALOAD, 1);
+		mv.visitMethodInsn(Opcodes.INVOKESPECIAL, moved, "<init>",
+				"(Lnet/minecraft/client/gui/screens/Screen;)V", false);
+		mv.visitInsn(Opcodes.POP);
+		mv.visitInsn(Opcodes.RETURN);
+		mv.visitMaxs(3, 2);
+		mv.visitEnd();
+		cw.visitEnd();
+
+		ClassNode out = parse(transform("com/example/OldMod", cw.toByteArray()));
+		for (MethodNode method : out.methods) {
+			for (AbstractInsnNode insn : method.instructions) {
+				if (insn instanceof TypeInsnNode type && type.getOpcode() == Opcodes.NEW) {
+					assertEquals(ModsButtonRedirector.KERNEL_SCREEN, type.desc,
+							"the moved name must be re-pointed at the kernel's list, not left to NoClassDefFoundError");
+				}
+				if (insn instanceof MethodInsnNode call && "<init>".equals(call.name)) {
+					assertEquals(ModsButtonRedirector.KERNEL_SCREEN, call.owner,
+							"and so must its constructor, or NEW and INVOKESPECIAL disagree");
+				}
+			}
+		}
+	}
+
+	@org.junit.jupiter.api.Test
+	void aClassNamingTheScreenIsLetThrough() {
+		// A false negative here silently drops the redirect, which is far worse than the scan it saves.
+		org.objectweb.asm.ClassWriter cw = new org.objectweb.asm.ClassWriter(0);
+		cw.visit(Opcodes.V17, Opcodes.ACC_PUBLIC, "com/example/Pause", null, "java/lang/Object", null);
+		cw.visitField(Opcodes.ACC_STATIC, "screen", "Lnet/minecraftforge/client/gui/ModListScreen;", null, null)
+				.visitEnd();
+		cw.visitEnd();
+
+		assertTrue(ModsButtonRedirector.carriesAMarker(cw.toByteArray()));
+	}
+
+	@Test
+	void aClassThatCarriesTheLabelButBuildsNoScreenIsNotToldItOpensTheUnifiedList() {
+		// The failure this asserts against is one the tree has already had: TitleScreen carried the label while
+		// the real construction had moved into NeoForge's own ModsButton widget, and the redirector printed
+		// "now opens the unified list" with "0 construction site(s) re-pointed" in the same sentence. A
+		// relabelled button that still opens one family's list is worse than an untouched one, because it now
+		// tells the player something untrue.
+		byte[] labelOnly = labelOnlyClass();
+
+		String log = capture(() -> assertNotNull(transform("forbric/test/LabelOnly", labelOnly)));
+
+		assertFalse(log.contains("now opens the unified list"),
+				"nothing re-pointed, so the button does not open the unified list: " + log);
+		assertTrue(log.contains("NO construction site"), "and the report has to say which half is missing: " + log);
+	}
+
+	@Test
+	void aClassThatBuildsTheScreenAndCarriesTheLabelIsToldBothHalvesLanded() throws Exception {
+		// The other direction, so the assertion above cannot pass by the log simply never saying anything. Uses
+		// the real carrier rather than a fixture, because that is where both halves genuinely coexist.
+		Map<String, byte[]> carriers = carriers();
+
+		Map.Entry<String, byte[]> both = null;
+		for (Map.Entry<String, byte[]> candidate : carriers.entrySet()) {
+			ClassNode node = parse(candidate.getValue());
+			if (!opensAFamilysList(node).isEmpty() && constants(node).contains(ModsButtonRedirector.FML_MODS_KEY)) {
+				both = candidate;
+				break;
+			}
+		}
+		assertNotNull(both, "content drift: no staged class carries both the label and a construction site");
+
+		final Map.Entry<String, byte[]> target = both;
+		String log = capture(() -> transform(target.getKey(), target.getValue()));
+		assertTrue(log.contains("now opens the unified list"),
+				"both halves landed, so the full sentence is the true one: " + log);
+	}
+
+	private static byte[] labelOnlyClass() {
+		org.objectweb.asm.ClassWriter cw = new org.objectweb.asm.ClassWriter(0);
+		cw.visit(Opcodes.V21, Opcodes.ACC_PUBLIC, "forbric/test/LabelOnly", null, "java/lang/Object", null);
+		org.objectweb.asm.MethodVisitor mv =
+				cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "label", "()Ljava/lang/Object;", null, null);
+		mv.visitCode();
+		mv.visitLdcInsn(ModsButtonRedirector.FML_MODS_KEY);
+		mv.visitMethodInsn(Opcodes.INVOKESTATIC, "net/minecraft/network/chat/Component", "translatable",
+				"(Ljava/lang/String;)Lnet/minecraft/network/chat/MutableComponent;", false);
+		mv.visitInsn(Opcodes.ARETURN);
+		mv.visitMaxs(1, 0);
+		mv.visitEnd();
+		cw.visitEnd();
+		return cw.toByteArray();
+	}
+
+	private static String capture(Runnable body) {
+		java.io.PrintStream originalOut = System.out;
+		java.io.PrintStream originalErr = System.err;
+		java.io.ByteArrayOutputStream buffer = new java.io.ByteArrayOutputStream();
+		java.io.PrintStream sink = new java.io.PrintStream(buffer, true, java.nio.charset.StandardCharsets.UTF_8);
+		System.setOut(sink);
+		System.setErr(sink);
+		try {
+			body.run();
+		} finally {
+			System.setOut(originalOut);
+			System.setErr(originalErr);
+		}
+		return buffer.toString(java.nio.charset.StandardCharsets.UTF_8);
+	}
+}
