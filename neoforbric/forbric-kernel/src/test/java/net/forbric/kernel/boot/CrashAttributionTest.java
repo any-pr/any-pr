@@ -298,3 +298,180 @@ class CrashAttributionTest {
 
 		String zh = CrashAttribution.render(true, "crash-2026-09-20_17.17.35-client.txt", one);
 		assertTrue(zh.contains("Sodium 0.9.0"), zh);
+		assertTrue(zh.contains("mods 文件夹"), zh);
+		assertTrue(zh.contains("只是个猜测"), zh);
+	}
+
+	@Test
+	void namingNothingIsSaidOutLoudRatherThanLeftBlank() {
+		// A crash with no mod in it is a real answer -- it may not be a mod at all -- and a file that just
+		// stopped would read as broken.
+		String en = CrashAttribution.render(false, "crash.txt", List.of());
+		assertTrue(en.contains("No mod you installed appears in this crash"), en);
+		assertTrue(CrashAttribution.render(true, "crash.txt", List.of()).contains("说不准是哪个 mod"));
+	}
+
+	@Test
+	void theNewestReportIsTheOneThisRunWrote() throws Exception {
+		Path dir = tmp.resolve("crash-reports");
+		Files.createDirectories(dir);
+		Path old = Files.writeString(dir.resolve("crash-old.txt"), "old");
+		Path recent = Files.writeString(dir.resolve("crash-new.txt"), "new");
+		Files.setLastModifiedTime(old, java.nio.file.attribute.FileTime.fromMillis(1_000_000));
+		Files.setLastModifiedTime(recent, java.nio.file.attribute.FileTime.fromMillis(2_000_000));
+
+		assertEquals(recent, CrashAttribution.crashReportFromThisRun(dir, 1_500_000));
+		// A rundir that never crashed has no directory at all, and that is not an error.
+		assertEquals(null, CrashAttribution.crashReportFromThisRun(tmp.resolve("nope"), 0));
+	}
+
+	@Test
+	void aCrashReportFromAnEarlierRunIsNotThisRunsCrash() throws Exception {
+		// A rundir keeps every crash report it has ever produced and nothing deletes them. Taking "the newest
+		// one" would make every CLEAN quit announce last week's crash — worse than silence, because it teaches
+		// the player that the file means nothing.
+		Path dir = tmp.resolve("crash-reports");
+		Files.createDirectories(dir);
+		Path lastWeek = Files.writeString(dir.resolve("crash-old.txt"), "old");
+		Files.setLastModifiedTime(lastWeek, java.nio.file.attribute.FileTime.fromMillis(1_000_000));
+
+		assertEquals(null, CrashAttribution.crashReportFromThisRun(dir, 2_000_000),
+				"this run started after that report was written");
+	}
+
+	@Test
+	void theWholePathWritesAFileBesideTheCrashReport() throws Exception {
+		// The write path end to end, on a real crash report, without needing to crash a game: stage it in a
+		// rundir, say the run started before it, and run the shutdown hook's body.
+		Path dir = tmp.resolve("crash-reports");
+		Files.createDirectories(dir);
+		Path staged = Files.writeString(dir.resolve(CORE_LIB), report(CORE_LIB));
+		Files.setLastModifiedTime(staged, java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis()));
+		ModCatalog.publish(List.of(mod("supermartijn642corelib", "SuperMartijn642's Core Lib",
+				"supermartijn642corelib-1.1.24a-forge-mc26.2.jar")));
+
+		CrashAttribution.setRunDir(tmp, 0);
+		CrashAttribution.run();
+
+		Path written = tmp.resolve(".forbric-kernel").resolve("crash-analysis.txt");
+		assertTrue(Files.isRegularFile(written), "nothing was written");
+		String text = Files.readString(written, StandardCharsets.UTF_8);
+		assertTrue(text.contains("SuperMartijn642's Core Lib"), text);
+		assertTrue(text.contains(CORE_LIB), "it must point at the real report: " + text);
+	}
+
+	@Test
+	void aRunThatDidNotCrashWritesNothing() throws Exception {
+		ModCatalog.publish(List.of(mod("sodium", "Sodium", "sodium.jar")));
+		CrashAttribution.setRunDir(tmp, 0);
+		CrashAttribution.run();
+
+		assertFalse(Files.exists(tmp.resolve(".forbric-kernel").resolve("crash-analysis.txt")),
+				"a file that appears only when something went wrong is a file whose presence means something");
+		assertFalse(Files.exists(tmp.resolve(".forbric-kernel").resolve(CrashAttribution.JSON)),
+				"and the next launch must not be offered anything about a crash that did not happen");
+	}
+
+	@Test
+	void theWholePathAlsoWritesTheSuspectsForTheNextLaunch() throws Exception {
+		Path dir = tmp.resolve("crash-reports");
+		Files.createDirectories(dir);
+		Files.writeString(dir.resolve("crash-clash.txt"), CLASH_REPORT);
+		publishClash();
+
+		CrashAttribution.setRunDir(tmp, 0);
+		CrashAttribution.run();
+
+		String json = Files.readString(tmp.resolve(".forbric-kernel").resolve(CrashAttribution.JSON), StandardCharsets.UTF_8);
+		var parsed = com.electronwill.nightconfig.json.JsonFormat.fancyInstance().createParser()
+				.parse(new java.io.StringReader(json));
+		assertEquals(1, ((Number) parsed.get("schema")).intValue());
+		assertEquals("crash-clash.txt", parsed.get("report"));
+		assertEquals(Boolean.TRUE, parsed.get("clash"));
+		List<?> suspects = parsed.get("suspects");
+		assertEquals(3, suspects.size(), json);
+		var first = (com.electronwill.nightconfig.core.UnmodifiableConfig) suspects.get(0);
+		assertEquals("chloride", first.get("modId"));
+		assertEquals("Chloride", first.get("name"));
+		assertEquals("chloride-NEOFORGE-mc26.2-v1.8.1.jar", first.get("jar"));
+		assertEquals(CrashAttribution.CLASH, first.get("reason"));
+		assertTrue(((Number) first.get("depth")).intValue() > 0, json);
+	}
+
+	@Test
+	void aClashIsStartedWithoutEverySideButTheFirstNamed() {
+		publishClash();
+		List<CrashAttribution.Suspect> suspects = CrashAttribution.suspects(CLASH_REPORT);
+
+		// Chloride is kept, as the advice above says; Sodium threw the error but is not a side of the clash.
+		assertEquals(List.of("cwb-4.1.0+26.2.jar"), CrashAttribution.startWithout(suspects));
+		String en = CrashAttribution.render(false, "crash.txt", suspects);
+		assertTrue(en.contains("with these lines in forbric-disabled.txt") && en.contains("\n    cwb-4.1.0+26.2.jar\n"), en);
+		assertFalse(en.contains("    chloride-NEOFORGE-mc26.2-v1.8.1.jar"), en);
+		assertTrue(en.contains("delete a line to turn that mod back on"), en);
+		String zh = CrashAttribution.render(true, "crash.txt", suspects);
+		assertTrue(zh.contains("forbric-disabled.txt") && zh.contains("\n    cwb-4.1.0+26.2.jar\n"), zh);
+		assertTrue(zh.contains("删掉一行就能重新启用"), zh);
+	}
+
+	@Test
+	void otherwiseEverySuspectsJarIsListedOnce() {
+		ModCatalog.publish(List.of(
+				mod("fabric-api", "Fabric API", "fabric-api-0.161.jar"),
+				new ModCatalog.Entry(Ecosystem.FABRIC, "fabric-api-base", "Fabric API Base", "1.0", "", List.of(),
+						"fabric-api-base-1.0.jar", "", "fabric-api"),
+				new ModCatalog.Entry(Ecosystem.NEOFORGE, "orphan", "Orphan", "1.0", "", List.of(), "orphan.jar", "", "?"),
+				mod("sodium", "Sodium", "sodium-fabric-0.9.0.jar")));
+		String trace = "java.lang.RuntimeException\n"
+				+ "\tat forbric/a.B.c(B.java:1) ~[fabric-api-base-1.0.jar:?] {}\n"
+				+ "\tat forbric/a.B.c(B.java:1) ~[orphan.jar:?] {}\n"
+				+ "\tat forbric/a.B.c(B.java:1) ~[sodium-fabric-0.9.0.jar:?] {}\n"
+				+ "\tat forbric/a.B.c(B.java:1) ~[fabric-api-0.161.jar:?] {}\n";
+
+		List<CrashAttribution.Suspect> suspects = CrashAttribution.suspects(trace);
+
+		// A bundled module has no line of its own: its file is extracted, not installed. Switching it off means
+		// switching off the jar that carries it, and a carrier nobody can name contributes no line at all.
+		assertEquals("fabric-api-0.161.jar", suspects.get(0).jar());
+		assertEquals("", suspects.get(1).jar());
+		assertEquals(List.of("fabric-api-0.161.jar", "sodium-fabric-0.9.0.jar"), CrashAttribution.startWithout(suspects));
+	}
+
+	@Test
+	void namingNothingSuggestsNoLines() {
+		assertEquals(List.of(), CrashAttribution.startWithout(List.of()));
+		assertFalse(CrashAttribution.render(false, "crash.txt", List.of()).contains("forbric-disabled.txt"));
+		String json = CrashAttribution.json("crash.txt", List.of());
+		assertTrue(json.contains("\"suspects\":[]") && json.contains("\"clash\":false"), json);
+	}
+
+	/** Verbatim head of a real report: chloride + Cubes Without Borders + sodium-neoforge on this loader. */
+	private static final String CLASH_REPORT = "---- Minecraft Crash Report ----\n"
+			+ "Description: Failed to build config options\n\n"
+			+ "java.lang.IllegalArgumentException: Multiple overrides for option 'sodium:general.fullscreen_mode'! "
+			+ "Sources: chloride and cwb\n"
+			+ "\tat forbric/net.caffeinemc.mods.sodium.client.config.structure.Config.applyOptionChanges(Config.java:131) "
+			+ "~[net.caffeinemc.sodium-neoforge-0.9.2+mc26.2-mod.jar:?] {}\n"
+			+ "\tat forbric/net.minecraft.client.Minecraft.handler$zca000$sodium$postInit(Minecraft.java:5117) "
+			+ "[patched-mc-merged-26.2.jar:?] {}\n";
+
+	private static void publishClash() {
+		ModCatalog.publish(List.of(
+				mod("chloride", "Chloride", "chloride-NEOFORGE-mc26.2-v1.8.1.jar"),
+				mod("cwb", "Cubes Without Borders", "cwb-4.1.0+26.2.jar"),
+				mod("sodium", "Sodium", "sodium-neoforge-0.9.2+mc26.2.jar")));
+	}
+
+	@Test
+	void theSwitchTurnsItOff() {
+		String before = System.getProperty(CrashAttribution.SWITCH);
+		try {
+			assertTrue(CrashAttribution.enabled(), "on by default: the player who needs this passes no flags");
+			System.setProperty(CrashAttribution.SWITCH, "off");
+			assertFalse(CrashAttribution.enabled());
+		} finally {
+			if (before == null) System.clearProperty(CrashAttribution.SWITCH);
+			else System.setProperty(CrashAttribution.SWITCH, before);
+		}
+	}
+}
