@@ -598,3 +598,303 @@ public final class KernelLifecycle {
 			buses.addAll(registrationBuses(mods, KernelModLoader.classlessNeoMods().values()));
 
 			// Capture the post-Bootstrap vanilla registry state for NEOFORGE only, before the window opens. NeoForge's
+			// unfreeze clear-callback empties its blockstate→id map, and BlockCallbacks.onBake only re-adds blocks that
+			// onAdd saw during the window (none of vanilla's) — so without a snapshot to restore from, the map stays
+			// empty and the first clientbound block_update cannot encode ("Can't find id for Block{minecraft:lava}").
+			// NOT MinecraftForge's: its vanillaSnapshot LOCKS the vanilla wrappers, and every later register in this
+			// window then throws "Can not register to a locked registry" (gate-m1 RED).
+			invokeGameDataOn(cl, ForeignType.GAME_DATA.binary(Ecosystem.NEOFORGE), "vanillaSnapshot");
+			unfreeze(cl);
+			// From here the registries are OPEN, and everything that closes them again lives in the finally below.
+			// It used to live inline at the end of this try, so anything that threw in between — a Class.forName for
+			// a carrier type that was renamed, NeoForgeRegistries failing to initialise, an Error escaping the
+			// baseline or the Fabric entrypoints — left every registry writable for the rest of the run and skipped
+			// linkBlockItems, the blockstate-id rebuild, the creative-tab sort and the registriesLoaded latch. The
+			// symptoms are the ones this file already documents one by one: Block.asItem() returns AIR so a mod's
+			// creative tab is empty and its blocks cannot be picked, the first block_update fails to encode with
+			// "Can't find id for Block{minecraft:lava}" and kicks the player at spawn, and mods gating on
+			// areRegistriesLoaded() refuse to register render layers. The only report was one WARN saying the
+			// registration window "could not register ecosystem content", which names none of that.
+			closeWindow = true;
+			// MOD buses only — buses.get(0) is the baseline, whose registries PassiveSeeder already registered at
+			// seed time; posting there re-collects them and fill() dies on "Attempted duplicate registration".
+			KernelFabricEcosystem.initializeSpectreConfigs();
+			postNeoNewRegistryEvent(cl, buses.subList(1, buses.size()));
+			// Isolated for the same reason KernelEventSubscribers.registerAll above is, and this one is wider.
+			// fireRegisterEvents resolves a GAME-side class reflectively, so a LinkageError inside it escapes to
+			// the outer catch and skips EVERYTHING below: the traditional-Forge baseline, the Fabric mods' main
+			// entrypoints, the attribute events, the spawn-placement event, BlockEntityTypeAddBlocksEvent and the
+			// modded creative-tab categories. The one WARN that reported it said "could not register ecosystem
+			// content", which names none of that -- it blames the window for what one call inside it did.
+			int n = 0;
+			try {
+				n = fireRegisterEvents(cl, buses);
+			} catch (Throwable t) {
+				ForbricLog.warn("[Forbric/Lifecycle] could not fire RegisterEvent — mods that register content "
+						+ "through DeferredRegister or RegisterEvent will have none of it. The rest of the "
+						+ "registration window below still runs", unwrap(t));
+			}
+			// Fabric mods' onInitialize() calls Registry.register(...) directly, so it belongs in this same unfrozen
+			// span. It runs BEFORE the bake below so the bake sees Fabric-registered content. The root registry is
+			// opened right here because NewRegistryEvent.fill() above re-froze it: a Fabric mod declaring its own
+			// registry goes through FabricRegistryBuilder, which is a plain Registry.register into that root.
+			rootRegistry(cl, true);
+			try {
+				try {
+					// On a client these now run from onClientEntrypoints, inside Minecraft.<init>, where Fabric runs
+					// them and where Minecraft.getInstance() is live. Here they would see a null instance, and a mod
+					// that caches it caches null for the whole process. The dedicated server keeps this window: it has
+					// no Minecraft to wait for, and Fabric's own startServer runs main just as early there.
+					if (!side.isClient() || !KernelFabricEcosystem.mainsRunInConstructor()) {
+						KernelFabricEcosystem.runMainEntrypoints();
+					}
+				} finally {
+					// Fabric's registry freeze, as a server with fabric-api has it: after every main, the root still
+					// open. Only the Fabric injectors on BuiltInRegistries.freeze() that FabricFreezeHookMixinAdapter
+					// moved run here; the HEAD half now, the TAIL half once the window below is frozen. A client
+					// does both in onClientEntrypoints, after its client entrypoints, as Fabric does.
+					if (!side.isClient()) fabricFreezePoint(cl, FabricFreezePointInjector.HEAD_HOOK);
+				}
+			} finally {
+				rootRegistry(cl, false);
+				// No late-config pass here. It used to sit in this finally, and the comment that justified it said
+				// the quiet part: these entrypoints run BEFORE loadEarlyConfigs, "so a config registered here would
+				// in fact be caught by it". It was caught by it — TWICE. This pass opened each one, and
+				// loadEarlyConfigs then ran ConfigTracker.loadConfigs over the WHOLE type, which re-opens a config
+				// that already has one: "Opening a config that was already loaded" per config, ModConfigEvent.Loading
+				// delivered a second time (a Loading handler that appends to a list or registers a listener does it
+				// twice), the file re-read and a second watcher installed. The late pass now runs AFTER the setup
+				// lifecycle instead, where it is the "only what is still unopened" pass it claims to be — see
+				// driveNativeRegistration.
+			}
+			// Bake the ForgeRegistries. Note a DeferredRegister's RegistryObjects bind during their OWN registry's
+			// RegisterEvent above (DeferredRegister$EventDispatcher calls updateReference right after each register),
+			// not here — so a mod reading another mod's RegistryObject during RegisterEvent depends on the dispatch
+			// order, not on this bake.
+			// NOT MinecraftForge's GameData.postRegisterEvents, which the kernel called here for years and which
+			// NEVER ONCE RAN: its second instruction block is `new LinkedHashSet<>(GameData.vanillaRegistryOrder)`
+			// and that field is written only by GameData.vanillaSnapshot(), which the kernel deliberately does not
+			// call on this side (it LOCKS the vanilla wrappers — see the NeoForge-only snapshot above). So it threw
+			// NPE at instruction 36 on every boot and the warning it produced described the symptom. What it would
+			// have reached is the same dispatch loop the kernel already drives itself, plus the attribute events —
+			// so the attribute events are what is called, directly, the way NeoForge's tail already is.
+			// NeoForge's postRegisterEvents is NOT the bake — it is the dispatch loop the kernel REPLACES: it walks
+			// getRegistrationOrder() and re-fires RegisterEvent through ModLoader.postEventWrapContainerInModOrder.
+			// While ModList was empty that was a silent no-op, so calling it looked harmless. Once the kernel
+			// publishes its mods (KernelModLoader.publishNeoModList) it double-fires every DeferredRegister —
+			// "Adding duplicate key 'neoforge:condition_codecs / balm:config'" — and its own error path then calls
+			// RegistryManager.revertToVanilla(), ROLLING BACK the NeoForge registries: 21 baseline entries
+			// (attribute_type, ticket_type, slot_display, entity_sub_predicate_type, …) silently disappeared.
+			// Only its tail is wanted, so call that directly.
+			invokeStaticOn(cl, "net.neoforged.neoforge.common.CommonHooks", "modifyAttributes");
+			// The rest of postRegisterEvents' tail, in its order. Cheap calls, and each one is a whole feature that
+			// simply did not exist: without fireSpawnPlacementEvent a mod's mob has no spawn rules and never
+			// generates, without BlockEntityTypeAddBlocksEvent a mod cannot attach its blocks to a vanilla block
+			// entity, and without registerModdedCategories its gamerules have no category to sit in.
+			// (CreativeModeTabRegistry.sortTabs is the kernel's sortNeoCreativeTabs, below, after the freeze.)
+				invokeStaticOn(cl, "net.minecraft.world.entity.SpawnPlacements", "fireSpawnPlacementEvent");
+			postModBusEvent(cl, "net.neoforged.neoforge.event.BlockEntityTypeAddBlocksEvent");
+			invokeStaticOn(cl, "net.minecraft.world.level.gamerules.GameRuleCategory", "registerModdedCategories");
+			// Last in postRegisterEvents: NeoForge builds its item tooltip appenders — every vanilla component line
+			// (enchantments, lore, attributes, durability, …) and every mod's. Left out of this copy of the tail,
+			// the merged ItemStack's dispatcher walked three empty lists and tooltips showed only the name.
+			if (!"off".equalsIgnoreCase(System.getProperty(NEO_TOOLTIP_APPENDERS, "on"))) {
+				invokeStaticOn(cl, "net.forbric.kernel.runtime.KernelNeoTooltips", "init");
+			} else {
+				ForbricLog.warn("[Forbric/Tooltips] NeoForge's tooltip appenders left unbuilt with -D%s=off — item "
+						+ "tooltips show no component lines", NEO_TOOLTIP_APPENDERS);
+			}
+			ForbricLog.info("[Forbric/Lifecycle] fired RegisterEvent x%d on %d bus(es) [NeoForge baseline + %d mod(s)]",
+					n, buses.size(), buses.size() - 1);
+			logRegisteredContent(cl);
+		} catch (Throwable t) {
+			ForbricLog.warn("[Forbric/Lifecycle] could not register ecosystem content", unwrap(t));
+		} finally {
+			// Only when the window was actually opened: before unfreeze there is nothing to put back, and freezing
+			// a registry the kernel never opened would close one the caller still owns.
+			if (closeWindow) closeRegistrationWindow(cl);
+			if (!side.isClient()) fabricFreezePoint(cl, FabricFreezePointInjector.TAIL_HOOK);
+		}
+	}
+
+
+	/**
+	 * Closes the registration window and redoes the bookkeeping the open window invalidated.
+	 *
+	 * <p>Each of these four is a failure the kernel has already paid for once, so they are named rather than
+	 * folded: {@code linkBlockItems} fills {@code Item.BY_BLOCK} (without it {@code Block.asItem()} is AIR and a
+	 * mod's creative tab collapses to empty), {@code freeze} also latches {@code registriesLoaded},
+	 * {@code rebuildNeoForgeBlockStateIds} re-adds the blockstate ids the open window's clear callback dropped, and
+	 * {@code sortNeoCreativeTabs} puts window-registered tabs into the strip the creative screen actually reads.
+	 *
+	 * <p>Best-effort as a whole AND per step, because this runs in a finally: it must not replace the exception
+	 * that brought it here.
+	 */
+	private static void closeRegistrationWindow(ClassLoader cl) {
+		try {
+			linkBlockItems(cl);
+		} catch (Throwable t) {
+			ForbricLog.warn("[Forbric/Lifecycle] could not link block->item mappings while closing the registration "
+					+ "window", unwrap(t));
+		}
+		try {
+			freeze(cl);
+		} catch (Throwable t) {
+			ForbricLog.warn("[Forbric/Lifecycle] could not re-freeze the registries — they stay writable for the "
+					+ "rest of this run", unwrap(t));
+		}
+		try {
+			rebuildNeoForgeBlockStateIds(cl);
+		} catch (Throwable t) {
+			ForbricLog.warn("[Forbric/Lifecycle] could not rebuild the blockstate->id map — the first block update "
+					+ "will fail to encode", unwrap(t));
+		}
+		try {
+			sortNeoCreativeTabs(cl);
+		} catch (Throwable t) {
+			ForbricLog.warn("[Forbric/Lifecycle] could not re-sort the creative tabs — a mod's tab may be missing "
+					+ "from the strip", unwrap(t));
+		}
+		// After the sort, which is what it reports on.
+		if (Boolean.getBoolean("forbric.tabProbe")) startCreativeTabProbe(cl);
+	}
+
+	/**
+	 * Re-sorts NeoForge's creative-tab ORDER list so tabs registered in the kernel's window become visible.
+	 *
+	 * <p>The merged {@code CreativeModeInventoryScreen} paginates its tab strip EXCLUSIVELY from
+	 * {@code net.neoforged.neoforge.common.CreativeModeTabRegistry.getSortedCreativeModeTabs()} — not from
+	 * {@code CreativeModeTabs.tabs()}. That {@code SORTED_TABS} list starts empty and is only rewritten by
+	 * {@code sortTabs()}, which walks the whole {@code CREATIVE_MODE_TAB} registry. Vanilla's tabs enter the
+	 * registry during {@code Bootstrap} — BEFORE the kernel's registration window — so the sort that ran during
+	 * NeoForge baseline bring-up froze a vanilla-only snapshot, and a mod tab registered in the window never
+	 * appeared in the strip. It stayed fully SEARCHABLE the whole time, because the search tree is built from
+	 * {@code CreativeModeTabs.allTabs()} (the live registry) — that split, "searchable but no tab", is this bug's
+	 * fingerprint.
+	 *
+	 * <p>Calling {@code sortTabs()} again after the window is safe and idempotent: with no server up,
+	 * {@code runInServerThreadIfPossible} runs inline; the recalculation is a pure topological sort over the tab
+	 * registry plus the ordering-JSON edges; and any later genuine re-sort (the datapack reload listener) walks the
+	 * same registry and keeps the tab.
+	 */
+	private static void sortNeoCreativeTabs(ClassLoader cl) {
+		contentCall(cl, "sortCreativeTabs", "re-sort the NeoForge creative tabs");
+	}
+
+	/** {@code -Dforbric.tabProbe} — dumps every non-vanilla creative tab's live state every 3s. */
+	private static void startCreativeTabProbe(ClassLoader cl) {
+		contentCall(cl, "startCreativeTabProbe", "start the creative-tab probe");
+	}
+
+	/**
+	 * Fills {@code Item.BY_BLOCK} for every registered {@code BlockItem} — the block→item link.
+	 *
+	 * <p>{@code Block.asItem()} resolves through {@code Item.byBlock(this)}, which is a plain
+	 * {@code BY_BLOCK.get(block)}. The merged {@code BlockItem} constructor only stores its block; it never adds
+	 * itself to that map. In Forge the map is filled by the ITEMS registry's ADD-CALLBACK
+	 * ({@code GameData.ItemCallbacks} -> {@code BlockItem.registerBlocks}), and the kernel registers content without
+	 * running those callbacks — so for every modded block {@code asItem()} fell through to AIR.
+	 *
+	 * <p>That is invisible in the registry dump (the blocks and their items both register fine, and gate-m4 counted
+	 * them) but breaks anything that goes block→item. It is why Macaw's Bridges was unreachable: its creative tab
+	 * feeds blocks in via {@code Output.accept(ItemLike)}, each became {@code new ItemStack(AIR)} = EMPTY, all ~150
+	 * entries were dropped, and Minecraft HIDES a tab that ends up empty — indistinguishable from "the tab was never
+	 * registered". Picking a block with the middle mouse button and any recipe/tag lookup that goes through
+	 * {@code asItem()} were equally affected.
+	 *
+	 * <p>{@code putIfAbsent} so an entry vanilla already established always wins; best-effort, because a diagnostic
+	 * link-up must never be able to fail the registration window.
+	 */
+	private static void linkBlockItems(ClassLoader cl) {
+		contentCall(cl, "linkBlockItems", "link block->item mappings");
+	}
+
+	/**
+	 * Reports what the registration window actually put into the vanilla registries, grouped by namespace.
+	 *
+	 * <p>Constructing a mod is not the same as the mod registering anything, and {@code DeferredRegister} is silent —
+	 * so a kernel that fired {@code RegisterEvent} at a mod whose listeners never attached looked exactly like one
+	 * that worked. This is the line that tells them apart, and it is how M7 Wall A was confirmed. Best-effort: a
+	 * diagnostic must never be able to fail the window it reports on.
+	 */
+	private static void logRegisteredContent(ClassLoader cl) {
+		contentCall(cl, "logRegisteredContent", "summarise registered content");
+	}
+
+	/**
+	 * Calls one no-arg method on the game-side registry-content class.
+	 *
+	 * <p>Each of those five already reports its own failure in the terms of what it was repairing, so this only
+	 * has to cover the class not being there at all — which on a machine whose boot jar was built without the
+	 * staged artifacts is the same message for all five, and {@code KernelRuntimeClasses.verify} has already said
+	 * it once at the top of the log.
+	 */
+	private static void contentCall(ClassLoader cl, String method, String what) {
+		try {
+			Class.forName("net.forbric.kernel.runtime.KernelRegistryContent", true, cl)
+					.getMethod(method).invoke(null);
+		} catch (Throwable t) {
+			ForbricLog.warn("[Forbric/Lifecycle] could not " + what, unwrap(t));
+		}
+	}
+
+	/**
+	 * Client-only: construct {@code ClientNeoForgeMod} on the NeoForge baseline bus and route the game's mod-bus
+	 * events to it.
+	 *
+	 * <p>NeoForge's built-in CLIENT registrations — reload listeners ({@code AddClientReloadListenersEvent} adds
+	 * {@code AnimationLoader}, {@code ObjLoader}, branding), entity renderers, sprite sources, client extensions —
+	 * live in {@code ClientNeoForgeMod}'s {@code @SubscribeEvent} handlers. The merged base's
+	 * {@code Minecraft.<init>} fires those events via {@code ClientHooks.initClientHooks →
+	 * ModLoader.postEvent(...)}, which iterates {@code ModList.sortedContainers} and calls each container's
+	 * {@code acceptEvent} (→ its {@code getEventBus().post(...)}). The kernel seeded an EMPTY ModList, so those
+	 * events reached nobody — {@code ModelManager.reload} then NPE'd reading the never-produced
+	 * {@code AnimationLoader.STATE_KEY}. Constructing {@code ClientNeoForgeMod} on the baseline bus and pointing the
+	 * ModList's one container at that bus makes {@code postEvent} deliver every client mod-bus event to NeoForge's
+	 * handlers — the client analogue of the server's native RegisterEvent dispatch.
+	 */
+	private static void registerNeoForgeClientContent(ClassLoader cl) {
+		try {
+			Class<?> clientMod = Class.forName("net.neoforged.neoforge.client.ClientNeoForgeMod", false, cl);
+			Class<?> iEventBus = Class.forName("net.neoforged.bus.api.IEventBus", false, cl);
+			Class<?> modContainer = Class.forName(ForeignType.MOD_CONTAINER.binary(Ecosystem.NEOFORGE), false, cl);
+			clientMod.getConstructor(iEventBus, modContainer).newInstance(baselineBus, baselineContainer);
+			ForbricLog.info("[Forbric/Lifecycle] constructed ClientNeoForgeMod on the baseline bus");
+		} catch (Throwable t) {
+			ForbricLog.warn("[Forbric/Lifecycle] could not register NeoForge client content — the client's mod-bus "
+					+ "events (reload listeners, renderers) will not reach NeoForge", unwrap(t));
+		}
+	}
+
+	/** {@link #publishModBusDelivery} for both sides; a failure is logged, since the game still runs without it. */
+	private static void publishNeoBaselineInModList(ClassLoader cl) {
+		try {
+			publishModBusDelivery(cl);
+		} catch (Throwable t) {
+			ForbricLog.warn("[Forbric/Lifecycle] could not put the NeoForge baseline into ModList — NeoForge's own "
+					+ "mod-bus listeners (its payload types among them) will not receive the events NeoForge posts",
+					unwrap(t));
+		}
+	}
+
+	/**
+	 * Makes the NeoForge {@code ModList} deliver mod-bus events to the baseline AND to every mod the kernel loaded.
+	 *
+	 * <p>{@code ModList.sortedContainers} is read by two things that both matter: {@code forEachModInOrder}, which is
+	 * how {@code ModLoader.postEvent} fans a mod-bus event out to containers, and {@code getSortedMods()}, which is
+	 * what {@code ModListScreen} lists. This method used to set that field (and {@code mods}) to a ONE-element list
+	 * holding only the baseline container — which silently undid {@link KernelModLoader#publishNeoModList}, since the
+	 * client step runs right after mod construction.
+	 *
+	 * <p>Both reported symptoms came from that single line. Every game-posted mod-bus event reached only NeoForge's
+	 * baseline bus, so a mod's own listeners never fired: AppleSkin registers ALL of its client features with
+	 * {@code IEventBus.addListener} on its mod bus ({@code RegisterGuiLayersEvent} for the four HUD overlays,
+	 * {@code RegisterClientTooltipComponentFactoriesEvent} for the food tooltip, {@code RegisterPayloadHandlersEvent}
+	 * for its sync packets) and got none of them. And the Mods screen listed only the baseline, because it reads the
+	 * same field.
+	 *
+	 * <p>So the list is UNIONed instead of replaced: baseline first (genuine NeoForge also orders it first), then
+	 * whatever {@code publishNeoModList} installed. {@code indexedMods} is rebuilt to match so
+	 * {@code getModContainerById}/{@code isLoaded} answer for the baseline too.
+	 *
+	 * <p>Runs on the dedicated server as well, and did not always: it lived inside the client-only step, so every
