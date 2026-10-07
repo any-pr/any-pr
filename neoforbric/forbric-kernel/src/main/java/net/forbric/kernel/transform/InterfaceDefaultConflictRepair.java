@@ -298,3 +298,66 @@ public final class InterfaceDefaultConflictRepair {
 			}
 		}
 		return false;
+	}
+
+	private Set<String> allSupers(String iface) {
+		Set<String> seen = new LinkedHashSet<>();
+		collectSupers(iface, seen, 0);
+		return seen;
+	}
+
+	private void collectSupers(String iface, Set<String> into, int depth) {
+		if (depth > 16) return;
+		byte[] bytes = classBytes.apply(iface);
+		if (bytes == null) return;
+		ClassNode node = new ClassNode();
+		try {
+			new ClassReader(bytes).accept(node, ClassReader.SKIP_CODE | ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+		} catch (Throwable unreadable) {
+			return;
+		}
+		if (node.interfaces == null) return;
+		for (String parent : node.interfaces) {
+			if (into.add(parent)) collectSupers(parent, into, depth + 1);
+		}
+	}
+
+	/**
+	 * name+desc → the interface that DECLARES the default {@code iface} supplies for it, which may be an ancestor.
+	 *
+	 * <p>Inherited ones are included because the conflict is about what an implementor INHERITS — but they are
+	 * recorded under the DECLARER, because two superinterfaces handing down the same ancestor's method is one
+	 * declaration and no conflict at all. {@code AbstractMinecartContainer} implements vanilla's
+	 * {@code ContainerEntity} and, once Lithium's mixin has run, {@code LithiumInventory}; eleven of their methods
+	 * look contested and every one of them is {@code Container}'s single default reached two ways.
+	 */
+	private Map<String, String> defaultsOf(String iface) {
+		Map<String, String> cached = defaults.get(iface);
+		if (cached != null) return cached;
+		Map<String, String> found = new LinkedHashMap<>();
+		collectDefaults(iface, found, 0);
+		defaults.put(iface, found);
+		return found;
+	}
+
+	private void collectDefaults(String iface, Map<String, String> into, int depth) {
+		if (depth > 16) return;
+		byte[] bytes = classBytes.apply(iface);
+		if (bytes == null) return;
+		ClassNode node = new ClassNode();
+		try {
+			new ClassReader(bytes).accept(node, ClassReader.SKIP_CODE | ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+		} catch (Throwable unreadable) {
+			return;
+		}
+		if ((node.access & Opcodes.ACC_INTERFACE) == 0) return;
+		if (node.methods != null) {
+			for (MethodNode m : node.methods) {
+				if ((m.access & (Opcodes.ACC_STATIC | Opcodes.ACC_ABSTRACT | Opcodes.ACC_PRIVATE)) != 0) continue;
+				into.putIfAbsent(m.name + m.desc, node.name);
+			}
+		}
+		if (node.interfaces == null) return;
+		for (String parent : node.interfaces) collectDefaults(parent, into, depth + 1);
+	}
+}
