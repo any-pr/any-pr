@@ -898,3 +898,51 @@
      "jars": 6,
      "verdict": "UNRESOLVED"
     },
+    {
+     "jars": 3,
+     "verdict": "UNRESOLVED"
+    },
+    {
+     "jars": 2,
+     "verdict": "UNRESOLVED"
+    },
+    {
+     "jars": 2,
+     "verdict": "PASS"
+    },
+    {
+     "jars": 2,
+     "verdict": "UNRESOLVED"
+    },
+    {
+     "jars": 6,
+     "verdict": "UNRESOLVED"
+    },
+    {
+     "jars": 7,
+     "verdict": "UNRESOLVED"
+    },
+    {
+     "jars": 7,
+     "verdict": "FAIL"
+    },
+    {
+     "jars": 5,
+     "verdict": "UNRESOLVED"
+    },
+    {
+     "jars": 6,
+     "verdict": "UNRESOLVED"
+    },
+    {
+     "jars": 5,
+     "verdict": "UNRESOLVED"
+    }
+   ],
+   "minimalVerdict": "FORBRIC_ONLY",
+   "minimalNative": "DONE",
+   "minimalForbric": "FAILED_TO_START",
+   "minimalForbricSignature": "POLICY_STOP:creativecore:mixin-injector:creativecore.fabric.mixins.json:team.creative.creativecore.mixin.ServerConfigurationPacketListenerImplMixin#handleConfigurationFinished(Lnet/minecraft/core/RegistryAccess;)Ljava/util/function/Function;@net.minecraft.server.network.ServerConfigurationPacketListenerImpl,debugify:mixin-injector:debugify.mixins.json:dev.isxander.debugify.mixins.basic.mc121706.RangedBowAttackGoalMixin#lookAtTarget(Lorg/spongepowered/asm/mixin/injection/callback/CallbackInfo;)V@net.minecraft.world.entity.ai.goal.RangedBowAttackGoal,moreladders:initialization:entrypoint:main,viafabric-mc26-2:initialization:entrypoint:main"
+  }
+ }
+}
