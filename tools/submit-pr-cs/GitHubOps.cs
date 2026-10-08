@@ -9,8 +9,10 @@ public static class GitHubOps
     public static string HeadSpec(string target, string fork, string branch) =>
         fork == target ? branch : $"{fork.Split('/')[0]}:{branch}";
 
-    // push 幂等（同分支同内容），按"常规→直连→常规"退避重试兜底代理抖动
-    public static void PushBranch(string fork, string branch, string wt, bool force)
+    // push 幂等（同分支同内容），按"常规→直连→常规"退避重试兜底代理抖动。
+    // onRetry: GUI 用的降级/重试上报（i 从 1 起）。
+    public static void PushBranch(string fork, string branch, string wt, bool force,
+        Action<int, string>? onRetry = null)
     {
         string[][] variants = { Array.Empty<string>(),
             new[] { "-c", "http.proxy=", "-c", "https.proxy=" }, Array.Empty<string>() };
@@ -31,6 +33,7 @@ public static class GitHubOps
                 if (i == variants.Length - 1) throw;
                 Console.WriteLine($"[{branch}] push 失败，{5 * (i + 1)}s 后重试 " +
                                   $"({i + 1}/{variants.Length})…: {LastLine(e.Message)}");
+                onRetry?.Invoke(i + 1, LastLine(e.Message));
                 Thread.Sleep(5000 * (i + 1));
             }
         }

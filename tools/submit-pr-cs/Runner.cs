@@ -11,19 +11,23 @@ public static class Runner
     // 机器人有两种情况需要重新触发检查（重试上限内各换一次新基底强推）:
     //   - PR 因 base 变动合并冲突被关 / 被评论要求 rebase；
     //   - 与其他 PR 的合并竞态导致其静默退出，PR 永远停在 OPEN。
-    public static StepResult SubmitBatch(string repoRoot, string target,
-        string fork, string baseSha, string branch, List<FileItem> batch,
-        string dest, string title, string body, int pollTimeout,
-        int pollInterval, int maxRetries, Action<string> log)
+    public static StepResult SubmitBatch(Opts o, string label, string repoRoot,
+        string target, string fork, string baseSha, string branch,
+        List<FileItem> batch, string dest, string title, string body,
+        int pollTimeout, int pollInterval, int maxRetries, Action<string> log)
     {
         int? pr = null;
         var baseNow = baseSha;
         for (int attempt = 1; attempt <= maxRetries; attempt++)
         {
+            Ev.Emit(o, label, "attempt",
+                $"第 {attempt}/{maxRetries} 次尝试（基底 {baseNow[..10]}）");
             var wt = GitOps.BuildWorktreeCommit(repoRoot, baseNow, dest, batch, title);
             try
             {
-                GitHubOps.PushBranch(fork, branch, wt, force: pr != null);
+                GitHubOps.PushBranch(fork, branch, wt, force: pr != null,
+                    onRetry: (i, msg) => Ev.Emit(o, label, "pushretry",
+                        $"push 降级/重试 {i}/3: {msg}"));
             }
             finally
             {
@@ -38,6 +42,7 @@ public static class Runner
                 var url = GitHubOps.CreatePr(target, fork, branch, title, body);
                 pr = int.Parse(url.TrimEnd('/').Split('/')[^1]);
                 log($"[{branch}] PR #{pr}: {url}");
+                Ev.Emit(o, label, "pr", $"#{pr}");
             }
 
             var deadline = DateTime.UtcNow.AddSeconds(pollTimeout);
@@ -45,8 +50,11 @@ public static class Runner
             {
                 var st = GitHubOps.PrStateTolerant(target, pr.Value);
                 if (st == "MERGED")
+                {
+                    Ev.Emit(o, label, "merged", $"#{pr} 已合并");
                     return new StepResult { Pr = pr.Value, Result = "merged",
                         Url = $"https://github.com/{target}/pull/{pr}" };
+                }
                 if (st == "CLOSED")
                 {
                     var comment = GitHubOps.LastComment(target, pr.Value);
@@ -54,6 +62,8 @@ public static class Runner
                     {
                         log($"[{branch}] 与 main 冲突，换新基底重试 " +
                             $"({attempt}/{maxRetries})…");
+                        Ev.Emit(o, label, "retry",
+                            $"与 main 冲突，换新基底重试 ({attempt}/{maxRetries})");
                         baseNow = GitOps.LatestMainSha(target, repoRoot);
                         break;
                     }
@@ -65,12 +75,19 @@ public static class Runner
                 {
                     log($"[{branch}] {NudgeAfter}s 仍无进展（可能与其他 PR 的合并" +
                         $"竞态），换新基底强推 ({attempt}/{maxRetries})…");
+                    Ev.Emit(o, label, "nudge",
+                        $"{NudgeAfter}s 无进展，换新基底强推 ({attempt}/{maxRetries})");
                     baseNow = GitOps.LatestMainSha(target, repoRoot);
                     break;
                 }
                 if (DateTime.UtcNow >= deadline)
+                {
+                    Ev.Emit(o, label, "timeout", $"#{pr} 等待合并超时（{pollTimeout}s）");
                     return new StepResult { Pr = pr.Value, Result = "timeout",
                         Url = $"https://github.com/{target}/pull/{pr}" };
+                }
+                Ev.Emit(o, label, "wait",
+                    $"#{pr} 等待机器人合并 {(DateTime.UtcNow - lastPush).TotalSeconds:0}s/{pollTimeout}s");
                 Thread.Sleep(pollInterval * 1000);
             }
         }
@@ -97,7 +114,10 @@ public static class Runner
         log($"上游仓库: {target}   分支推送目标: {fork}");
 
         var delete = o.Delete;
-        var sources = delete == null ? Chains.CollectSources(o.Sources) : new List<FileItem>();
+        var preSkipped = new List<(string Path, string Why)>();
+        var sources = delete == null
+            ? Chains.CollectSources(o.Sources,
+                s => preSkipped.Add((s, "符号链接，仓库不允许"))) : new List<FileItem>();
         if (delete != null && sources.Count > 0)
             throw new OpException("--delete 模式下不要同时传源文件/目录。");
         if (sources.Count == 0 && (delete == null || delete.Count == 0))
@@ -111,7 +131,7 @@ public static class Runner
         try
         {
             var accepted = new List<FileItem>();
-            var skipped = new List<(string Path, string Why)>();
+            var skipped = new List<(string Path, string Why)>(preSkipped);
             var chains = new Dictionary<string, Chain>();
             var deleteBatches = new List<List<FileItem>>();
             if (delete != null)
@@ -150,7 +170,11 @@ public static class Runner
                 chains = ch;
             }
 
-            foreach (var (path, why) in skipped) log($"  [跳过] {path} — {why}");
+            foreach (var (path, why) in skipped)
+            {
+                log($"  [跳过] {path} — {why}");
+                Ev.Emit(o, "", "skip", $"{path} — {why}");
+            }
             if (skipped.Count > 0 && o.Strict)
                 throw new OpException("strict 模式下存在被跳过的文件，已中止。");
             if (accepted.Count == 0 && chains.Count == 0 && deleteBatches.Count == 0)
@@ -185,9 +209,11 @@ public static class Runner
                 return true;
             }
 
-            return Execute.ExecutePlan(o, log, target, fork, baseSha, dest,
+            var ok = Execute.ExecutePlan(o, log, target, fork, baseSha, dest,
                 destLabel, batches, chains, deleteBatches, cap, repoRoot, tmpDir,
                 maxLines, maxFiles, kindName);
+            Ev.Emit(o, "", "done", ok ? "全部合并且内容验证通过" : "存在未合并或验证失败的条目");
+            return ok;
         }
         finally
         {

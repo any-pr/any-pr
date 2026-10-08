@@ -88,6 +88,10 @@ public static class Execute
             o.Workers > 0 ? o.Workers : units.Count, units.Count), 10));
         var totalSteps = units.Sum(u => u.Steps.Count);
         log($"并发提交 {units.Count} 个任务（{workers} 路并行，共 {totalSteps} 个 PR）…");
+        Ev.EmitPlan(o, units.Count, totalSteps,
+            $"{units.Count} 个任务 / {totalSteps} 个 PR / {workers} 路并行");
+        foreach (var u in units)
+            Ev.Emit(o, u.Label, "ustart", $"{u.Steps.Count} 步");
         foreach (var (u, j) in units.Select((u, j) => (u, j + 1)))
             log($"[{u.Label}] 开始（{u.Steps.Count} 步）");
 
@@ -108,8 +112,8 @@ public static class Execute
                         // 链的每一步都必须基于包含前一步的最新 main
                         var b2 = u.Steps.Count > 1
                             ? GitOps.LatestMainSha(target, repoRoot) : baseSha;
-                        var r = Runner.SubmitBatch(repoRoot, target, fork, b2,
-                            s.Branch, s.Batch, dest, s.Title, s.Body,
+                        var r = Runner.SubmitBatch(o, u.Label, repoRoot, target,
+                            fork, b2, s.Branch, s.Batch, dest, s.Title, s.Body,
                             o.PollTimeout, o.PollInterval, o.MaxRetries,
                             LogThreadSafe);
                         res.Add(r);
@@ -122,11 +126,13 @@ public static class Execute
                     }
                     u.Results = res;
                     LogThreadSafe($"[{u.Label}] {u.Results[^1].Result}");
+                    Ev.Emit(o, u.Label, "udone", u.Results[^1].Result);
                 }
                 catch (Exception e)
                 {
                     u.Error = e.Message;
                     LogThreadSafe($"[{u.Label}] 失败 — {e.Message}");
+                    Ev.Emit(o, u.Label, "fail", e.Message);
                 }
             });
         sw.Stop();
@@ -136,6 +142,9 @@ public static class Execute
         var submitted = units.Where(u => u.Error == null)
             .SelectMany(u => u.Verify).ToList();
         var problems = Plan.VerifyOnMain(target, repoRoot, submitted, log);
+        Ev.Emit(o, "", "verify", problems.Count == 0
+            ? $"已验证: {submitted.Count} 个文件内容均与上游 main 一致"
+            : string.Join("；", problems));
         if (problems.Count > 0) ok = false;
         foreach (var p in problems) log($"  [!] {p}");
         log($"  耗时 {sw.Elapsed.TotalMinutes:F1} 分钟，" +

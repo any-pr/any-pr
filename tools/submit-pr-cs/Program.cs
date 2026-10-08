@@ -11,6 +11,7 @@ public class Opts
     public int? MaxLines, MaxFiles, MaxFileLines;
     public int PollTimeout = 300, PollInterval = 15, MaxRetries = 3, Workers = 0;
     public bool Strict, DryRun;
+    public Action<Ev>? OnEvent;  // GUI 进度事件汇（null=纯控制台）
 }
 
 public static class Program

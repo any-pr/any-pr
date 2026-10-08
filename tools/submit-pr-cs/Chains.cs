@@ -3,7 +3,8 @@ namespace SubmitPrCs;
 // 源文件收集与"超大文件"的渐进分块链（创建/修改/删除），每步 ≤cap 行。
 public static class Chains
 {
-    public static List<FileItem> CollectSources(List<string> sources)
+    public static List<FileItem> CollectSources(List<string> sources,
+        Action<string>? onSkip = null)
     {
         var files = new List<FileItem>();
         var seen = new Dictionary<string, string>();
@@ -31,7 +32,8 @@ public static class Chains
                     var attr = File.GetAttributes(f);
                     if ((attr & FileAttributes.ReparsePoint) != 0)
                     {
-                        Console.WriteLine($"  [跳过] {f} 是符号链接，仓库不允许（已跳过）");
+                        if (onSkip != null) onSkip(f);
+                        else Console.WriteLine($"  [跳过] {f} 是符号链接，仓库不允许（已跳过）");
                         continue;
                     }
                     entries.Add((f, relDir.Replace('\\', '/')));
