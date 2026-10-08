@@ -1,0 +1,198 @@
+//===--- PassRegistration.swift - Register optimization passes -------------===//
+//
+// This source file is part of the Swift.org open source project
+//
+// Copyright (c) 2014 - 2021 Apple Inc. and the Swift project authors
+// Licensed under Apache License v2.0 with Runtime Library Exception
+//
+// See https://swift.org/LICENSE.txt for license information
+// See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
+//
+//===----------------------------------------------------------------------===//
+
+import AST
+import SIL
+import OptimizerBridging
+
+@_cdecl("initializeSwiftModules")
+public func initializeSwiftModules() {
+  registerAST()
+  registerSIL()
+  registerSwiftAnalyses()
+  registerOptimizerUtilities()
+  registerSwiftPasses()
+  registerOptimizerTests()
+}
+
+func registerPass(
+      _ pass: ModulePass,
+      _ runFn: @escaping (@convention(c) (BridgedContext) -> ())) {
+  pass.name._withBridgedStringRef { nameStr in
+    SILPassManager_registerModulePass(nameStr, runFn)
+  }
+}
+
+private func registerPass(
+      _ pass: FunctionPass,
+      _ runFn: @escaping (@convention(c) (BridgedFunctionPassCtxt) -> ())) {
+  pass.name._withBridgedStringRef { nameStr in
+    SILPassManager_registerFunctionPass(nameStr, runFn)
+  }
+}
+
+protocol SILCombineSimplifiable : Instruction {
+  func simplify(_ context: SimplifyContext)
+}
+
+private func run<InstType: SILCombineSimplifiable>(_ instType: InstType.Type,
+                                                   _ bridgedCtxt: BridgedInstructionPassCtxt) {
+  let inst = bridgedCtxt.instruction.getAs(instType)
+  let context = SimplifyContext(_bridged: bridgedCtxt.passContext,
+                                notifyInstructionChanged: {inst in},
+                                preserveDebugInfo: false)
+  inst.simplify(context)
+}
+
+private func registerForSILCombine<InstType: SILCombineSimplifiable>(
+      _ instType: InstType.Type,
+      _ runFn: @escaping (@convention(c) (BridgedInstructionPassCtxt) -> ())) {
+  "\(instType)"._withBridgedStringRef { instClassStr in
+    SILCombine_registerInstructionPass(instClassStr, runFn)
+  }
+}
+
+private func registerSwiftPasses() {
+  // Module passes
+  registerPass(mandatoryAllocBoxToStack, { mandatoryAllocBoxToStack.run($0) })
+  registerPass(mandatoryPerformanceOptimizations, { mandatoryPerformanceOptimizations.run($0) })
+  registerPass(conformanceCheckOptimization, { conformanceCheckOptimization.run($0) })
+  registerPass(diagnoseUnknownConstValues, { diagnoseUnknownConstValues.run($0)})
+  registerPass(readOnlyGlobalVariablesPass, { readOnlyGlobalVariablesPass.run($0) })
+  registerPass(stackProtection, { stackProtection.run($0) })
+  registerPass(embeddedSwiftDiagnostics, { embeddedSwiftDiagnostics.run($0) })
+
+  // Function passes
+  registerPass(allocBoxToStack, { allocBoxToStack.run($0) })
+  registerPass(asyncDemotion, { asyncDemotion.run($0) })
+  registerPass(booleanLiteralFolding, { booleanLiteralFolding.run($0) })
+  registerPass(commonSubexpressionElimination, { commonSubexpressionElimination.run($0) })
+  registerPass(highLevelCSE, { highLevelCSE.run($0) })
+  registerPass(embeddedWitnessCallSpecialization, { embeddedWitnessCallSpecialization.run($0) })
+  registerPass(letPropertyLowering, { letPropertyLowering.run($0) })
+  registerPass(mergeBorrowScopes, { mergeBorrowScopes.run($0) })
+  registerPass(mergeCondFailsPass, { mergeCondFailsPass.run($0) })
+  registerPass(constantCapturePropagation, { constantCapturePropagation.run($0) })
+  registerPass(computeEscapeEffects, { computeEscapeEffects.run($0) })
+  registerPass(computeSideEffects, { computeSideEffects.run($0) })
+  registerPass(copySinking, { copySinking.run($0) })
+  registerPass(condFailOptimization, { condFailOptimization.run($0) })
+  registerPass(diagnoseInfiniteRecursion, { diagnoseInfiniteRecursion.run($0) })
+  registerPass(destroyHoisting, { destroyHoisting.run($0) })
+  registerPass(mandatoryDestroyHoisting, { mandatoryDestroyHoisting.run($0) })
+  registerPass(initializeStaticGlobalsPass, { initializeStaticGlobalsPass.run($0) })
+  registerPass(objCBridgingOptimization, { objCBridgingOptimization.run($0) })
+  registerPass(objectOutliner, { objectOutliner.run($0) })
+  registerPass(stackPromotion, { stackPromotion.run($0) })
+  registerPass(functionStackProtection, { functionStackProtection.run($0) })
+  registerPass(assumeSingleThreadedPass, { assumeSingleThreadedPass.run($0) })
+  registerPass(classDestroyDevirtualizerPass, { classDestroyDevirtualizerPass.run($0) })
+  registerPass(releaseDevirtualizerPass, { releaseDevirtualizerPass.run($0) })
+  registerPass(simplificationPass, { simplificationPass.run($0) })
+  registerPass(ononeSimplificationPass, { ononeSimplificationPass.run($0) })
+  registerPass(lateOnoneSimplificationPass, { lateOnoneSimplificationPass.run($0) })
+  registerPass(cleanupDebugStepsPass, { cleanupDebugStepsPass.run($0) })
+  registerPass(namedReturnValueOptimization, { namedReturnValueOptimization.run($0) })
+  registerPass(stripObjectHeadersPass, { stripObjectHeadersPass.run($0) })
+  registerPass(deadAccessScopeElimination, { deadAccessScopeElimination.run($0) })
+  registerPass(deadObjectElimination, { deadObjectElimination.run($0) })
+  registerPass(mandatoryDeadObjectElimination, { mandatoryDeadObjectElimination.run($0) })
+  registerPass(deadStoreElimination, { deadStoreElimination.run($0) })
+  registerPass(redundantLoadElimination, { redundantLoadElimination.run($0) })
+  registerPass(mandatoryRedundantLoadElimination, { mandatoryRedundantLoadElimination.run($0) })
+  registerPass(earlyRedundantLoadElimination, { earlyRedundantLoadElimination.run($0) })
+  registerPass(redundantOverflowCheckRemoval, { redundantOverflowCheckRemoval.run($0) })
+  registerPass(deinitDevirtualizer, { deinitDevirtualizer.run($0) })
+  registerPass(lifetimeDependenceDiagnosticsPass, { lifetimeDependenceDiagnosticsPass.run($0) })
+  registerPass(lifetimeDependenceInsertionPass, { lifetimeDependenceInsertionPass.run($0) })
+  registerPass(lifetimeDependenceScopeFixupPass, { lifetimeDependenceScopeFixupPass.run($0) })
+  registerPass(removeSILGenLifetimesPass, { removeSILGenLifetimesPass.run($0) })
+  registerPass(lifetimeResolutionPass, { lifetimeResolutionPass.run($0) })
+  registerPass(lifetimeResolutionDiagnosePass, { lifetimeResolutionDiagnosePass.run($0) })
+  registerPass(copyToBorrowOptimization, { copyToBorrowOptimization.run($0) })
+  registerPass(tempRValueElimination, { tempRValueElimination.run($0) })
+  registerPass(mandatoryTempRValueElimination, { mandatoryTempRValueElimination.run($0) })
+  registerPass(tempLValueElimination, { tempLValueElimination.run($0) })
+  registerPass(mandatoryTempLValueElimination, { mandatoryTempLValueElimination.run($0) })
+  registerPass(closureSpecialization, { closureSpecialization.run($0) })
+  registerPass(autodiffClosureSpecialization, { autodiffClosureSpecialization.run($0) })
+  registerPass(loopInvariantCodeMotionPass, { loopInvariantCodeMotionPass.run($0) })
+  registerPass(killInvalidDebugValuesPass, { killInvalidDebugValuesPass.run($0) })
+  registerPass(deadDebugVariableEliminationPass, { deadDebugVariableEliminationPass.run($0) })
+  registerPass(packSpecialization, { packSpecialization.run($0) })
+  registerPass(trivialOwnershipElimination, { trivialOwnershipElimination.run($0) })
+
+  // Instruction passes
+  registerForSILCombine(BeginBorrowInst.self,      { run(BeginBorrowInst.self, $0) })
+  registerForSILCombine(BeginCOWMutationInst.self, { run(BeginCOWMutationInst.self, $0) })
+  registerForSILCombine(BuiltinInst.self,          { run(BuiltinInst.self, $0) })
+  registerForSILCombine(CondFailInst.self,         { run(CondFailInst.self, $0) })
+  registerForSILCombine(ThinToThickFunctionInst.self, { run(ThinToThickFunctionInst.self, $0) })
+  registerForSILCombine(ExplicitCopyAddrInst.self, { run(ExplicitCopyAddrInst.self, $0) })
+  registerForSILCombine(ExplicitCopyValueInst.self,{ run(ExplicitCopyValueInst.self, $0) })
+  registerForSILCombine(FixLifetimeInst.self,      { run(FixLifetimeInst.self, $0) })
+  registerForSILCombine(GlobalValueInst.self,      { run(GlobalValueInst.self, $0) })
+  registerForSILCombine(StructInst.self,           { run(StructInst.self, $0) })
+  registerForSILCombine(StoreBorrowInst.self,      { run(StoreBorrowInst.self, $0) })
+  registerForSILCombine(StrongRetainInst.self,     { run(StrongRetainInst.self, $0) })
+  registerForSILCombine(StrongReleaseInst.self,    { run(StrongReleaseInst.self, $0) })
+  registerForSILCombine(RetainValueInst.self,      { run(RetainValueInst.self, $0) })
+  registerForSILCombine(ReleaseValueInst.self,     { run(ReleaseValueInst.self, $0) })
+  registerForSILCombine(LoadInst.self,             { run(LoadInst.self, $0) })
+  registerForSILCombine(LoadBorrowInst.self,       { run(LoadBorrowInst.self, $0) })
+  registerForSILCombine(CopyValueInst.self,        { run(CopyValueInst.self, $0) })
+  registerForSILCombine(CopyBlockInst.self,        { run(CopyBlockInst.self, $0) })
+  registerForSILCombine(DestroyValueInst.self,     { run(DestroyValueInst.self, $0) })
+  registerForSILCombine(EndLifetimeInst.self,      { run(EndLifetimeInst.self, $0) })
+  registerForSILCombine(DestructureStructInst.self, { run(DestructureStructInst.self, $0) })
+  registerForSILCombine(DestructureTupleInst.self, { run(DestructureTupleInst.self, $0) })
+  registerForSILCombine(StructExtractInst.self,    { run(StructExtractInst.self, $0) })
+  registerForSILCombine(TupleExtractInst.self,     { run(TupleExtractInst.self, $0) })
+  registerForSILCombine(TypeValueInst.self, { run(TypeValueInst.self, $0) })
+  registerForSILCombine(ClassifyBridgeObjectInst.self, { run(ClassifyBridgeObjectInst.self, $0) })
+  registerForSILCombine(MarkDependenceInst.self,    { run(MarkDependenceInst.self, $0) })
+  registerForSILCombine(MarkDependenceAddrInst.self, { run(MarkDependenceAddrInst.self, $0) })
+  registerForSILCombine(MoveValueInst.self,         { run(MoveValueInst.self, $0) })
+  registerForSILCombine(OpenExistentialRefInst.self, { run(OpenExistentialRefInst.self, $0) })
+  registerForSILCombine(PointerToAddressInst.self,  { run(PointerToAddressInst.self, $0) })
+  registerForSILCombine(RawPointerToRefInst.self,   { run(RawPointerToRefInst.self, $0) })
+  registerForSILCombine(UncheckedEnumDataInst.self, { run(UncheckedEnumDataInst.self, $0) })
+  registerForSILCombine(WitnessMethodInst.self,     { run(WitnessMethodInst.self, $0) })
+  registerForSILCombine(UncheckedAddrCastInst.self, { run(UncheckedAddrCastInst.self, $0) })
+  registerForSILCombine(UnconditionalCheckedCastInst.self, { run(UnconditionalCheckedCastInst.self, $0) })
+  registerForSILCombine(AllocStackInst.self,        { run(AllocStackInst.self, $0) })
+  registerForSILCombine(ApplyInst.self,             { run(ApplyInst.self, $0) })
+  registerForSILCombine(PartialApplyInst.self,      { run(PartialApplyInst.self, $0) })
+  registerForSILCombine(TryApplyInst.self,          { run(TryApplyInst.self, $0) })
+  registerForSILCombine(EndCOWMutationAddrInst.self, { run(EndCOWMutationAddrInst.self, $0) })
+  registerForSILCombine(InitBorrowAddrInst.self,    { run(InitBorrowAddrInst.self, $0) })
+  registerForSILCombine(CheckedCastBranchInst.self, { run(CheckedCastBranchInst.self, $0) })
+  registerForSILCombine(IndexAddrInst.self,         { run(IndexAddrInst.self, $0) })
+  registerForSILCombine(IndexRawPointerInst.self,   { run(IndexRawPointerInst.self, $0) })
+  registerForSILCombine(KeyPathInst.self,           { run(KeyPathInst.self, $0) })
+  registerForSILCombine(SwitchEnumInst.self,        { run(SwitchEnumInst.self, $0) })
+  registerForSILCombine(SwitchEnumAddrInst.self,    { run(SwitchEnumAddrInst.self, $0) })
+  registerForSILCombine(DereferenceBorrowInst.self, { run(DereferenceBorrowInst.self, $0) })
+  registerForSILCombine(DereferenceAddrBorrowInst.self, { run(DereferenceAddrBorrowInst.self, $0) })
+  registerForSILCombine(DifferentiableFunctionInst.self, { run(DifferentiableFunctionInst.self, $0) })
+  registerForSILCombine(UncheckedOwnershipConversionInst.self, { run(UncheckedOwnershipConversionInst.self, $0) })
+}
+
+private func registerSwiftAnalyses() {
+  AliasAnalysis.register()
+  CalleeAnalysis.register()
+}
+
+private func registerOptimizerUtilities() {
+  registerControlFlowUtils()
+  registerLifetimeCompletion()
+}
