@@ -58,6 +58,43 @@ public static class GitOps
 
     public static string Gh(params string[] args) => Run(new[] { "gh" }.Concat(args).ToArray()).Trim();
 
+    // 在 worktree 上下文里判定哪些路径被 .gitignore（含子目录 .gitignore）忽略。
+    // 被忽略的路径 git add 会拒绝；项目作者用 .gitignore 表达"不 vendor"的意图，
+    // 上传时也应跳过它们。返回被忽略的路径集合。
+    public static HashSet<string> CheckIgnored(string wt, IEnumerable<string> paths)
+    {
+        var ignored = new HashSet<string>();
+        var psi = new ProcessStartInfo
+        {
+            FileName = "git",
+            WorkingDirectory = wt,
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        foreach (var a in new[] { "-C", wt, "check-ignore", "-z", "--stdin" })
+            psi.ArgumentList.Add(a);
+        using var p = Process.Start(psi)!;
+        // 先挂起 stdout 异步读取再写 stdin——命中路径多时 stdout 会先写满
+        // 管道缓冲（~4KB），若同步写 stdin 会互相阻塞造成死锁
+        var outTask = p.StandardOutput.ReadToEndAsync();
+        var errTask = p.StandardError.ReadToEndAsync();
+        var stdin = string.Join("\0", paths.Distinct()) + "\0";
+        p.StandardInput.Write(stdin);
+        p.StandardInput.Close();
+        p.WaitForExit();
+        var stdout = outTask.Result;
+        if (p.ExitCode == 0)  // 0=有被忽略的路径, 1=都没有
+            foreach (var s in stdout.Split('\0', StringSplitOptions.RemoveEmptyEntries))
+                ignored.Add(s.TrimEnd('\r'));
+        else if (p.ExitCode != 1)  // 其他退出码是真错误，吞掉会让忽略路径漏进提交
+            throw new OpException(
+                $"git check-ignore 失败 ({p.ExitCode}): {errTask.Result.Trim()}");
+        return ignored;
+    }
+
     // fetch: 先常规连接，代理/网络类错误自动降级直连重试一次
     public static void GitFetch(string url, string refspec, string repoRoot)
     {
@@ -83,10 +120,22 @@ public static class GitOps
         throw last!;
     }
 
+    // 串行化对同一仓库的 fetch+rev-parse：并发线程同时 fetch 会竞写 FETCH_HEAD，
+    // 轻则 rev-parse 读到坏引用，重则拿到过期 main SHA（链步 diff 因此失配被断言拦截）
+    private static readonly SemaphoreSlim FetchLock = new(1, 1);
+
     public static string LatestMainSha(string target, string repoRoot)
     {
-        GitFetch($"https://github.com/{target}.git", "main", repoRoot);
-        return Run(new[] { "git", "rev-parse", "FETCH_HEAD" }, repoRoot).Trim();
+        FetchLock.Wait();
+        try
+        {
+            GitFetch($"https://github.com/{target}.git", "main", repoRoot);
+            return Run(new[] { "git", "rev-parse", "FETCH_HEAD" }, repoRoot).Trim();
+        }
+        finally
+        {
+            FetchLock.Release();
+        }
     }
 
     public static string MakeWorktree(string repoRoot, string baseSha)
@@ -94,13 +143,35 @@ public static class GitOps
         var wt = Path.Combine(repoRoot, ".git", "submit-pr-worktrees",
             $"w{DateTime.UtcNow.Ticks}");
         Directory.CreateDirectory(Path.GetDirectoryName(wt)!);
-        Run(new[] { "git", "worktree", "add", "--detach", wt, baseSha }, repoRoot);
-        return wt;
+        // 并发 worktree add 偶发 .git/worktrees 写冲突 → 退避重试
+        for (int i = 1; ; i++)
+        {
+            try
+            {
+                Run(new[] { "git", "worktree", "add", "--detach", wt, baseSha }, repoRoot);
+                return wt;
+            }
+            catch (OpException) when (i < 3)
+            {
+                Thread.Sleep(2000 * i);
+            }
+        }
     }
 
     public static void DropWorktree(string repoRoot, string wt)
     {
-        Run(new[] { "git", "worktree", "remove", "--force", wt }, repoRoot);
+        for (int i = 1; ; i++)
+        {
+            try
+            {
+                Run(new[] { "git", "worktree", "remove", "--force", wt }, repoRoot);
+                break;
+            }
+            catch (OpException) when (i < 3)
+            {
+                Thread.Sleep(2000 * i);
+            }
+        }
         Run(new[] { "git", "worktree", "prune" }, repoRoot);
     }
 
@@ -172,16 +243,22 @@ public static class GitOps
             || m.Contains("unable to index") || m.Contains("index.lock");
     }
 
-    // probe: 在临时 worktree 暂存全部候选文件，得到与机器人一致的每个文件变更数
-    public static Dictionary<string, (int Adds, int Dels)> ProbeChanges(
-        string repoRoot, string baseSha, string dest, List<FileItem> files)
+    // probe: 在临时 worktree 暂存全部候选文件，得到与机器人一致的每个文件变更数。
+    // 被 .gitignore 忽略的路径不参与 add，单独返回给调用方做跳过报告。
+    public static (Dictionary<string, (int Adds, int Dels)> Ns, List<string> Ignored)
+        ProbeChanges(string repoRoot, string baseSha, string dest, List<FileItem> files)
     {
         Run(new[] { "git", "worktree", "prune" }, repoRoot);
         var wt = MakeWorktree(repoRoot, baseSha);
         try
         {
             CopyInto(wt, dest, files);
-            return StagedNumstat(wt, files.Select(f => f.Path));
+            var ignored = CheckIgnored(wt, files.Select(f => f.Path));
+            var addable = files.Where(f => !ignored.Contains(f.Path)).ToList();
+            var ns = addable.Count > 0
+                ? StagedNumstat(wt, addable.Select(f => f.Path))
+                : new Dictionary<string, (int, int)>();
+            return (ns, ignored.OrderBy(x => x).ToList());
         }
         finally
         {

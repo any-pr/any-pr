@@ -102,6 +102,23 @@ public static class GitHubOps
         JsonDocument.Parse(GitOps.Gh("pr", "view", pr.ToString(), "--repo", target,
             "--json", "state")).RootElement.GetProperty("state").GetString()!;
 
+    // 轮询热路径对瞬时 API 抖动容错: 每 15s 一次 × 多单元并发，
+    // 一次 5xx/限流就把整条渐进链中止太伤——连续 3 次失败才上抛。
+    public static string PrStateTolerant(string target, int pr)
+    {
+        OpException? last = null;
+        for (int i = 1; i <= 3; i++)
+        {
+            try { return PrState(target, pr); }
+            catch (OpException e)
+            {
+                last = e;
+                Thread.Sleep(5000 * i);
+            }
+        }
+        throw last!;
+    }
+
     public static string LastComment(string target, int pr)
     {
         try

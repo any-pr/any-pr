@@ -88,11 +88,19 @@ public static class Rules
 
     public static bool IsBinary(string path)
     {
+        // 与机器人一致: 扫描前 50MB 是否含 NUL 字节。分块读取——逐文件分配
+        // 50MB 缓冲会在大项目上造成海量 LOH 分配（实测 4700 文件拖垮整个 probe）。
+        const int chunk = 1 << 16;
         using var fs = File.OpenRead(path);
-        var buf = new byte[50 * 1024 * 1024];
-        int n = 0, r;
-        while (n < buf.Length && (r = fs.Read(buf, n, buf.Length - n)) > 0) n += r;
-        return Array.IndexOf(buf, (byte)0, 0, n) >= 0;
+        var buf = new byte[chunk];
+        long scanned = 0;
+        int n;
+        while (scanned < 50L * 1024 * 1024 && (n = fs.Read(buf, 0, chunk)) > 0)
+        {
+            if (Array.IndexOf(buf, (byte)0, 0, n) >= 0) return true;
+            scanned += n;
+        }
+        return false;
     }
 
     // 机器人计入 500 行上限的行数（lockfile/vendor/min 等豁免但仍占文件数）

@@ -18,15 +18,23 @@ public static class Chains
             }
             else
             {
-                foreach (var f in Directory.EnumerateFiles(s, "*", SearchOption.AllDirectories).OrderBy(x => x))
+                // 跳过嵌套版本库等 VCS 目录——绝不能把 .git 内部文件当作源提交
+                var excludedDirs = new HashSet<string> { ".git", ".svn", ".hg" };
+                foreach (var f in Directory.EnumerateFiles(s, "*",
+                    SearchOption.AllDirectories).OrderBy(x => x))
                 {
+                    var relDir = Path.GetRelativePath(s, f);
+                    var segs = relDir.Split(Path.DirectorySeparatorChar,
+                        Path.AltDirectorySeparatorChar);
+                    if (segs.Take(segs.Length - 1).Any(excludedDirs.Contains))
+                        continue;
                     var attr = File.GetAttributes(f);
                     if ((attr & FileAttributes.ReparsePoint) != 0)
                     {
                         Console.WriteLine($"  [跳过] {f} 是符号链接，仓库不允许（已跳过）");
                         continue;
                     }
-                    entries.Add((f, Path.GetRelativePath(s, f).Replace('\\', '/')));
+                    entries.Add((f, relDir.Replace('\\', '/')));
                 }
             }
             foreach (var (src, rel) in entries)

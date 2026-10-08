@@ -13,9 +13,14 @@ public static class Plan
     {
         var skipped = new List<(string, string)>();
         var chains = new Dictionary<string, Chain>();
-        var ns = GitOps.ProbeChanges(repoRoot, baseSha, dest, accepted);
+        var (ns, ignored) = GitOps.ProbeChanges(repoRoot, baseSha, dest, accepted);
         foreach (var f in accepted)
         {
+            if (ignored.Contains(f.Path))
+            {
+                skipped.Add((f.Path, "被 .gitignore 忽略（any-pr 或项目自身的排除规则）"));
+                continue;
+            }
             (f.Adds, f.Dels) = ns.TryGetValue(f.Path, out var v) ? v : (0, 0);
             int diff = f.Adds + f.Dels;
             if (Rules.ExcludedPath(f.Path)) continue;
@@ -35,8 +40,9 @@ public static class Plan
                 chains[f.Path] = new Chain { Kind = "modify",
                     Steps = Chains.BuildModifyChain(f, old, cap, tmpDir) };
         }
+        var skipSet = new HashSet<string>(skipped.Select(s => s.Item1));
         var left = accepted.Where(f => !chains.ContainsKey(f.Path)
-            && !skipped.Any(s => s.Item1 == f.Path)).ToList();
+            && !skipSet.Contains(f.Path)).ToList();
         return (left, skipped, chains);
     }
 
