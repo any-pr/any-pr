@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>submit-pr-gui</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AssemblyTitle>submit-pr-gui</AssemblyTitle>
+    <Description>submit-pr-cs 的 WinForms 前端：进度 / 重试 / 任务状态可视化</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../submit-pr-cs/submit-pr-cs.csproj" />
+  </ItemGroup>
+</Project>
