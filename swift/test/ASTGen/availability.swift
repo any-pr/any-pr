@@ -1,0 +1,89 @@
+// RUN: %empty-directory(%t)
+
+// DEFINE: %{availability} = \
+// DEFINE:   -define-availability '_iOS53Aligned:macOS 50.0, iOS 53.0' \
+// DEFINE:   -define-availability '_iOS54Aligned:macOS 51.0, iOS 54.0' \
+// DEFINE:   -define-availability '_iOS54:iOS 54.0' \
+// DEFINE:   -define-availability '_macOS51_0:macOS 51.0' \
+// DEFINE:   -define-availability '_myProject 1.0:macOS 51.0' \
+// DEFINE:   -define-availability '_myProject 2.5:macOS 52.5' \
+// DEFINE:   -define-availability "_emptyMacro:*"
+
+// RUN: %target-swift-frontend-dump-parse \
+// RUN:   %{availability} \
+// RUN:   -enable-experimental-feature ParserASTGen \
+// RUN:   | %sanitize-address > %t/astgen.ast
+
+// RUN: %target-swift-frontend-dump-parse \
+// RUN:   %{availability} \
+// RUN:   | %sanitize-address > %t/cpp-parser.ast
+
+// RUN: %diff -u %t/astgen.ast %t/cpp-parser.ast
+
+// RUN: %target-typecheck-verify-swift \
+// RUN:   %{availability} \
+// RUN:   -enable-experimental-feature ParserASTGen
+
+// REQUIRES: swift_feature_ParserASTGen
+
+@available(swift 4)
+func testSwift4OrLater() {}
+
+@available(macOS 12, iOS 13.1, *)
+func testShorthandMulti() {}
+
+@available(macOS, unavailable)
+func testUnavailableMacOS() {}
+
+@available(macOS, deprecated: 12.0.5, message: "whatever")
+func testDeprecaed12MacOS() {}
+
+@available(_iOS53Aligned, *)
+func testMacroNameOnly() {}
+
+@available(_myProject 2.5, *)
+func testMacroWithVersion() {}
+
+@available(_emptyMacro, *)
+func testEmptyMacro() {}
+
+@_specialize(exported: true, availability: _iOS54Aligned, *; where T == Int)
+func testSpecialize<T>(arg: T) -> T {}
+
+@backDeployed(before: _iOS53Aligned)
+public func testBackDeployed() {}
+
+@available(macOS 10, iOS 12, *)
+@_originallyDefinedIn(module: "OriginalModule", macOS 12.0, iOS 13.2)
+public func testOriginallyDefinedIn() {}
+
+
+func testPoundIf() {
+  if #available(_myProject 2.5, *) {
+    // pass
+  } else if #unavailable(macOS 80) {
+    // pass
+  } else if #_hasSymbol(Int.self) { // expected-warning {{struct 'Int' is not a weakly linked declaration}}
+    // pass
+  }
+}
+
+public class ClassWithMembers {
+  @_spi_available(macOS 10.15, *)
+  public func spiFunc() {}
+}
+
+@available(*, unavailable, renamed: "`class`") // expected-note {{'keyword_renamed()' has been explicitly marked unavailable here}}
+func keyword_renamed() {}
+
+@available(*, unavailable, renamed: "`foo bar`") // expected-note {{'spaces_renamed()' has been explicitly marked unavailable here}}
+func spaces_renamed() {}
+
+@available(*, unavailable, renamed: "foo(`3bar baz`:)") // expected-note {{'keywords_in_arguments(x:)' has been explicitly marked unavailable here}}
+func keywords_in_arguments(x: Int) {}
+
+func testEscapedRenamed() {
+  keyword_renamed() // expected-error {{'keyword_renamed()' has been renamed to '`class`'}}
+  spaces_renamed() // expected-error {{'spaces_renamed()' has been renamed to '`foo bar`'}}
+  keywords_in_arguments(x: 0) // expected-error {{'keywords_in_arguments(x:)' has been renamed to 'foo(`3bar baz`:)'}}
+}
