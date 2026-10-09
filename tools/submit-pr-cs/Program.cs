@@ -9,8 +9,9 @@ public class Opts
     public string? Repo, Fork, Title, Body;
     public string BranchPrefix = "auto-pr";
     public int? MaxLines, MaxFiles, MaxFileLines;
-    public int PollTimeout = 300, PollInterval = 15, MaxRetries = 3, Workers = 0;
-    public bool Strict, DryRun;
+    public int PollTimeout = 300, PollInterval = 15, MaxRetries = 30, Workers = 0;
+    public bool Strict, DryRun, Sync, NoWait;
+    public string? PushToken;    // 多账号: 推 fork 用的 access token（服务端注入）
     public Action<Ev>? OnEvent;  // GUI 进度事件汇（null=纯控制台）
 }
 
@@ -31,7 +32,9 @@ public static class Program
         }
         try
         {
-            var ok = Runner.RunPlan(o, s => Console.WriteLine(s));
+            var ok = o.Sync
+                ? Runner.RunSync(o, s => Console.WriteLine(s))
+                : Runner.RunPlan(o, s => Console.WriteLine(s));
             return ok ? 0 : 1;
         }
         catch (OpException e)
@@ -75,6 +78,8 @@ public static class Program
                 case "--workers": o.Workers = int.Parse(Next(args, ref i, a)); break;
                 case "--strict": o.Strict = true; break;
                 case "--dry-run": o.DryRun = true; break;
+                case "--sync": o.Sync = true; break;
+                case "--no-wait": o.NoWait = true; break;
                 case "-h" or "--help": throw new OpException(Help);
                 default:
                     if (a.StartsWith("--"))
@@ -95,10 +100,13 @@ public static class Program
     private const string Help =
         "用法: submit-pr-cs <源文件或目录...> --dest <仓库内目录> [选项]\n" +
         "      submit-pr-cs --delete <仓库内路径...> [选项]\n" +
+        "      submit-pr-cs --sync [选项]          只更新仓库（fetch 上游→快进本地 main→推 fork）\n" +
         "  --title/--body           PR 标题与描述（默认自动生成）\n" +
         "  --max-lines/--max-files/--max-file-lines  收紧上限（默认=机器人上限）\n" +
-        "  --workers N              并发数（默认全部并发, 上限 10）\n" +
+        "  --workers N              并发数（默认 1=串行提交；N>1 开启并发, 上限 10）\n" +
         "  --poll-timeout/--poll-interval/--max-retries  轮询与重试参数\n" +
+        "                           （超时/停滞会换基底重推继续等，默认 30 次不轻言放弃）\n" +
         "  --strict                 有跳过文件时中止\n" +
+        "  --no-wait                每个 PR 建好即提交下一个，最后统一结算等待合并\n" +
         "  --dry-run                只打印计划不提交";
 }

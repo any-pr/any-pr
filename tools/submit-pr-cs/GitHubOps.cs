@@ -10,13 +10,14 @@ public static class GitHubOps
         fork == target ? branch : $"{fork.Split('/')[0]}:{branch}";
 
     // push 幂等（同分支同内容），按"常规→直连→常规"退避重试兜底代理抖动。
-    // onRetry: GUI 用的降级/重试上报（i 从 1 起）。
+    // onRetry: GUI 用的降级/重试上报（i 从 1 起）。token: 多账号推送凭据（可空）。
     public static void PushBranch(string fork, string branch, string wt, bool force,
-        Action<int, string>? onRetry = null)
+        Action<int, string>? onRetry = null, string? token = null)
     {
         string[][] variants = { Array.Empty<string>(),
             new[] { "-c", "http.proxy=", "-c", "https.proxy=" }, Array.Empty<string>() };
-        var url = $"https://github.com/{fork}.git";
+        var url = token is null ? $"https://github.com/{fork}.git"
+            : $"https://x-access-token:{token}@github.com/{fork}.git";
         for (int i = 0; i < variants.Length; i++)
         {
             var cmd = new List<string> { "git", "-C", wt };

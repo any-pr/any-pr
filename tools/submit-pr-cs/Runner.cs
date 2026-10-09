@@ -11,10 +11,13 @@ public static class Runner
     // 机器人有两种情况需要重新触发检查（重试上限内各换一次新基底强推）:
     //   - PR 因 base 变动合并冲突被关 / 被评论要求 rebase；
     //   - 与其他 PR 的合并竞态导致其静默退出，PR 永远停在 OPEN。
+    // noWait: 建好 PR 即返回（Result="submitted"），不轮询不促发——
+    // 剩下的交给机器人自己处理。渐进链的中间步骤必须传 false（下一步依赖上一步合并）。
     public static StepResult SubmitBatch(Opts o, string label, string repoRoot,
         string target, string fork, string baseSha, string branch,
         List<FileItem> batch, string dest, string title, string body,
-        int pollTimeout, int pollInterval, int maxRetries, Action<string> log)
+        int pollTimeout, int pollInterval, int maxRetries, Action<string> log,
+        bool noWait)
     {
         int? pr = null;
         var baseNow = baseSha;
@@ -25,9 +28,11 @@ public static class Runner
             var wt = GitOps.BuildWorktreeCommit(repoRoot, baseNow, dest, batch, title);
             try
             {
-                GitHubOps.PushBranch(fork, branch, wt, force: pr != null,
+                // 始终 force: 结算/重试在更新过的基底上重建提交必非快进；
+                // 全新分支 force 无副作用，残留同名分支也能被纠正。
+                GitHubOps.PushBranch(fork, branch, wt, force: true,
                     onRetry: (i, msg) => Ev.Emit(o, label, "pushretry",
-                        $"push 降级/重试 {i}/3: {msg}"));
+                        $"push 降级/重试 {i}/3: {msg}"), token: o.PushToken);
             }
             finally
             {
@@ -45,6 +50,12 @@ public static class Runner
                 Ev.Emit(o, label, "pr", $"#{pr}");
             }
 
+            if (noWait)
+            {
+                Ev.Emit(o, label, "submitted", $"#{pr} 已提交（no-wait，不等待合并）");
+                return new StepResult { Pr = pr.Value, Result = "submitted",
+                    Url = $"https://github.com/{target}/pull/{pr}" };
+            }
             var deadline = DateTime.UtcNow.AddSeconds(pollTimeout);
             while (true)
             {
@@ -82,6 +93,17 @@ public static class Runner
                 }
                 if (DateTime.UtcNow >= deadline)
                 {
+                    // 等待超时不放弃: PR 还开着就换新基底强推促发机器人重查，继续轮询；
+                    // 重试额度耗尽才作为 timeout 收场（默认额度足够"没通过就轮询"）。
+                    if (attempt < maxRetries)
+                    {
+                        log($"[{branch}] 等待合并超时（{pollTimeout}s），换新基底重推 " +
+                            $"({attempt}/{maxRetries})…");
+                        Ev.Emit(o, label, "retry",
+                            $"等待合并超时（{pollTimeout}s），换新基底重推 ({attempt}/{maxRetries})");
+                        baseNow = GitOps.LatestMainSha(target, repoRoot);
+                        break;
+                    }
                     Ev.Emit(o, label, "timeout", $"#{pr} 等待合并超时（{pollTimeout}s）");
                     return new StepResult { Pr = pr.Value, Result = "timeout",
                         Url = $"https://github.com/{target}/pull/{pr}" };
@@ -219,6 +241,16 @@ public static class Runner
         {
             Cleanup(tmpDir);
         }
+    }
+
+    // 控制台 --sync 入口: 只更新仓库（fetch 上游→快进本地 main→推 fork），不提交内容。
+    public static bool RunSync(Opts o, Action<string> log)
+    {
+        Preflight();
+        var repoRoot = GitOps.Run(new[] { "git", "rev-parse", "--show-toplevel" }).Trim();
+        var (fork, target) = ResolveForkTarget(o);
+        log($"上游仓库: {target}   分支推送目标: {fork}");
+        return Sync.SyncRepo(target, fork, repoRoot, log, o.PushToken);
     }
 
     // 预检依赖与凭据: 没有它们时第一步就会以晦涩的进程错误失败，

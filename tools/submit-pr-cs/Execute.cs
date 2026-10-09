@@ -84,10 +84,12 @@ public static class Execute
             });
         }
 
-        var workers = Math.Max(1, Math.Min(Math.Min(
-            o.Workers > 0 ? o.Workers : units.Count, units.Count), 10));
+        // 默认串行提交（一次一个 PR，没合并完不开始下一个）；
+        // --workers N>1 才开启并发（上限 10）。
+        var workers = Math.Max(1, Math.Min(o.Workers > 0 ? o.Workers : 1,
+            Math.Min(units.Count, 10)));
         var totalSteps = units.Sum(u => u.Steps.Count);
-        log($"并发提交 {units.Count} 个任务（{workers} 路并行，共 {totalSteps} 个 PR）…");
+        log($"提交 {units.Count} 个任务（{(workers == 1 ? "串行" : $"{workers} 路并行")}，共 {totalSteps} 个 PR）…");
         Ev.EmitPlan(o, units.Count, totalSteps,
             $"{units.Count} 个任务 / {totalSteps} 个 PR / {workers} 路并行");
         foreach (var u in units)
@@ -112,21 +114,24 @@ public static class Execute
                         // 链的每一步都必须基于包含前一步的最新 main
                         var b2 = u.Steps.Count > 1
                             ? GitOps.LatestMainSha(target, repoRoot) : baseSha;
+                        // no-wait 只作用于单元末步: 中间步骤下一步依赖其合并
                         var r = Runner.SubmitBatch(o, u.Label, repoRoot, target,
                             fork, b2, s.Branch, s.Batch, dest, s.Title, s.Body,
                             o.PollTimeout, o.PollInterval, o.MaxRetries,
-                            LogThreadSafe);
+                            LogThreadSafe, o.NoWait && k == u.Steps.Count - 1);
                         res.Add(r);
                         LogThreadSafe($"[{u.Label}] 第 {k + 1}/{u.Steps.Count} 步 → " +
                             $"PR #{r.Pr}: {r.Url}");
-                        if (u.Steps.Count > 1 && r.Result != "merged")
+                        if (u.Steps.Count > 1 && r.Result != "merged"
+                            && !(r.Result == "submitted" && k == u.Steps.Count - 1))
                             throw new OpException(
                                 $"链第 {k + 1}/{u.Steps.Count} 步未合并" +
                                 $"（{r.Result}），中止后续步骤");
                     }
                     u.Results = res;
                     LogThreadSafe($"[{u.Label}] {u.Results[^1].Result}");
-                    Ev.Emit(o, u.Label, "udone", u.Results[^1].Result);
+                    if (u.Results[^1].Result != "submitted")
+                        Ev.Emit(o, u.Label, "udone", u.Results[^1].Result);
                 }
                 catch (Exception e)
                 {
@@ -136,6 +141,46 @@ public static class Execute
                 }
             });
         sw.Stop();
+
+        // 结算阶段: no-wait 提交的 PR 逐个等合并（换基底重推促发在 SubmitBatch 内）。
+        // 先查状态——多数 PR 这时已被机器人合掉，直接收割，不必重推。
+        var pending = units.Where(u => u.Error == null
+            && u.Results.Count > 0 && u.Results[^1].Result == "submitted").ToList();
+        if (pending.Count > 0)
+        {
+            log($"结算: 等待 {pending.Count} 个已提交 PR 合并…");
+            Ev.Emit(o, "", "settle", $"等待 {pending.Count} 个已提交 PR 合并");
+            foreach (var u in pending)
+            {
+                try
+                {
+                    var pr = u.Results[^1].Pr;
+                    if (GitHubOps.PrStateTolerant(target, pr) != "MERGED")
+                    {
+                        var s = u.Steps[^1];
+                        var b2 = GitOps.LatestMainSha(target, repoRoot);
+                        u.Results[^1] = Runner.SubmitBatch(o, u.Label, repoRoot, target,
+                            fork, b2, s.Branch, s.Batch, dest, s.Title, s.Body,
+                            o.PollTimeout, o.PollInterval, o.MaxRetries,
+                            LogThreadSafe, noWait: false);
+                    }
+                    else
+                    {
+                        u.Results[^1] = new Runner.StepResult { Pr = pr, Result = "merged",
+                            Url = $"https://github.com/{target}/pull/{pr}" };
+                        Ev.Emit(o, u.Label, "merged", $"#{pr} 已合并");
+                    }
+                    LogThreadSafe($"[{u.Label}] 结算: {u.Results[^1].Result}");
+                    Ev.Emit(o, u.Label, "udone", u.Results[^1].Result);
+                }
+                catch (Exception e)
+                {
+                    u.Error = e.Message;
+                    LogThreadSafe($"[{u.Label}] 结算失败 — {e.Message}");
+                    Ev.Emit(o, u.Label, "fail", e.Message);
+                }
+            }
+        }
 
         var ok = units.All(u => u.Error == null && u.Results.All(r => r.Result == "merged"));
         // 最终验证: 普通批验全部条目，链只看末步（创建/改写=原文件，删除=应不存在）

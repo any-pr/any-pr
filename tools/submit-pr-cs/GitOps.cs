@@ -6,7 +6,12 @@ namespace SubmitPrCs;
 // git 底层操作: 子进程封装 / 临时 worktree / 精确 numstat / 防御性提交构建。
 public static class GitOps
 {
-    public static string Run(IList<string> cmd, string? cwd = null)
+    // 多账号: 服务端在作业开始时设置（如 GH_TOKEN=<该账号 token>），作业串行执行无竞态；
+    // 控制台直接运行时保持 null，用 gh 的默认登录态。
+    public static Dictionary<string, string>? GhEnv;
+
+    public static string Run(IList<string> cmd, string? cwd = null,
+        Dictionary<string, string>? env = null)
     {
         var psi = new ProcessStartInfo
         {
@@ -20,6 +25,8 @@ public static class GitOps
             CreateNoWindow = true,
         };
         foreach (var a in cmd.Skip(1)) psi.ArgumentList.Add(a);
+        if (env != null)
+            foreach (var kv in env) psi.Environment[kv.Key] = kv.Value;
         using var p = Process.Start(psi)!;
         var ot = p.StandardOutput.ReadToEndAsync();
         var et = p.StandardError.ReadToEndAsync();
@@ -29,10 +36,15 @@ public static class GitOps
         if (p.ExitCode != 0)
         {
             var detail = (e.Length > 0 ? e : o).Trim();
-            throw new OpException($"命令失败 ({p.ExitCode}): {string.Join(' ', cmd)}\n{detail}");
+            throw new OpException(Redact(
+                $"命令失败 ({p.ExitCode}): {string.Join(' ', cmd)}\n{detail}"));
         }
         return o;
     }
+
+    // 错误信息里可能出现 https://token@github.com/... 形式的地址，上抛前打码
+    private static string Redact(string s) =>
+        System.Text.RegularExpressions.Regex.Replace(s, @"(?<=://)[^/@\s]+@", "***@");
 
     public static byte[] RunBytes(IList<string> cmd, string? cwd = null)
     {
@@ -56,7 +68,8 @@ public static class GitOps
         return ms.ToArray();
     }
 
-    public static string Gh(params string[] args) => Run(new[] { "gh" }.Concat(args).ToArray()).Trim();
+    public static string Gh(params string[] args) =>
+        Run(new[] { "gh" }.Concat(args).ToArray(), null, GhEnv).Trim();
 
     // 在 worktree 上下文里判定哪些路径被 .gitignore（含子目录 .gitignore）忽略。
     // 被忽略的路径 git add 会拒绝；项目作者用 .gitignore 表达"不 vendor"的意图，
