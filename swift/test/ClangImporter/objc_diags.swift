@@ -1,0 +1,10 @@
+// RUN: %target-swift-frontend(mock-sdk: %clang-importer-sdk) -enable-objc-interop -typecheck %s -verify -verify-ignore-unrelated
+
+// expected-warning@<unknown> * {{libc not found for }}
+
+import ObjectiveC
+
+func instanceMethod(_ b: B) {
+  // Notes for labeling mismatch candidates are now attached to each individual declaration
+  b.method(1, 2.5) // expected-error {{no exact matches in call to instance method 'method'}}
+}
