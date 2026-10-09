@@ -1,0 +1,51 @@
+// RUN: %target-sil-opt -sil-print-types --onone-simplification %s | %FileCheck %s
+
+
+import Builtin
+import Swift
+
+class Klass {}
+
+enum EnumTy: ~Copyable {
+    case klass(Klass)
+    case int(Builtin.Word)
+}
+
+// The borrowed `switch_enum` operand is forwarded to the owned enum value: the
+// `unchecked_enum_data` instructions are replaced by the case block arguments and the
+// `switch_enum` consumes the enum. In the trivial arm this means that the enum is consumed by
+// the `switch_enum` itself.
+//
+// CHECK-LABEL: sil [ossa] @test_switch_trivial_arm :
+// CHECK:         [[MOVE:%.*]] = move_value
+// CHECK-NOT:     begin_borrow
+// CHECK:         switch_enum [[MOVE]] : $EnumTy, case #EnumTy.klass!enumelt: [[KLASSBB:bb[0-9]+]], case #EnumTy.int!enumelt: [[INTBB:bb[0-9]+]]
+// CHECK:       [[KLASSBB]]([[KLASS:%.*]] : @owned $Klass):
+// CHECK-NEXT:    destroy_value [[KLASS]]
+// CHECK-NEXT:    br
+// CHECK:       [[INTBB]]({{%[0-9]+}} : $Builtin.Word):
+// CHECK-NEXT:    br
+// CHECK:       } // end sil function 'test_switch_trivial_arm'
+sil [ossa] @test_switch_trivial_arm : $@convention(thin) (@guaranteed EnumTy) -> () {
+entry(%a : @guaranteed $EnumTy):
+  %b = explicit_copy_value %a : $EnumTy
+  %c = move_value %b : $EnumTy
+  %d = begin_borrow %c : $EnumTy
+  switch_enum %d : $EnumTy, case #EnumTy.klass!enumelt: klass, case #EnumTy.int!enumelt: int
+
+klass(%e : @guaranteed $Klass):
+  end_borrow %d : $EnumTy
+  %f = unchecked_enum_data %c : $EnumTy, #EnumTy.klass!enumelt
+  destroy_value %f : $Klass
+  br end
+
+int(%p : $Builtin.Word):
+  end_borrow %d : $EnumTy
+  %q = unchecked_enum_data %c : $EnumTy, #EnumTy.int!enumelt
+  br end
+
+end:
+  return undef : $()
+}
+
+
