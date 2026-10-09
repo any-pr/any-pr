@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>submit-pr-server</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AssemblyTitle>submit-pr-server</AssemblyTitle>
+    <Description>submit-pr 本地服务端：串行作业队列 + 多 GitHub 账号 + HTTP API（GUI/脚本作客户端）</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../submit-pr-cs/submit-pr-cs.csproj" />
+  </ItemGroup>
+</Project>
