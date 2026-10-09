@@ -1,0 +1,13 @@
+// RUN: %target-swift-emit-silgen-ossa -o /dev/null -enable-sil-opaque-values %s
+// RUN: %target-swift-frontend -target %target-swift-5.1-abi-triple -emit-silgen -verify %s
+
+public func foo() -> some Any { return 1 }
+
+public struct XY<X, Y> { public init(x: X, y: Y) { fatalError() } }
+
+@inlinable
+public func bar() -> () -> Any {
+    let xy = XY(x: 1, y: foo())
+
+    return { xy }
+}
