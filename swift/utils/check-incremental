@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+# check-incremental - Check if incremental compilation works -*- python -*-
+#
+# This source file is part of the Swift.org open source project
+#
+# Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
+# Licensed under Apache License v2.0 with Runtime Library Exception
+#
+# See https://swift.org/LICENSE.txt for license information
+# See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
+#
+"""
+check-incremental: Check if incremental compilation works.
+
+This is a wrapper for the Swift compiler.  It invokes the compiler
+multiple times and checks if the output object file is only written once.
+The main purpose of the check is to ensure that the compiler is
+deterministic.
+"""
+
+import os
+import subprocess
+import sys
+import time
+
+
+VERBOSE = True
+EMIT_IR = False
+NUM_ITERATIONS = 4
+
+
+def compile_and_stat(compile_args, output_file):
+    """Perform a compilation using ``compile_args``, and return a tuple
+    (md5sum, last modified time) for ``output_file`` after the
+    compilation has finished.
+    """
+
+    # The compiler writes its `-sil-print-pass-md5` output directly to
+    # ``output_file + ".log"`` (see the `-sil-print-pass-md5=` argument added in
+    # main()), so we don't redirect stdout/stderr here. That keeps the
+    # compiler's stdout/stderr going to the console, so "real" diagnostics stay
+    # visible in the CI log.
+    subprocess.check_call(compile_args)
+
+    md5 = subprocess.check_output(["md5", "-q", output_file],
+                                  universal_newlines=True)
+    mtime = time.ctime(os.path.getmtime(output_file))
+
+    if VERBOSE:
+        print(" time = " + str(mtime))
+        print("  md5 = " + md5)
+
+    return (md5, mtime)
+
+def print_diff(output_file, suffix):
+    subprocess.run(
+        ["diff", "-c", output_file + suffix, output_file + ".ref" + suffix])
+
+def print_diffs(output_file):
+    print("\n## log differences:", flush=True)
+    print_diff(output_file, ".log")
+
+    if EMIT_IR and VERBOSE:
+        print("\n## SIL differences:", flush=True)
+        print_diff(output_file, ".sil")
+        print("\n## IRGen differences:", flush=True)
+        print_diff(output_file, ".irgen.ll")
+        print("\n## IR differences:", flush=True)
+        print_diff(output_file, ".ll")
+
+def main():
+
+    write_obj_file = False
+    next_arg_is_output = False
+    compare_time = True
+    output_file = None
+    embedded = False
+    wasm = False
+
+    for arg in sys.argv:
+        if next_arg_is_output:
+            output_file = arg
+            next_arg_is_output = False
+        elif arg == '-c':
+            write_obj_file = True
+        elif arg == '-disable-incremental-llvm-codegen':
+            compare_time = False
+        elif arg == '-emit-empty-object-file':
+            compare_time = False
+        elif arg == 'Embedded':
+            embedded = True
+        elif arg.startswith('wasm'):
+            wasm = True
+        elif arg == '-o':
+            next_arg_is_output = True
+
+    if embedded and wasm:
+        compare_time = False
+
+    new_args = sys.argv[1:]
+
+    if not write_obj_file or output_file is None:
+        subprocess.check_call(new_args)
+        return
+
+    new_args += [
+      '-Xllvm', '-sil-print-pass-md5=' + output_file + '.log']
+
+    if EMIT_IR:
+      new_args += [
+        '-Xllvm', '-save-sil', '-Xllvm', output_file + '.sil',
+        '-Xllvm', '-save-irgen', '-Xllvm', output_file + '.irgen.ll',
+        '-Xllvm', '-save-ir', '-Xllvm', output_file + '.ll']
+
+    if VERBOSE:
+        print("Reference compilation of " + output_file + ":")
+
+    # As a workaround for rdar://problem/43442957 and rdar://problem/43439465
+    # we have to "warm-up" the clang module cache. Without that in some cases
+    # we end up with small differences in the debug info.
+    compile_and_stat(new_args, output_file)
+
+    reference_md5, reference_time = compile_and_stat(new_args, output_file)
+
+    subprocess.check_call(["cp", output_file, output_file + ".ref.o"])
+    subprocess.check_call(["cp", output_file + ".log", output_file + ".ref.log"])
+    if EMIT_IR:
+        subprocess.check_call(
+            ["cp", output_file + ".sil", output_file + ".ref.sil"])
+        subprocess.check_call(
+            ["cp", output_file + ".irgen.ll", output_file + ".ref.irgen.ll"])
+        subprocess.check_call(
+            ["cp", output_file + ".ll", output_file + ".ref.ll"])
+
+    for iteration in range(1, NUM_ITERATIONS + 1):
+
+        if VERBOSE:
+            print("Iteration {}:".format(iteration))
+
+        second_md5, second_time = compile_and_stat(new_args, output_file)
+
+        # This is the most important check: is the output file exactly the
+        # same.
+        if reference_md5 != second_md5:
+            print_diffs(output_file)
+            sys.exit("ERROR: non-determinism when generating: " + output_file +
+                     "\ncommand line:\n" + " ".join(new_args) +
+                     "\nDear build wrangler: please notify the Swift optimizer code owner!")
+
+        # This is the bonus check: does the compiler not re-write the output
+        # file. (For compilations < 1sec this check may succeed even if the
+        # file was overwritten).
+        if compare_time and reference_time != second_time:
+            print_diffs(output_file)
+            sys.exit("ERROR: file timestamp was re-written: " + output_file)
+
+
+if __name__ == '__main__':
+    main()
+
