@@ -1,0 +1,35 @@
+// RUN: %target-swift-emit-silgen -Xllvm -sil-print-types %s -I %S/Inputs -enable-experimental-cxx-interop -target %target-swift-5.8-abi-triple | %FileCheck %s
+
+import POD
+
+// CHECK-NOT: borrow
+// CHECK-NOT: retain
+// CHECK-NOT: release
+// CHECK-LABEL: sil [ossa] @$s4main4testyyF : $@convention(thin) () -> ()
+
+// CHECK: [[BOX:%.*]] = project_box {{.*}} : ${ var IntPair }, 0
+
+// CHECK: [[CREATE_FN:%.*]] = function_ref @$sSo7IntPairV6createAByFZTo : $@convention(c) () -> IntPair
+// CHECK: [[CREATED_PTR:%.*]] = apply [[CREATE_FN]]() : $@convention(c) () -> IntPair
+// CHECK: store [[CREATED_PTR]] to [trivial] [[BOX]] : $*IntPair
+// CHECK: [[ACCESS_1:%.*]] = begin_access [read] [unknown] [[BOX]] : $*IntPair
+// CHECK: [[X_1:%.*]] = load [trivial] [[ACCESS_1]] : $*IntPair
+
+// CHECK: [[X_B:%.*]] = ref_element_addr [[X_1]] : $IntPair, #IntPair.b
+// CHECK: [[ACCESS_2:%.*]] = begin_access [modify] [dynamic] [[X_B]] : $*Int32
+// CHECK: assign {{.*}} to [[ACCESS_2]] : $*Int32
+
+// CHECK: [[ACCESS_3:%.*]] = begin_access [read] [unknown] [[BOX]] : $*IntPair
+// CHECK: [[X_2:%.*]] = load [trivial] [[ACCESS_3]] : $*IntPair
+// CHECK: [[TEST_FN:%.*]] = function_ref @$sSo7IntPairV4tests5Int32VyFTo : $@convention(cxx_method) (IntPair) -> Int32
+// CHECK: apply [[TEST_FN]]([[X_2]]) : $@convention(cxx_method) (IntPair) -> Int32
+
+// CHECK: return
+// CHECK-LABEL: end sil function '$s4main4testyyF'
+public func test() {
+  var x = IntPair.create()
+  x.b = 42
+  _ = x.test()
+}
+
+// CHECK-LABEL: sil {{.*}}[asmname "{{.*}}create{{.*}}"] [clang IntPair.create] @$sSo7IntPairV6createAByFZTo : $@convention(c) () -> IntPair
