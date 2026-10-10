@@ -1,0 +1,79 @@
+// RUN: %empty-directory(%t)
+// RUN: %target-swift-frontend -enable-experimental-feature Embedded -parse-as-library -module-name main %s -emit-ir | %FileCheck --check-prefix=CHECK-IR %s
+// RUN: %target-swift-frontend -enable-experimental-feature Embedded -parse-as-library -module-name main %s -c -o %t/a.o
+// RUN: %target-embedded-link %t/a.o -o %t/a.out -L%swift_obj_root/lib/swift/embedded/%module-target-triple %target-clang-resource-dir-opt -lswift_Concurrency %target-swift-default-executor-opt %target-embedded-concurrency-threading-shim -dead_strip
+// RUN: %target-run %t/a.out | %FileCheck %s
+
+// RUN: %empty-directory(%t)
+// RUN: %target-swift-frontend -enable-experimental-feature Embedded -parse-as-library -module-name main %s -emit-ir > %t.ll
+// RUN: %FileCheck --check-prefix=EXIST-IR %s < %t.ll
+// RUN: %FileCheck --check-prefix=EXIST-IR-NO-ALIAS %s < %t.ll
+// RUN: %target-swift-frontend -enable-experimental-feature Embedded -parse-as-library -module-name main %s -c -o %t/a.o
+// RUN: %target-embedded-link %t/a.o -o %t/a.out -L%swift_obj_root/lib/swift/embedded/%module-target-triple %target-clang-resource-dir-opt -lswift_Concurrency %target-swift-default-executor-opt %target-embedded-concurrency-threading-shim -dead_strip
+// RUN: %target-run %t/a.out | %FileCheck %s
+
+
+// REQUIRES: executable_test
+// REQUIRES: optimized_stdlib
+// REQUIRES: OS=macosx || OS=wasip1
+// REQUIRES: swift_feature_Embedded
+// REQUIRES: embedded_stdlib_default_codegen
+
+import _Concurrency
+
+actor MyActor {
+    var value: Int = 42
+    func foo() async {
+        print("value: \(value)")
+    }
+
+    func thisIsUnused() async {
+        print("unused")
+    }
+}
+
+@main struct Main {
+    static func main() async {
+        let n = MyActor()
+        await n.foo()
+    }
+}
+
+// CHECK-IR:      @swift_deletedAsyncMethodErrorTu =
+// CHECK-IR:      @"$e4main7MyActorCMf" = internal constant <{ {{.*}} }> <{
+// CHECK-IR-SAME:   ptr null,
+// CHECK-IR-SAME:   ptr @"$e4main7MyActorCfD{{(.ptrauth[.0-9]*)?}}",
+// CHECK-IR-SAME:   ptr null,
+// CHECK-IR-SAME:   ptr @swift_deletedMethodError{{(.ptrauth[.0-9]*)?}},
+// CHECK-IR-SAME:   ptr @swift_deletedMethodError{{(.ptrauth[.0-9]*)?}},
+// CHECK-IR-SAME:   ptr @swift_deletedMethodError{{(.ptrauth[.0-9]*)?}},
+// CHECK-IR-SAME:   ptr @"$e4main7MyActorC3fooyyYaFTu{{(.ptrauth[.0-9]*)?}}",
+// CHECK-IR-SAME:   ptr @_swift_dead_async_method_error_afp{{[^,]*}},
+// CHECK-IR-SAME:   ptr @"$e4main7MyActorCACycfC{{(.ptrauth[.0-9]*)?}}"
+// CHECK-IR-SAME: }>, align {{[48]}}
+
+// CHECK-IR-NOT:  $e4main7MyActorC12thisIsUnusedyyYaF
+
+// CHECK-IR: define weak_odr {{swifttailcc|swiftcc}} void @swift_deletedAsyncMethodError(ptr swiftasync %0)
+
+// CHECK: value: 42
+
+// EXIST-IR:      @swift_deletedAsyncMethodErrorTu =
+// EXIST-IR: @"$e4main7MyActorCMf" = {{.*}} <{ ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr }> <{
+// EXIST-IR-SAME:  ptr @"$eBoWV{{(.ptrauth[.0-9]*)?}}",
+// EXIST-IR-SAME:  ptr null,
+// EXIST-IR-SAME:  ptr @"$e4main7MyActorCfD{{(.ptrauth[.0-9]*)?}}",
+// EXIST-IR-SAME:  ptr null,
+// EXIST-IR-SAME:  ptr @swift_deletedMethodError{{(.ptrauth[.0-9]*)?}},
+// EXIST-IR-SAME:  ptr @swift_deletedMethodError{{(.ptrauth[.0-9]*)?}},
+// EXIST-IR-SAME:  ptr @swift_deletedMethodError{{(.ptrauth[.0-9]*)?}},
+// EXIST-IR-SAME:  ptr @"$e4main7MyActorC3fooyyYaFTu{{(.ptrauth[.0-9]*)?}}",
+// EXIST-IR-SAME:  ptr @_swift_dead_async_method_error_afp{{[^,]*}},
+// EXIST-IR-SAME:  ptr @"$e4main7MyActorCACycfC{{(.ptrauth[.0-9]*)?}}" }>
+
+// MyActor isn't @export(interface), so its full metadata is internal, and so
+// is the alias to its address point, which is unused here.
+// EXIST-IR-NO-ALIAS-NOT: @"$e4main7MyActorCN" =
+
+
+// EXIST-IR-NOT:  $e4main7MyActorC12thisIsUnusedyyYaF
