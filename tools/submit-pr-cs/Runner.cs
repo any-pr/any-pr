@@ -131,8 +131,8 @@ public static class Runner
 
         // 预检: git/gh 可用性提前到做任何规划之前，失败给出明确指引
         Preflight();
-        var repoRoot = GitOps.Run(new[] { "git", "rev-parse", "--show-toplevel" }).Trim();
-        var (fork, target) = ResolveForkTarget(o);
+        var repoRoot = ResolveRepoRoot(o);
+        var (fork, target) = ResolveForkTarget(o, repoRoot);
         log($"上游仓库: {target}   分支推送目标: {fork}");
 
         var delete = o.Delete;
@@ -247,10 +247,24 @@ public static class Runner
     public static bool RunSync(Opts o, Action<string> log)
     {
         Preflight();
-        var repoRoot = GitOps.Run(new[] { "git", "rev-parse", "--show-toplevel" }).Trim();
-        var (fork, target) = ResolveForkTarget(o);
+        var repoRoot = ResolveRepoRoot(o);
+        var (fork, target) = ResolveForkTarget(o, repoRoot);
         log($"上游仓库: {target}   分支推送目标: {fork}");
         return Sync.SyncRepo(target, fork, repoRoot, log, o.PushToken);
+    }
+
+    // 仓库根目录: --repo-root 显式指定（工具独立于仓库检出运行时用），
+    // 缺省取当前工作目录所属的仓库。
+    private static string ResolveRepoRoot(Opts o)
+    {
+        if (!string.IsNullOrWhiteSpace(o.RepoRoot))
+        {
+            if (!Directory.Exists(o.RepoRoot))
+                throw new OpException($"--repo-root 目录不存在: {o.RepoRoot}");
+            return GitOps.Run(new[] { "git", "-C", o.RepoRoot.Trim(),
+                "rev-parse", "--show-toplevel" }).Trim();
+        }
+        return GitOps.Run(new[] { "git", "rev-parse", "--show-toplevel" }).Trim();
     }
 
     // 预检依赖与凭据: 没有它们时第一步就会以晦涩的进程错误失败，
@@ -269,19 +283,31 @@ public static class Runner
         }
     }
 
-    private static (string Fork, string Target) ResolveForkTarget(Opts o)
+    private static (string Fork, string Target) ResolveForkTarget(Opts o,
+        string repoRoot)
     {
         if (o.Fork != null) return (o.Fork, o.Repo ?? o.Fork);
-        using var doc = System.Text.Json.JsonDocument.Parse(GitOps.Gh("repo",
-            "view", "--json", "nameWithOwner,parent"));
-        var root = doc.RootElement;
-        var fork = root.GetProperty("nameWithOwner").GetString()!;
-        var parent = root.GetProperty("parent");
-        var target = parent.ValueKind == System.Text.Json.JsonValueKind.Undefined
-            ? fork
-            : $"{parent.GetProperty("owner").GetProperty("login").GetString()}" +
-              $"/{parent.GetProperty("name").GetString()}";
-        return (fork, target);
+        // 从 origin 远程解析 fork——gh repo view 在 fork 检出里会优先选 upstream
+        // 远程（面向上游操作），会把"推送目标"误判成上游仓库。
+        string url;
+        try
+        {
+            url = GitOps.Run(new[] { "git", "-C", repoRoot,
+                "remote", "get-url", "origin" }).Trim();
+        }
+        catch (OpException)
+        {
+            throw new OpException("未配置 --fork，且仓库没有 origin 远程，无法确定推送目标。");
+        }
+        var m = System.Text.RegularExpressions.Regex.Match(url,
+            @"github\.com[/:]([\w.-]+/[\w.-]+?)(?:\.git)?\s*$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (!m.Success)
+            throw new OpException($"无法从 origin 地址解析仓库: {url}");
+        var fork = m.Groups[1].Value;
+        var parent = GitOps.Gh("api", $"repos/{fork}",
+            "--jq", ".parent.full_name // empty").Trim();
+        return (fork, parent.Length > 0 ? parent : fork);
     }
 
     private static void Cleanup(string tmpDir)

@@ -6,7 +6,7 @@ public class Opts
     public List<string> Sources = new();
     public List<string>? Delete;
     public string Dest = ".";
-    public string? Repo, Fork, Title, Body;
+    public string? Repo, Fork, Title, Body, RepoRoot;
     public string BranchPrefix = "auto-pr";
     public int? MaxLines, MaxFiles, MaxFileLines;
     public int PollTimeout = 300, PollInterval = 15, MaxRetries = 30, Workers = 0;
@@ -65,6 +65,7 @@ public static class Program
                     break;
                 case "--dest": o.Dest = Next(args, ref i, a); break;
                 case "--repo": o.Repo = Next(args, ref i, a); break;
+                case "--repo-root": o.RepoRoot = Next(args, ref i, a); break;
                 case "--fork": o.Fork = Next(args, ref i, a); break;
                 case "--title": o.Title = Next(args, ref i, a); break;
                 case "--body": o.Body = Next(args, ref i, a); break;
@@ -101,6 +102,7 @@ public static class Program
         "用法: submit-pr-cs <源文件或目录...> --dest <仓库内目录> [选项]\n" +
         "      submit-pr-cs --delete <仓库内路径...> [选项]\n" +
         "      submit-pr-cs --sync [选项]          只更新仓库（fetch 上游→快进本地 main→推 fork）\n" +
+        "  --repo-root <dir>        仓库根目录（默认=当前目录所属仓库；工具独立存放时用）\n" +
         "  --title/--body           PR 标题与描述（默认自动生成）\n" +
         "  --max-lines/--max-files/--max-file-lines  收紧上限（默认=机器人上限）\n" +
         "  --workers N              并发数（默认 1=串行提交；N>1 开启并发, 上限 10）\n" +
