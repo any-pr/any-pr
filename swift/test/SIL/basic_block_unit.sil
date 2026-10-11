@@ -1,0 +1,274 @@
+// RUN: %target-sil-opt %s -test-runner -o /dev/null | %FileCheck %s
+
+sil_stage canonical
+
+import Builtin
+import Swift
+
+// CHECK-LABEL: run SILPrinter on function: testfunc
+// CHECK-NEXT:  bb0:
+// CHECK-NEXT:    predecessors: []
+// CHECK-NEXT:    successors:   [bb1, bb2]
+// CHECK-NEXT:    arguments:
+// CHECK-NEXT:      arg: %0 = argument of bb0 : $*Int
+// CHECK-NEXT:        user:   %2 = begin_access [read] [dynamic] %0 : $*Int
+// CHECK-NEXT:      arg: %1 = argument of bb0 : $(String, String)
+// CHECK-NEXT:        user:   (%4, %5) = destructure_tuple %1 : $(String, String)
+// CHECK-NEXT:    instructions:
+// CHECK-NEXT:      %2 = begin_access [read] [dynamic] %0 : $*Int
+// CHECK-NEXT:        op: %0 = argument of bb0 : $*Int
+// CHECK-NEXT:        user of result 0:   end_access %2 : $*Int
+// CHECK-NEXT:      %3 = alloc_stack $String
+// CHECK-NEXT:        user of result 0:   dealloc_stack %3 : $*String
+// CHECK-NEXT:        user of result 0:   destroy_addr %3 : $*String
+// CHECK-NEXT:        user of result 0:   %8 = load [copy] %3 : $*String
+// CHECK-NEXT:        user of result 0:   store %4 to [init] %3 : $*String
+// CHECK-NEXT:      (%4, %5) = destructure_tuple %1 : $(String, String)
+// CHECK-NEXT:        op: %1 = argument of bb0 : $(String, String)
+// CHECK-NEXT:        user of result 0:   store %4 to [init] %3 : $*String
+// CHECK-NEXT:        user of result 1:   destroy_value %5 : $String
+// CHECK-NEXT:      store %4 to [init] %3 : $*String
+// CHECK-NEXT:        op: (**%4**, %5) = destructure_tuple %1 : $(String, String)
+// CHECK-NEXT:        op:   %3 = alloc_stack $String
+// CHECK-NEXT:      end_access %2 : $*Int
+// CHECK-NEXT:        op:   %2 = begin_access [read] [dynamic] %0 : $*Int
+// CHECK-NEXT:      %8 = load [copy] %3 : $*String
+// CHECK-NEXT:        op:   %3 = alloc_stack $String
+// CHECK-NEXT:        user of result 0:   return %8 : $String
+// CHECK-NEXT:      destroy_addr %3 : $*String
+// CHECK-NEXT:        op:   %3 = alloc_stack $String
+// CHECK-NEXT:      dealloc_stack %3 : $*String
+// CHECK-NEXT:        op:   %3 = alloc_stack $String
+// CHECK-NEXT:      destroy_value %5 : $String
+// CHECK-NEXT:        op: (%4, **%5**) = destructure_tuple %1 : $(String, String)
+// CHECK-NEXT:      cond_br undef, bb1, bb2
+// CHECK-NEXT:        op: undef<$Builtin.Int1>
+// CHECK-NEXT:  bb1:
+// CHECK-NEXT:    predecessors: [bb0]
+// CHECK-NEXT:    successors:   [bb3]
+// CHECK-NEXT:    arguments:
+// CHECK-NEXT:    instructions:
+// CHECK-NEXT:      br bb3
+// CHECK-NEXT:  bb2:
+// CHECK-NEXT:    predecessors: [bb0]
+// CHECK-NEXT:    successors:   [bb3]
+// CHECK-NEXT:    arguments:
+// CHECK-NEXT:    instructions:
+// CHECK-NEXT:      br bb3
+// CHECK-NEXT:  bb3:
+// CHECK-NEXT:    predecessors: [bb2, bb1]
+// CHECK-NEXT:    successors:   []
+// CHECK-NEXT:    arguments:
+// CHECK-NEXT:    instructions:
+// CHECK-NEXT:      return %8 : $String
+// CHECK-NEXT:        op:   %8 = load [copy] %3 : $*String
+
+sil [ossa] @testfunc : $@convention(thin) (@in_guaranteed Int, @owned (String, String)) -> @owned String {
+bb0(%0 : $*Int, %1 : @owned $(String, String)):
+  specify_test "basic_block"
+  %2 = begin_access [read] [dynamic] %0 : $*Int
+  %4 = alloc_stack $String
+  (%5, %6) = destructure_tuple %1 : $(String, String)
+  store %5 to [init] %4 : $*String
+  end_access %2 : $*Int
+  %7 = load [copy] %4 : $*String
+  destroy_addr %4 : $*String
+  dealloc_stack %4 : $*String
+  destroy_value %6 : $String
+  cond_br undef, bb1, bb2
+bb1:
+  br bb3
+bb2:
+  br bb3
+bb3:
+  return %7 : $String
+}
+
+sil [ossa] @test_bit_fields : $@convention(thin) () -> () {
+bb0:
+  specify_test "basic_block_bits"
+  unreachable
+}
+
+// =============================================================================
+// instruction_index tests
+// =============================================================================
+
+// CHECK-LABEL: begin running test 1 of 1 on insert_instruction_between_existing: instruction_index with: 
+// CHECK-NEXT:  #8:   %0 = tuple ()
+// CHECK-NEXT:  #9:   %1 = integer_literal $Builtin.Int64, 0
+// CHECK-NEXT:  #10:   %2 = integer_literal $Builtin.Int64, 1
+// CHECK-NEXT:  #11:   %3 = integer_literal $Builtin.Int64, 2
+// CHECK-NEXT:  #12:   %4 = integer_literal $Builtin.Int64, 3
+// CHECK-NEXT:  #13:   %5 = integer_literal $Builtin.Int64, 4
+// CHECK-NEXT:  #14:   %6 = integer_literal $Builtin.Int64, 5
+// CHECK-NEXT:  #15:   %7 = integer_literal $Builtin.Int64, 6
+// CHECK-NEXT:  -:   %8 = integer_literal $Builtin.Int64, 7
+// CHECK-NEXT:  -:   %9 = integer_literal $Builtin.Int64, 8
+// CHECK-NEXT:  -:   %10 = integer_literal $Builtin.Int64, 9
+// CHECK-NEXT:  #16:   %11 = string_literal utf8 "insert 10"
+// CHECK-NEXT:  #24:   return %0 : $()
+// CHECK-NEXT:  end running test 1 of 1 on insert_instruction_between_existing: instruction_index with: 
+sil @insert_instruction_between_existing : $@convention(thin) () -> () {
+bb0:
+  specify_test "instruction_index"
+  %0 = tuple ()
+  %1 = string_literal utf8 "insert 10"
+  return %0
+}
+
+// CHECK-LABEL: begin running test 1 of 1 on insert_reverse_instruction_between_existing: instruction_index with: 
+// CHECK-NEXT:  #8:   %0 = tuple ()
+// CHECK-NEXT:  -:   %1 = integer_literal $Builtin.Int64, 2
+// CHECK-NEXT:  -:   %2 = integer_literal $Builtin.Int64, 1
+// CHECK-NEXT:  #9:   %3 = integer_literal $Builtin.Int64, 0
+// CHECK-NEXT:  #16:   %4 = string_literal utf8 "insert_reverse 3"
+// CHECK-NEXT:  #24:   return %0 : $()
+// CHECK-NEXT:  end running test 1 of 1 on insert_reverse_instruction_between_existing: instruction_index with: 
+sil @insert_reverse_instruction_between_existing : $@convention(thin) () -> () {
+bb0:
+  specify_test "instruction_index"
+  %0 = tuple ()
+  %1 = string_literal utf8 "insert_reverse 3"
+  return %0
+}
+
+// CHECK-LABEL: begin running test 1 of 1 on insert_instruction_at_begin: instruction_index with: 
+// CHECK-NEXT:  #1:   %0 = integer_literal $Builtin.Int64, 0
+// CHECK-NEXT:  #2:   %1 = integer_literal $Builtin.Int64, 1
+// CHECK-NEXT:  #3:   %2 = integer_literal $Builtin.Int64, 2
+// CHECK-NEXT:  #4:   %3 = integer_literal $Builtin.Int64, 3
+// CHECK-NEXT:  #5:   %4 = integer_literal $Builtin.Int64, 4
+// CHECK-NEXT:  #6:   %5 = integer_literal $Builtin.Int64, 5
+// CHECK-NEXT:  #7:   %6 = integer_literal $Builtin.Int64, 6
+// CHECK-NEXT:  -:   %7 = integer_literal $Builtin.Int64, 7
+// CHECK-NEXT:  -:   %8 = integer_literal $Builtin.Int64, 8
+// CHECK-NEXT:  -:   %9 = integer_literal $Builtin.Int64, 9
+// CHECK-NEXT:  #8:   %10 = string_literal utf8 "insert 10"
+// CHECK-NEXT:  #16:   %11 = tuple ()
+// CHECK-NEXT:  #24:   return %11 : $()
+// CHECK-NEXT:  end running test 1 of 1 on insert_instruction_at_begin: instruction_index with: 
+sil @insert_instruction_at_begin : $@convention(thin) () -> () {
+bb0:
+  specify_test "instruction_index"
+  %0 = string_literal utf8 "insert 10"
+  %1 = tuple ()
+  return %1
+}
+
+// CHECK-LABEL: begin running test 1 of 1 on insert_instruction_at_end: instruction_index with: 
+// CHECK-NEXT:  #8:   %0 = string_literal utf8 "replace_terminator"
+// CHECK-NEXT:  #16:   %1 = tuple ()
+// CHECK-NEXT:  #24:   unreachable
+// CHECK-NEXT:  end running test 1 of 1 on insert_instruction_at_end: instruction_index with: 
+sil @insert_instruction_at_end : $@convention(thin) () -> () {
+bb0:
+  specify_test "instruction_index"
+  %0 = string_literal utf8 "replace_terminator"
+  %1 = tuple ()
+  return %1
+}
+
+// CHECK-LABEL: begin running test 1 of 1 on delete_and_insert_instruction_between_existing: instruction_index with: 
+// CHECK-NEXT:  #8:   %0 = tuple ()
+// CHECK-NEXT:  #16:   %1 = integer_literal $Builtin.Int64, 0
+// CHECK-NEXT:  #17:   %2 = integer_literal $Builtin.Int64, 1
+// CHECK-NEXT:  #18:   %3 = integer_literal $Builtin.Int64, 2
+// CHECK-NEXT:  #19:   %4 = integer_literal $Builtin.Int64, 3
+// CHECK-NEXT:  #20:   %5 = integer_literal $Builtin.Int64, 4
+// CHECK-NEXT:  #21:   %6 = integer_literal $Builtin.Int64, 5
+// CHECK-NEXT:  #22:   %7 = integer_literal $Builtin.Int64, 6
+// CHECK-NEXT:  #23:   %8 = integer_literal $Builtin.Int64, 7
+// CHECK-NEXT:  -:   %9 = integer_literal $Builtin.Int64, 8
+// CHECK-NEXT:  -:   %10 = integer_literal $Builtin.Int64, 9
+// CHECK-NEXT:  #24:   %11 = string_literal utf8 "insert 10"
+// CHECK-NEXT:  #32:   return %0 : $()
+// CHECK-NEXT:  end running test 1 of 1 on delete_and_insert_instruction_between_existing: instruction_index with: 
+sil @delete_and_insert_instruction_between_existing : $@convention(thin) () -> () {
+bb0:
+  specify_test "instruction_index"
+  %0 = tuple ()
+  %1 = string_literal utf8 "delete"
+  %2 = string_literal utf8 "insert 10"
+  return %0
+}
+
+// CHECK-LABEL: begin running test 1 of 1 on move_instruction: instruction_index with: 
+// CHECK-NEXT:  #1:   %0 = string_literal utf8 "move_before_previous"
+// CHECK-NEXT:  #8:   %1 = tuple ()
+// CHECK-NEXT:  #24:   return %1 : $()
+// CHECK-NEXT:  end running test 1 of 1 on move_instruction: instruction_index with: 
+sil @move_instruction : $@convention(thin) () -> () {
+bb0:
+  specify_test "instruction_index"
+  %0 = tuple ()
+  %1 = string_literal utf8 "move_before_previous"
+  return %0
+}
+
+// CHECK-LABEL: begin running test 1 of 1 on move_instruction_to_different_block: instruction_index with: 
+// CHECK-NEXT:  #1:   %0 = string_literal utf8 "move_to_previous_block"
+// CHECK-NEXT:  #8:   br bb1
+// CHECK-NEXT:  #16:   %2 = tuple ()
+// CHECK-NEXT:  #24:   return %2 : $()
+// CHECK-NEXT:  end running test 1 of 1 on move_instruction_to_different_block: instruction_index with: 
+sil @move_instruction_to_different_block : $@convention(thin) () -> () {
+bb0:
+  specify_test "instruction_index"
+  br bb1
+
+bb1:
+  %1 = string_literal utf8 "move_to_previous_block"
+  %2 = tuple ()
+  return %2
+}
+
+// CHECK-LABEL: begin running test 1 of 1 on merge_block_with_next: instruction_index with: 
+// CHECK-NEXT:  #8:   %0 = string_literal utf8 "merge_with_next"
+// CHECK-NEXT:  -:   %1 = tuple ()
+// CHECK-NEXT:  -:   return %1 : $()
+// CHECK-NEXT:  end running test 1 of 1 on merge_block_with_next: instruction_index with: 
+sil @merge_block_with_next : $@convention(thin) () -> () {
+bb0:
+  specify_test "instruction_index"
+  %1 = string_literal utf8 "merge_with_next"
+  br bb1
+
+bb1:
+  %3 = tuple ()
+  return %3
+}
+
+// CHECK-LABEL: begin running test 1 of 1 on merge_block_with_previous: instruction_index with: 
+// CHECK-NEXT:  -:   %0 = tuple ()
+// CHECK-NEXT:  #8:   %1 = string_literal utf8 "merge_with_previous"
+// CHECK-NEXT:  #16:   return %0 : $()
+// CHECK-NEXT:  end running test 1 of 1 on merge_block_with_previous: instruction_index with: 
+sil @merge_block_with_previous : $@convention(thin) () -> () {
+bb0:
+  specify_test "instruction_index"
+  %0 = tuple ()
+  br bb1
+
+bb1:
+  %1 = string_literal utf8 "merge_with_previous"
+  return %0
+}
+
+// CHECK-LABEL: begin running test 1 of 1 on overflow_small_custom_bits: instruction_index with: 
+// CHECK-NEXT:  #8:   %0 = integer_literal $Builtin.Int64, 0
+// CHECK-NEXT:  #16:   %1 = integer_literal $Builtin.Int64, 1
+// CHECK:       #80008:   %10000 = string_literal utf8 "insert 10000"
+// CHECK-NEXT:  #80016:   %10001 = string_literal utf8 "renumber"
+// CHECK-NEXT:  #80024:   %10002 = tuple ()
+// CHECK-NEXT:  #80032:   return %10002 : $()
+// CHECK-NEXT:  end running test 1 of 1 on overflow_small_custom_bits: instruction_index with: 
+sil @overflow_small_custom_bits : $@convention(thin) () -> () {
+bb0:
+  specify_test "instruction_index"
+  %1 = string_literal utf8 "insert 10000"
+  %2 = string_literal utf8 "renumber"
+  %3 = tuple ()
+  return %3
+}
+
