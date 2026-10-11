@@ -6,8 +6,11 @@ internal static class Program
     private static int Main(string[] args)
     {
         if (args.Length > 0 && args[0] == "--selftest") return SelfTest();
+        // 可选位置参数: 预填仓库根目录（启动脚本传参用）
+        var root = args.Length > 0 && args[0] != "--selftest"
+            && Directory.Exists(args[0]) ? args[0] : null;
         ApplicationConfiguration.Initialize();
-        Application.Run(new MainForm());
+        Application.Run(new MainForm(root));
         return 0;
     }
 

@@ -61,8 +61,9 @@ public class MainForm : Form
     private bool _running, _polling;
     private int _totalUnits, _finUnits, _mergedPrs, _retries, _stepsTotal;
 
-    public MainForm()
+    public MainForm(string? repoRoot = null)
     {
+        if (repoRoot != null) _repoRoot.Text = repoRoot;
         Text = "submit-pr 客户端 — any-pr 自动提交（进度 / 重试 / 任务状态）";
         Font = new Font("Microsoft YaHei UI", 9F);
         StartPosition = FormStartPosition.CenterScreen;
