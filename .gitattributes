@@ -1,0 +1,12 @@
+# These upstream Swift compiler tests are imported third-party fixtures.
+swift/test/SILGen/**/*.swift* linguist-vendored=true
+swift/test/Interop/**/*.swift* linguist-vendored=true
+swift/test/IRGen/**/*.swift* linguist-vendored=true
+swift/test/Concurrency/**/*.swift* linguist-vendored=true
+swift/test/SILOptimizer/**/*.swift* linguist-vendored=true
+swift/test/IDE/**/*.swift* linguist-vendored=true
+swift/test/DebugInfo/**/*.swift* linguist-vendored=true
+swift/test/abi/**/*.swift* linguist-vendored=true
+
+# Include the reproducible Rust lookup data in this repository's language experiment.
+libs/prime-atlas/src/data.rs linguist-generated=false linguist-vendored=false
