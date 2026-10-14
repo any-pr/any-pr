@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>奶蛙 · 捧腹大笑</title>
+<style>
+:root{color-scheme:light}*{box-sizing:border-box}html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#f7f6ef}main{width:100%;height:100%;display:grid;place-items:center}svg{display:block;width:min(88vw,66vh,680px);height:min(92vh,112vw,870px);overflow:visible}
+</style>
+</head>
+<body><main>
+<svg id="scene" viewBox="190 50 390 500" role="img" aria-labelledby="svgTitle svgDesc">
+<title id="svgTitle">奶蛙捧腹大笑动画</title><desc id="svgDesc">黄色梨形奶蛙，绿色眼睛、奶白肚皮和褐色手脚，从捧腹大笑到举手抱头，身体随笑声节奏抖动。</desc>
+<defs>
+<linearGradient id="gold" gradientUnits="userSpaceOnUse" x1="300" y1="110" x2="470" y2="410"><stop stop-color="#ffe477"/><stop offset=".5" stop-color="#f3cb43"/><stop offset="1" stop-color="#dda632"/></linearGradient>
+<linearGradient id="armGold" x1="0" y1="0" x2=".6" y2="1"><stop stop-color="#ffdc66"/><stop offset="1" stop-color="#e1aa35"/></linearGradient>
+<linearGradient id="milk" x1="0" y1="0" x2=".9" y2="1"><stop stop-color="#fff0c1"/><stop offset="1" stop-color="#e4d0a1"/></linearGradient>
+<linearGradient id="foot" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#8a7945"/><stop offset="1" stop-color="#5c5336"/></linearGradient>
+<radialGradient id="ground"><stop stop-color="#8f8154" stop-opacity=".2"/><stop offset="1" stop-color="#8f8154" stop-opacity="0"/></radialGradient>
+</defs>
+<ellipse id="shadow" cx="390" cy="495" rx="154" ry="23" fill="url(#ground)"/>
+
+<g id="frog">
+<path d="M468 393Q501 411 512 432Q508 444 477 433L453 414Z" fill="#bc943d"/>
+<g id="legL"><path d="M312 379Q296 418 315 448L326 473L357 473L365 404Z" fill="url(#gold)"/><path d="M325 462Q309 468 294 474Q280 481 289 487Q322 493 353 482Q362 478 355 461Z" fill="url(#foot)"/><path d="M298 479l-4 6m17-9l-4 9" fill="none" stroke="#514b32" stroke-width="2.5" stroke-linecap="round"/></g>
+<g id="legR"><path d="M411 395Q410 434 437 467L441 482L469 481Q482 443 473 400Z" fill="url(#gold)"/><path d="M440 473Q431 483 422 493Q416 501 429 503Q434 503 439 499Q444 507 453 501Q465 505 470 497Q480 495 474 478Z" fill="url(#foot)"/><path d="M438 491l-1 8m15-8l-1 9m14-10l-2 8" fill="none" stroke="#514b32" stroke-width="2.5" stroke-linecap="round"/></g>
+<g id="torso">
+<path id="body" d="M329 163C337 145 383 140 406 161C425 180 449 209 462 238C481 271 499 315 493 353C492 399 457 431 409 434C366 440 303 419 289 385C270 344 280 298 298 266C316 238 328 209 329 163Z" fill="url(#gold)" stroke="#cba33d" stroke-width="1.5"/>
+<path d="M324 267C349 248 380 256 413 277C442 296 460 333 453 363C435 389 395 398 355 395C320 395 292 383 291 361C286 330 300 288 324 267Z" fill="url(#milk)"/>
+
+<g id="head">
+
+<g id="farOpen"><ellipse cx="319" cy="140" rx="10" ry="14" fill="#b5bd58"/><ellipse cx="317" cy="141" rx="4.8" ry="8" fill="#263428"/></g>
+<g id="openEye"><ellipse cx="369" cy="131" rx="17" ry="18" fill="#b6c568"/><ellipse cx="368" cy="132" rx="9" ry="11" fill="#263d2d"/><ellipse cx="365" cy="128" rx="2.8" ry="3.2" fill="#f2f2c7"/></g>
+<path id="closedEye" d="M352 135Q365 124 380 131" fill="none" stroke="#4f4727" stroke-width="4.5" stroke-linecap="round" opacity="0"/>
+<path id="farClosed" d="M310 144Q316 138 326 144" fill="none" stroke="#4f4727" stroke-width="3" stroke-linecap="round" opacity="0"/>
+<path id="restMouth" d="M313 168Q338 173 367 166" fill="none" stroke="#82642f" stroke-width="2.3" stroke-linecap="round"/><g id="mouth" transform="translate(348 170)">
+<path d="M-29 -4Q0 3 31 -8C29 20 16 43 0 42C-17 42 -26 19 -29 -4Z" fill="#432b22" stroke="#b68530" stroke-width="4" stroke-linejoin="round"/>
+<path d="M-25 -1Q0 5 27 -5L23 3Q0 10 -22 5Z" fill="#fff9e4"/><path d="M-15 2l1 4M-6 4v3M4 4v3M14 2l-1 4" stroke="#d5c6a4" stroke-width=".8"/>
+<path d="M-13 31Q-4 19 10 29Q16 31 16 33Q1 45 -13 31Z" fill="#c2786b"/><path d="M-12 35Q1 43 15 34" fill="none" stroke="#f0d1b7" stroke-width="3" stroke-linecap="round"/>
+</g>
+</g>
+<path id="armL" d="M310 251Q273 281 295 315L316 326" fill="none" stroke="#c79630" stroke-width="39" stroke-linecap="round"/>
+<path id="armLInner" d="M310 247Q275 279 296 313L316 323" fill="none" stroke="url(#armGold)" stroke-width="34" stroke-linecap="round"/>
+<g id="handL"><path d="M-13 -13C-6 -17 0 -14 5 -10L16 -7Q25 -3 21 2L7 0L21 6Q27 11 21 14L5 9L18 16Q22 22 15 23L0 16Q10 25 4 28Q-2 29 -13 16Q-20 9 -18 0L-21 -11Q-21 -18 -16 -17Z" fill="url(#foot)"/><path d="M-10 -5Q-6 1 4 3M-9 5L4 11M-10 13L0 19" fill="none" stroke="#635a3b" stroke-width="1.5" stroke-linecap="round"/></g>
+<path id="armR" d="M437 248Q476 299 421 317L385 321" fill="none" stroke="#c79630" stroke-width="45" stroke-linecap="round"/>
+<path id="armRInner" d="M437 243Q476 292 421 313L385 317" fill="none" stroke="url(#armGold)" stroke-width="39" stroke-linecap="round"/>
+<g id="handR"><path d="M12 -13Q3 -18 -6 -12L-17 -18Q-25 -21 -25 -15Q-25 -11 -13 -5L-26 -5Q-34 -3 -29 3L-10 6L-28 5Q-34 8 -29 13L-11 15L-23 15Q-30 18 -23 22L-7 24Q-20 24 -17 29Q-12 33 3 27Q16 23 17 10Z" fill="url(#foot)"/><path d="M-22 2L-8 5M-24 11L-8 13M-19 20L-6 21" fill="none" stroke="#635a3b" stroke-width="1.6" stroke-linecap="round"/></g>
+</g></g>
+</svg>
+</main><!-- Visual reference: https://milkyfrog.com/ ; SVG approximation, no audio. -->
+<script>
+(()=>{'use strict';const $=id=>document.getElementById(id),duration=6.8;let t=1.2,last=null;const lerp=(a,b,k)=>a+(b-a)*k,clamp=x=>Math.max(0,Math.min(1,x)),smooth=x=>{x=clamp(x);return x*x*(3-2*x)},attr=(id,key,v)=>$(id).setAttribute(key,v);
+function draw(){const laugh=smooth((t-.65)/.45)*(1-smooth((t-5.65)/.7));const pulse=Math.sin(t*21)*laugh;const raise=smooth((t-2.5)/.55)*(1-smooth((t-4.2)/.55));const bend=smooth((t-4.35)/.45)*(1-smooth((t-5.55)/.65));const sway=Math.sin(t*3.2)*2*laugh;
+// One continuous silhouette: the head contour and face use the same rotation.
+const angle=-laugh*8+Math.sin(t*10)*laugh*2+bend*14;
+const rot=(x,y)=>{const a=angle*Math.PI/180;return [377+(x-377)*Math.cos(a)-(y-214)*Math.sin(a),214+(x-377)*Math.sin(a)+(y-214)*Math.cos(a)]};
+const p=(x,y)=>rot(x,y).map(v=>v.toFixed(2)).join(' ');
+attr('body','d',`M${p(323,196)}C${p(307,177)} ${p(312,145)} ${p(320,123)}C${p(331,95)} ${p(366,85)} ${p(391,99)}C${p(414,111)} ${p(417,140)} ${p(425,162)}C${p(432,180)} 449 209 462 238C481 271 499 315 493 353C492 399 457 431 409 434C366 440 303 419 289 385C270 344 280 298 298 266C312 242 326 221 ${p(323,196)}Z`);
+attr('torso','transform',`translate(0 ${pulse*1.7+bend*5}) rotate(${sway*.6-bend*7} 386 420) translate(0 420) scale(${1-pulse*.002} ${1+pulse*.005}) translate(0 -420)`);
+attr('head','transform',`rotate(${angle} 377 214)`);
+attr('mouth','transform',`translate(348 170) scale(${1+raise*.08} ${.2+laugh*(.93+pulse*.1)})`);
+attr('mouth','opacity',smooth(laugh*4));attr('restMouth','opacity',1-smooth(laugh*4));
+attr('openEye','opacity',1-laugh);attr('farOpen','opacity',1-laugh);attr('closedEye','opacity',laugh);attr('farClosed','opacity',laugh);attr('shadow','rx',145+pulse*1.3);
+// Raised palms stay on the moving scalp rather than floating over it.
+const leftTop=rot(326,112),rightTop=rot(392,107);
+const lx=lerp(317,leftTop[0],raise),ly=lerp(324+pulse*.9,leftTop[1],raise),rx=lerp(391,rightTop[0],raise),ry=lerp(322+pulse*.9,rightTop[1],raise);
+const lp=`M310 251C${lerp(273,251,raise)} ${lerp(276,243,raise)} ${lerp(278,269,raise)} ${lerp(305,160,raise)} ${lx} ${ly}`;
+const rp=`M437 248C${lerp(476,505,raise)} ${lerp(279,246,raise)} ${lerp(461,468,raise)} ${lerp(316,148,raise)} ${rx} ${ry}`;
+['armL','armLInner'].forEach(id=>attr(id,'d',lp));['armR','armRInner'].forEach(id=>attr(id,'d',rp));attr('handL','transform',`translate(${lx} ${ly}) rotate(${lerp(8,angle-48,raise)})`);attr('handR','transform',`translate(${rx} ${ry}) rotate(${lerp(-8,angle+27,raise)})`);
+}
+function frame(now){if(last!==null)t=(t+Math.min((now-last)/1000,.05))%duration;last=now;draw();requestAnimationFrame(frame)}draw();requestAnimationFrame(frame);
+})();
+</script></body></html>
