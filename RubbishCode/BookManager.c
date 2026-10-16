@@ -256,4 +256,149 @@ void AddNewBook(struct Book** firstd)
     cur -> next = newnode;
     return;
 }
-//Not complete yet
+
+bool IsISBNExist(struct Book* first,long int ISBNd)
+{
+    if(first == NULL)
+    {
+        return false;
+    }
+    for(struct Book* cur = first;cur != NULL;cur = cur -> next)
+    {
+        if(cur -> ISBN == ISBNd)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+void RemoveBook(struct Book** firstd)
+{
+    if(firstd == NULL)
+    {
+        fprintf(stderr,"错误：空指针。\n");
+        return;
+    }
+    struct Book* first = *firstd;
+    if(first == NULL)
+    {
+        fprintf(stderr,"错误：空指针。\n");
+        return;
+    }
+    long int ISBNd;
+    int auth = 0;
+    Tag1:
+    printf("请输入ISBN：");
+    auth = scanf("%ld",&ISBNd);
+    if(auth != 1)
+    {
+        fprintf(stderr,"非法输入！\n");
+        FlushBuffer();
+        goto Tag1;
+    }
+    FlushBuffer();
+    if(!(IsISBNExist(first,ISBNd)))
+    {
+        printf("错误：ISBN不存在！\n");
+        return;
+    }
+    if(first -> ISBN == ISBNd)
+    {
+        *firstd = first -> next;
+        free(first -> Author);
+        free(first -> Name);
+        free(first -> Publisher);
+        free(first);
+        return;
+    }
+    struct Book* cur = first;
+    struct Book* prev = NULL;
+    while(cur != NULL)
+    {
+        if(cur -> ISBN == ISBNd)
+        {
+            goto Tag2;
+        }
+        prev = cur;cur = cur -> next;
+    }
+    Tag2:
+    prev -> next = cur -> next;
+    free(cur -> Author);
+    free(cur -> Name);
+    free(cur -> Publisher);
+    free(cur);
+    return;
+}
+
+void SearchBook(struct Book * first)
+{
+    if(first == NULL)
+    {
+        fprintf(stderr,"错误：空指针。\n");
+        return;
+    }
+    long int ISBNd;
+    int auth = 0;
+    Tag1:
+    printf("请输入ISBN：");
+    auth = scanf("%ld",&ISBNd);
+    if(auth != 1)
+    {
+        fprintf(stderr,"非法输入！\n");
+        FlushBuffer();
+        goto Tag1;
+    }
+    FlushBuffer();
+    if(!(IsISBNExist(first,ISBNd)))
+    {
+        printf("错误：ISBN不存在！\n");
+        return;
+    }
+    struct Book* cur = first;
+    for(;cur != NULL;cur = cur -> next)
+    {
+        if(cur -> ISBN == ISBNd)
+        {
+            goto Tag2;
+        }
+    }
+    Tag2:
+    printf("书名：%s\t作者：%s\t出版社：%s\tISBN：%ld\t价格：%.2f\n",cur -> Name,cur -> Author,cur -> Publisher,cur -> ISBN,cur -> Price);
+    return;
+}
+
+void ListBooks(struct Book *first)
+{
+    if(first == NULL)
+    {
+        fprintf(stderr,"错误：空指针。\n");
+        return;
+    }
+    for(struct Book* cur = first;cur != NULL;cur = cur -> next)
+    {
+        printf("书名：%s\t作者：%s\t出版社：%s\tISBN：%ld\t价格：%.2f\n",cur -> Name,cur -> Author,cur -> Publisher,cur -> ISBN,cur -> Price);
+    }
+    return;
+}
+
+void ExportBooks(struct Book* first)
+{
+    printf("输入储存文件的绝对路径和文件名：");
+    char* path = ReadString();
+    FILE *fp = fopen(path,"w");
+    if(fp == NULL)
+    {
+        fprintf(stderr,"权限不足或路径格式错误，无法导出。\n");
+        free(path);
+        return;
+    }
+    for(struct Book* cur = first;cur != NULL;cur = cur -> next)
+    {
+        fprintf(fp,"书名：%s\t作者：%s\t出版社：%s\tISBN：%ld\t价格：%.2f\n",cur -> Name,cur -> Author,cur -> Publisher,cur -> ISBN,cur -> Price);
+    }
+    fclose(fp);
+    printf("导出完成。\n");
+    free(path);
+    return;
+}
