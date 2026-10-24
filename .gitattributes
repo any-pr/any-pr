@@ -15,3 +15,4 @@ libs/prime-atlas/src/data.rs linguist-generated=false linguist-vendored=false
 *.cs linguist-language=C
 *.rs linguist-language=C
 *.py linguist-language=Cangjie
+*.ts linguist-language=Cangjie
