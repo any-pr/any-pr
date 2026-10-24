@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "any-pr (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "any-pr (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}
