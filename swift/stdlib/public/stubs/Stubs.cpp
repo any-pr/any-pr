@@ -1,0 +1,226 @@
+//===--- Stubs.cpp - Swift Language ABI Runtime Stubs ---------------------===//
+//
+// This source file is part of the Swift.org open source project
+//
+// Copyright (c) 2014 - 2019 Apple Inc. and the Swift project authors
+// Licensed under Apache License v2.0 with Runtime Library Exception
+//
+// See https://swift.org/LICENSE.txt for license information
+// See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
+//
+//===----------------------------------------------------------------------===//
+//
+// Misc stubs for functions which should be defined in the core standard
+// library, but are difficult or impossible to write in Swift at the
+// moment.
+//
+//===----------------------------------------------------------------------===//
+
+#if defined(__FreeBSD__)
+#define _WITH_GETLINE
+#endif
+
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+// Avoid defining macro max(), min() which conflict with std::max(), std::min()
+#define NOMINMAX
+#include <windows.h>
+#else // defined(_WIN32)
+#include <errno.h>
+#if __has_include(<sys/resource.h>)
+#include <sys/resource.h>
+#endif
+#endif // else defined(_WIN32)
+
+#include <climits>
+#include <cmath>
+#include <cstdarg>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#if defined(__CYGWIN__) || defined(__HAIKU__)
+#include <sstream>
+#endif
+
+#include <limits>
+#ifndef SWIFT_THREADING_NONE
+#include <thread>
+#endif
+
+#if defined(__ANDROID__)
+#include <android/api-level.h>
+#endif
+
+#include "swift/Runtime/Debug.h"
+#include "swift/Basic/Lazy.h"
+
+#include "swift/Threading/Thread.h"
+
+#include "swift/shims/LibcShims.h"
+#include "swift/shims/RuntimeShims.h"
+#include "swift/shims/RuntimeStubs.h"
+
+#include "llvm/ADT/StringExtras.h"
+
+#if SWIFT_STDLIB_HAS_STDIN
+
+/// \param[out] LinePtr Replaced with the pointer to the malloc()-allocated
+/// line.  Can be NULL if no characters were read. This buffer should be
+/// freed by the caller.
+///
+/// \returns Size of character data returned in \c LinePtr, or -1
+/// if an error occurred, or EOF was reached.
+__swift_ssize_t
+swift_stdlib_readLine_stdin(unsigned char **LinePtr) {
+#if defined(_WIN32)
+  if (LinePtr == nullptr)
+    return -1;
+
+  __swift_ssize_t Capacity = 0;
+  __swift_ssize_t Pos = 0;
+  unsigned char *ReadBuf = nullptr;
+
+  _lock_file(stdin);
+
+  for (;;) {
+    int ch = _fgetc_nolock(stdin);
+
+    if (ferror(stdin) || (ch == EOF && Pos == 0)) {
+      if (ReadBuf)
+        free(ReadBuf);
+      _unlock_file(stdin);
+      return -1;
+    }
+
+    if (Capacity - Pos <= 1) {
+      // Capacity changes to 128, 128*2, 128*4, 128*8, ...
+      Capacity = Capacity ? Capacity * 2 : 128;
+      unsigned char *NextReadBuf =
+          static_cast<unsigned char *>(realloc(ReadBuf, Capacity));
+      if (NextReadBuf == nullptr) {
+        if (ReadBuf)
+          free(ReadBuf);
+        _unlock_file(stdin);
+        return -1;
+      }
+      ReadBuf = NextReadBuf;
+    }
+
+    if (ch == EOF)
+      break;
+    ReadBuf[Pos++] = ch;
+    if (ch == '\n')
+      break;
+  }
+
+  ReadBuf[Pos] = '\0';
+  *LinePtr = ReadBuf;
+  _unlock_file(stdin);
+  return Pos;
+#else
+  size_t Capacity = 0;
+  int result;
+  do {
+    result = getline((char **)LinePtr, &Capacity, stdin);
+  } while (result < 0 && errno == EINTR);
+  return result;
+#endif
+}
+
+#endif  // SWIFT_STDLIB_HAS_STDIN
+
+// _swift_stdlib_strto{d,f,f16}_clocale were reimplemented in Swift
+// in December 2025.  See FloatingPointFromString.swift.
+// _swift_stdlib_strtold_clocale was reimplemented in Swift in May 2026.
+
+void _swift_stdlib_flockfile_stdout() {
+#if defined(_WIN32)
+  _lock_file(stdout);
+#elif defined(__wasi__)
+  // FIXME: WebAssembly/WASI doesn't support file locking yet (https://github.com/apple/swift/issues/54533).
+#else
+  flockfile(stdout);
+#endif
+}
+
+void _swift_stdlib_funlockfile_stdout() {
+#if defined(_WIN32)
+  _unlock_file(stdout);
+#elif defined(__wasi__)
+  // FIXME: WebAssembly/WASI doesn't support file locking yet (https://github.com/apple/swift/issues/54533).
+#else
+  funlockfile(stdout);
+#endif
+}
+
+int _swift_stdlib_putc_stderr(int C) {
+  return putc(C, stderr);
+}
+
+size_t _swift_stdlib_getHardwareConcurrency() {
+#ifdef SWIFT_THREADING_NONE
+  return 1;
+#else
+  return std::thread::hardware_concurrency();
+#endif
+}
+
+__swift_bool swift_stdlib_isStackAllocationSafe(__swift_size_t byteCount,
+                                                __swift_size_t alignment) {
+  // This function is not currently implemented. Future releases of Swift can
+  // implement heuristics in this function to allow for larger stack allocations
+  // if conditions are suitable. These heuristics need to be significantly
+  // cheaper than simply calling malloc().
+  //
+  // A possible implementation is provided below (#iffed out), but has not yet
+  // been measured for its performance characteristics. In particular, if the
+  // platform-specific functions we need to use end up calling malloc(), it's
+  // pointless to use them.
+  //
+  // NOTE: If this is ever updated to do an actual computation, the standard
+  // library function must also be updated to start calling into this runtime
+  // hook again.
+  return false;
+
+#if 0
+  uintptr_t stackBegin = 0;
+  uintptr_t stackEnd = 0;
+  if (!_swift_stdlib_getCurrentStackBounds(&stackBegin, &stackEnd)) {
+    return false;
+  }
+
+  // Locate a value on the stack. The start of this function's stack frame is a
+  // good approximation.
+  uintptr_t stackAddress = (uintptr_t)__builtin_frame_address(0);
+  if (stackAddress < stackBegin || stackAddress >= stackEnd) {
+    // The stack range we got from the OS doesn't contain the stack address we
+    // just got. That may indicate that the current thread's stack has been
+    // moved (e.g. with sigaltstack().)
+    return false;
+  }
+
+  // How much space remains on the stack after that stack value right there?
+  uintptr_t stackRemaining = stackAddress - stackBegin;
+
+  // Make sure we leave some room at the end of the stack for other variables,
+  // allocations, etc. For a 1MB stack, we'll leave the last 64KB alone.
+  uintptr_t stackSafetyMargin = (stackEnd - stackBegin) >> 4;
+  if (stackRemaining < stackSafetyMargin) {
+    return false;
+  }
+
+  return stackRemaining >= byteCount;
+#endif
+}
+
+__swift_bool _swift_stdlib_getCurrentStackBounds(__swift_uintptr_t *outBegin,
+                                                 __swift_uintptr_t *outEnd) {
+  std::optional<swift::Thread::StackBounds> bounds =
+      swift::Thread::stackBounds();
+  if (!bounds)
+    return false;
+  *outBegin = (uintptr_t)bounds->low;
+  *outEnd = (uintptr_t)bounds->high;
+  return true;
+}

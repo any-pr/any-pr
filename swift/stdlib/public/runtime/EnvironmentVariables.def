@@ -1,0 +1,183 @@
+//===--- EnvironmentVariables.def - Debug variables. ------------*- C++ -*-===//
+//
+// This source file is part of the Swift.org open source project
+//
+// Copyright (c) 2014 - 2020 Apple Inc. and the Swift project authors
+// Licensed under Apache License v2.0 with Runtime Library Exception
+//
+// See https://swift.org/LICENSE.txt for license information
+// See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
+//
+//===----------------------------------------------------------------------===//
+//
+// This file defines x-macros used for metaprogramming with the set of
+// environment variables used for configuring or enabling debug features in the
+// runtime.
+//
+//===----------------------------------------------------------------------===//
+
+// #define VARIABLE(name, type, defaultValue, help)
+
+#ifndef VARIABLE
+#error "Must define VARIABLE to include EnvironmentVariables.def"
+#endif
+
+VARIABLE(SWIFT_DEBUG_ENABLE_METADATA_ALLOCATION_ITERATION, boolean, false,
+         "Enable additional metadata allocation tracking for swift-inspect to "
+         "use.")
+
+VARIABLE(SWIFT_DEBUG_ENABLE_METADATA_BACKTRACE_LOGGING, boolean, false,
+         "Enable logging of backtraces for each metadata allocation. Requires "
+         "SWIFT_DEBUG_ENABLE_METADATA_ALLOCATION_ITERATION to be enabled.")
+
+VARIABLE(SWIFT_DEBUG_IMPLICIT_OBJC_ENTRYPOINT, uint8, 2,
+         "Print warnings when using implicit @objc entrypoints. Set to "
+         "desired reporting level, 0-3.")
+
+VARIABLE(SWIFT_DETERMINISTIC_HASHING, boolean, false,
+         "Disable randomized hash seeding.")
+
+VARIABLE(SWIFT_ENABLE_MANGLED_NAME_VERIFICATION, boolean, false,
+         "Enable verification that metadata can roundtrip through a mangled "
+         "name each time metadata is instantiated.")
+
+// This environment variable was the way to perform scribbling with older
+// runtimes and is kept for compatibility.
+VARIABLE(SWIFT_DEBUG_ENABLE_MALLOC_SCRIBBLE, boolean, false,
+         "Scribble on runtime allocations with 0xaa. Equivalent to "
+         "SWIFT_DEBUG_RUNTIME_ALLOC_SCRIBBLE_BYTE=0xaa.")
+
+#ifndef NDEBUG
+VARIABLE(SWIFT_DEBUG_RUNTIME_ALLOC_SCRIBBLE_BYTE, optional_uint8, 0xaa,
+         "Scribble on runtime allocations such as metadata allocations.")
+#else
+VARIABLE(SWIFT_DEBUG_RUNTIME_ALLOC_SCRIBBLE_BYTE, optional_uint8, std::nullopt,
+         "Scribble on runtime allocations such as metadata allocations.")
+#endif
+
+VARIABLE(SWIFT_DEBUG_ENABLE_COW_CHECKS, boolean, false,
+         "Enable internal checks for copy-on-write operations.")
+
+VARIABLE(SWIFT_DEBUG_VALIDATE_UNCHECKED_CONTINUATIONS, boolean, false,
+         "Check for and error on double-calls of unchecked continuations.")
+
+#if defined(__APPLE__) && defined(__MACH__)
+
+VARIABLE(SWIFT_DEBUG_VALIDATE_SHARED_CACHE_PROTOCOL_CONFORMANCES, boolean, false,
+         "Validate shared cache protocol conformance results against the "
+         "lists of conformances in the shared cache images.")
+
+VARIABLE(SWIFT_DEBUG_ENABLE_SHARED_CACHE_PROTOCOL_CONFORMANCES, boolean, true,
+         "Enable querying precomputed protocol conformances in the shared "
+         "cache.")
+
+#endif
+
+VARIABLE(SWIFT_DEBUG_ENABLE_CACHE_PROTOCOL_CONFORMANCES_BY_TYPE_DESCRIPTOR,
+         boolean, true,
+         "Enable caching protocol conformances by type descriptor in addition "
+         "to the cache by metadata.")
+
+VARIABLE(SWIFT_DEBUG_CONCURRENCY_ENABLE_COOPERATIVE_QUEUES, boolean, true,
+         "Enable dispatch cooperative queues in the global executor.")
+
+VARIABLE(SWIFT_DEBUG_ENABLE_TASK_REGISTRY, boolean, true,
+         "Enable the global live-task tracking registry.")
+
+#ifndef NDEBUG
+
+VARIABLE(SWIFT_DEBUG_ENABLE_PROTOCOL_CONFORMANCES_LOOKUP_LOG,
+         boolean, false,
+         "Enable logs for the conformance lookup routine.")
+
+#endif
+
+VARIABLE(SWIFT_BINARY_COMPATIBILITY_VERSION, uint32, 0,
+        "Set the binary compatibility level of the Swift Standard Library")
+
+VARIABLE(SWIFT_DEBUG_FAILED_TYPE_LOOKUP, boolean, true,
+         "Enable warnings when we fail to look up a type by name in a compiler "
+         "generated type lookup call.")
+
+VARIABLE(SWIFT_DEBUG_ENABLE_LIB_PRESPECIALIZED_METADATA, boolean, true,
+         "Enable use of metadata in prespecializations library.")
+
+VARIABLE(SWIFT_DEBUG_ENABLE_LIB_PRESPECIALIZED_DESCRIPTOR_LOOKUP, boolean, true,
+         "Enable use of descriptor map in prespecializations library.")
+
+VARIABLE(SWIFT_DEBUG_VALIDATE_LIB_PRESPECIALIZED_DESCRIPTOR_LOOKUP, boolean, false,
+         "Validate results from the prespecializations map descriptor map by "
+         "comparing to a full scan.")
+
+VARIABLE(SWIFT_DEBUG_LIB_PRESPECIALIZED_PATH, string, "",
+         "A path to a prespecializations library to use at runtime. In order "
+         "to be used, this library must be loaded into the process by other "
+         "means (such as DYLD_INSERT_LIBRARIES) before Swift tries to use it.")
+
+VARIABLE(SWIFT_DEBUG_LIB_PRESPECIALIZED_DISABLED_PROCESSES, string, "",
+         "A colon-separated list of process names where the prespecializations "
+         "library will be forcibly disabled.")
+
+VARIABLE(SWIFT_DEBUG_LIB_PRESPECIALIZED_ENABLED_PROCESSES, string, "",
+         "A colon-separated list of process names where the prespecializations "
+         "library will be forcibly enabled. This overrides the disabled "
+         "processes list in the prespecializations library, as well as the "
+         "list in SWIFT_DEBUG_LIB_PRESPECIALIZED_DISABLED_PROCESSES.")
+
+VARIABLE(SWIFT_DEBUG_ENABLE_LIB_PRESPECIALIZED_LOGGING, boolean, false,
+         "Enable debug logging of prespecializations library use.")
+
+VARIABLE(SWIFT_DEBUG_DISABLE_NONCANONICAL_STATIC_SPECIALIZATIONS, boolean, false,
+         "Ignore compiler-emitted noncanonical static specialization metadata. "
+         "When set, swift_getCanonicalSpecializedMetadata routes through the "
+         "normal generic-metadata instantiation path instead of canonicalizing "
+         "the static metadata pointer. Lets the prespecializations library win "
+         "for types that also have a noncanonical static spec in some dylib.")
+
+VARIABLE(SWIFT_ROOT, string, "",
+         "Overrides the root directory of the Swift installation. "
+         "This is used to locate auxiliary files relative to the runtime "
+         "itself.")
+
+VARIABLE(SWIFT_BACKTRACE, string, "",
+         "A comma-separated list of key=value pairs that controls the "
+         "crash catching and backtracing support in the runtime. "
+         "See docs/Backtracing.rst in the Swift repository for details.")
+
+VARIABLE(SWIFT_IS_BACKTRACING, boolean, false,
+         "Set to `true` if we are running the backtracer.")
+
+VARIABLE(SWIFT_IS_CURRENT_EXECUTOR_LEGACY_MODE_OVERRIDE, string, "",
+         "Allows for suppressing 'is current executor' equality check crashes. "
+         "As since Swift 6.0 checking for current executor equality, may crash "
+         "and will never return 'false' because we are calling into library "
+         "implemented SerialExecutor.checkIsolation which should crash if the "
+         "isolation is not the expected one. Some old code may rely on the "
+         "non-crashing behavior. This flag enables temporarily restoring the "
+         "legacy 'nocrash' behavior until adopting code has been adjusted. "
+         "It is possible to force the use of Swift 6.2's "
+         "isIsolatingCurrentContext instead of checkIsolated by passing "
+         " the 'isIsolatingCurrentContext' configuration value. "
+         "Legal values are: "
+         " 'legacy' (Legacy behavior), "
+         " 'swift6' (Swift 6.0-6.1 behavior)"
+         " 'isIsolatingCurrentContext' (Swift 6.2 behavior)")
+
+VARIABLE(SWIFT_DUMP_ACCESSIBLE_FUNCTIONS, boolean, false,
+         "Dump a listing of all 'AccessibleFunctionRecord's upon first access. "
+         "These are used to obtain function pointers from accessible function "
+         "record names, e.g. by the Distributed runtime to invoke distributed "
+         "functions.")
+
+VARIABLE(SWIFT_DEBUG_ENABLE_TASK_SLAB_ALLOCATOR, boolean, true,
+         "Use a slab allocator for the async stack. If not enabled, directly "
+         "call malloc/free. Direct use of malloc/free enables use of memory "
+         "debugging tools for async stack allocations.")
+
+VARIABLE(SWIFT_CONCURRENCY_TRACING_SUBSYSTEM, string, "",
+         "Override the os_signpost subsystem used for concurrency tracing. "
+         "When set, signposts are emitted under this subsystem instead of "
+         "com.apple.swift.concurrency. Useful for testing, since the default "
+         "subsystem has signposts disabled by system logging preferences.")
+
+#undef VARIABLE

@@ -1,0 +1,3 @@
+这是RunProcess的Lite版
+未经过测试
+请适当做出调整

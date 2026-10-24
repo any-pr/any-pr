@@ -1,0 +1,9 @@
+// RUN: %target-run-simple-swift(-enable-experimental-feature Embedded -runtime-compatibility-version none -wmo %target-embedded-posix-shim) | %FileCheck %s
+
+// REQUIRES: executable_test
+// REQUIRES: OS=macosx || OS=linux-gnu || OS=none-eabi || OS=none-elf || OS=wasip1
+// REQUIRES: swift_feature_Embedded
+
+print("Hello, Embedded Swift!")
+
+// CHECK: Hello, Embedded Swift!

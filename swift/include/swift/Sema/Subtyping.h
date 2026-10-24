@@ -1,0 +1,276 @@
+//===--- Subtyping.h - Swift subtyping and conversion rules -----*- C++ -*-===//
+//
+// This source file is part of the Swift.org open source project
+//
+// Copyright (c) 2026 Apple Inc. and the Swift project authors
+// Licensed under Apache License v2.0 with Runtime Library Exception
+//
+// See https://swift.org/LICENSE.txt for license information
+// See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
+//
+//===----------------------------------------------------------------------===//
+//
+// This file implements various utilities for reasoning about the Swift
+// subtyping relation.
+//
+//===----------------------------------------------------------------------===//
+#ifndef SWIFT_SEMA_SUBTYPING_H
+#define SWIFT_SEMA_SUBTYPING_H
+
+#include "swift/Basic/OptionSet.h"
+#include "swift/Sema/ConformanceCache.h"
+#include "llvm/Support/raw_ostream.h"
+
+namespace swift {
+
+class GenericSignature;
+class ProtocolDecl;
+class Type;
+class TypeVariableType;
+struct TypePosition;
+
+namespace constraints {
+
+class ConstraintLocator;
+class ConstraintSystem;
+
+/// Checks if two types can unify if we record a bind constraint between them.
+///
+/// Returns:
+/// - true if there is some indication that the bind may succeed.
+/// - false if the bind will definitely fail.
+/// - std::nullopt if unknown.
+std::optional<bool> isLikelyExactMatch(Type first, Type second);
+
+bool isSubclassOf(Type candidateType, Type superclassType);
+
+bool isSubtypeOfExistentialType(Type candidateType,
+                                Type existentialType);
+
+enum class ConversionBehavior : unsigned {
+  /// Most nominal types, archetypes, empty tuple.
+  None,
+
+  /// String has no proper subtypes, but it has pointers as supertypes.
+  String,
+
+  /// Classes can have subclasses and superclasses.
+  Class,
+
+  /// AnyHashable is a supertype to all Hashable types.
+  AnyHashable,
+
+  /// CGFloat and Double.
+  Double,
+
+  /// We fold all pointer types into one for now. These have arrays and
+  /// strings as subtypes.
+  Pointer,
+
+  /// Arrays convert to arrays, and they have pointers as supertypes.
+  Array,
+
+  /// Dictionaries convert to dictionaries.
+  Dictionary,
+
+  /// Sets convert to sets.
+  Set,
+
+  /// Optionals convert to Optionals. Every type has an Optional of itself
+  /// as a supertype.
+  Optional,
+
+  /// Function types support contravariant conversion in parameter position and
+  /// covariant conversion in result position.
+  Function,
+
+  /// Metatypes allow some conversions between instance types.
+  Metatype,
+
+  /// Tuples.
+  Tuple,
+
+  /// Existential types are supertypes of their conforming types, and subtypes of
+  /// less constrained existential types as supertypes. A class-bound existential
+  /// type is also a subtype of its superclass bound.
+  Existential,
+
+  /// Existential metatypes are supertypes of their conforming metatypes, and
+  /// subtypes of less constrained existential metatypes.
+  ExistentialMetatype,
+
+  /// InOut types have Pointer types as supertypes.
+  InOut,
+
+  /// LValue types convert to InOut types. Every type has a subtype that is
+  /// the lvalue of itself.
+  LValue,
+
+  /// Everything else that we don't reason about for now, like
+  /// existentials and tuples.
+  Unknown
+};
+
+/// Classify the possible conversions having this type as result type.
+ConversionBehavior getConversionBehavior(Type type);
+
+struct TypeVarOccurrences {
+  // Covariant position, eg () -> $T0 or Array<$T0>.
+  SmallPtrSet<TypeVariableType *, 2> covariant;
+
+  // Contravariant position, eg ($T0) -> ().
+  SmallPtrSet<TypeVariableType *, 2> contravariant;
+
+  // Invariant position, eg G<$T0> where G is some user-defined type.
+  SmallPtrSet<TypeVariableType *, 2> invariant;
+
+  // Type variables that occur as the base of a dependent member type,
+  // eg $T0.A.
+  SmallPtrSet<TypeVariableType *, 1> base;
+};
+
+void getTypeVariablesWithVariance(
+    TypeVarOccurrences *result,
+    Type type, TypePosition pos,
+    bool funcResultIsInvariant=false);
+
+/// Check if there exist any subtypes of the given type, other than
+/// the type itself. If the type contains type variables, this will
+/// give a conservative approximation.
+bool hasProperSubtypes(Type type);
+
+/// Check if there exist any supertypes of the given type, other than
+/// the type itself, and those that every type T has, that is,
+/// Optional<T> and existentials.
+bool hasProperSupertypes(Type type);
+
+/// Check if this type can be a supertype of a function type. This
+/// is true if it is already a function type, an existential that
+/// only involves marker protocols, or an optional of the above.
+///
+/// Note that an lvalue type is never a supertype of an rvalue type
+/// such as a function type, so given an lvalue type, this will
+/// always return false. If this is not intended behavior, unwrap
+/// the lvalue type first before calling this entry point.
+bool isPossibleSupertypeOfFunctionType(Type type);
+
+enum ConflictFlag : unsigned {
+  Category = 1 << 0,
+  Exact = 1 << 1,
+  Class = 1 << 2,
+  Metatype = 1 << 3,
+  Array = 1 << 4,
+  DictionaryKey = 1 << 5,
+  DictionaryValue = 1 << 6,
+  Set = 1 << 7,
+  Optional = 1 << 8,
+  Double = 1 << 9,
+  Conformance = 1 << 10,
+  TupleArity = 1 << 11,
+  TupleElement = 1 << 12,
+  Existential = 1 << 13,
+  FunctionResult = 1 << 14,
+  FunctionParamCount = 1 << 15,
+  FunctionParamFlags = 1 << 16,
+  FunctionParamType = 1 << 17,
+  FunctionNoEscape = 1 << 18,
+  FunctionAsync = 1 << 19,
+  FunctionThrows = 1 << 20,
+  FunctionSendable = 1 << 21,
+  FunctionTupleSplat = 1 << 22
+};
+using ConflictReason = OptionSet<ConflictFlag>;
+
+void simple_display(llvm::raw_ostream &out, ConflictReason reason);
+
+/// Check whether lhs, as a type with type variables or unopened type
+/// parameters, might be a subtype of rhs, which again is a type with
+/// type variables or unopened type parameters.
+///
+/// The type parameters are interpreted with respect to sig, whereas
+/// type variables are just assumed opaque.
+///
+/// The answer is conservative, so we err on the side of saying that
+/// a conversion _can_ happen. We only return a non-empty ConflictReason
+/// if the conversion will definitely fail.
+///
+/// Even if the types do not contain type variables or type parameters,
+/// this does not give a completely accurate answer, yet.
+ConflictReason checkConversion(ConformanceCache &cache,
+                               Type lhs, Type rhs,
+                               GenericSignature sig);
+
+/// More meaningful overload for when you want a boolean result.
+bool canConvertTo(ConformanceCache &cache,
+                  Type lhs, Type rhs,
+                  GenericSignature sig = GenericSignature());
+
+/// Computes the join between two types.
+///
+/// The join of two types X and Y is the type T with the property
+/// that:
+/// 1) X conv T
+/// 2) Y conv T
+/// 3) for any other U such that X conv U, Y conv U, we have T conv U.
+///
+/// For example, given a simple class hierarchy as follows:
+///
+/// \code
+/// class A { }
+/// class B: A { }
+/// class C: A { }
+/// class D { }
+/// \endcode
+///
+/// The join of B and C is A, the join of A and B is A.
+///
+/// \param existentialUpperBound If set, the upper bound was not
+/// precise, and contains at least one occurrence of the Any type
+/// to represent some unknown existential upper bound. Note that
+/// even if the original types were noncopyable, the result of
+/// Any is used for now. The type should not be used if
+/// existentialUpperBound is true, because the real supertype
+/// might actually be a more constrained existential than Any.
+
+/// \returns the join of the two types.
+Type subtypeJoin(Type lhs, Type rhs, bool *existentialUpperBound);
+
+/// Computes the meet between two types.
+///
+/// The meet of two types X and Y is the type T with the property
+/// that:
+/// 1) T conv X
+/// 2) T conv Y
+/// 3) for any other U such that U conv U, U conv Y, we have U conv T.
+///
+/// For example, given a simple class hierarchy as follows:
+///
+/// \code
+/// class A { }
+/// class B: A { }
+/// class C: A { }
+/// \endcode
+///
+/// The meet of A and B is B, and the meet of B and C is uninhabited.
+///
+/// \param uninhabited If set, the two types have no subtypes in
+/// common. The resulting type will contain occurrences of the Never
+/// type in failed positions.
+
+/// \returns the meet of the two types.
+Type subtypeMeet(Type lhs, Type rhs, bool *uninhabited);
+
+/// Replace JoinType and MeetType with fresh type variables.
+Type openTypeJoinsAndMeets(ConstraintSystem &cs, Type type,
+                           ConstraintLocator *locator);
+
+bool isPackExpansionType(Type type);
+
+/// Whether this parameter list can be the *destination* of a tuple splat.
+bool isSingleTupleParam(ArrayRef<AnyFunctionType::Param> params);
+
+}  // end namespace constraints
+
+}  // end namespace swift
+
+#endif  // SWIFT_SEMA_SUBTYPING_H

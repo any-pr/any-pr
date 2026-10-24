@@ -1,0 +1,35 @@
+// RUN: %target-run-simple-swift(-parse-as-library  -target %target-swift-5.1-abi-triple %import-libdispatch) | %FileCheck %s
+// RUN: %target-run-simple-swift(-parse-as-library  -target %target-swift-5.1-abi-triple %import-libdispatch -swift-version 5 -strict-concurrency=complete -enable-upcoming-feature NonisolatedNonsendingByDefault)  | %FileCheck %s
+// REQUIRES: swift_feature_NonisolatedNonsendingByDefault
+
+// REQUIRES: executable_test
+// REQUIRES: concurrency
+// REQUIRES: libdispatch
+// REQUIRES: concurrency_runtime
+// UNSUPPORTED: back_deployment_runtime
+
+// REQUIRES: rdar114644156
+
+// doesn't matter that it's bool identity function or not
+func boolIdentityFn(_ x : Bool) -> Bool { return x }
+
+actor FirstActor {
+    func startTest() { // whether startTest is async or sync doesn't matter
+
+        // do not remove this call or if-statement.
+        if boolIdentityFn(true) {}
+
+    }
+
+    deinit {
+        // CHECK: called deinit
+        print("called deinit")
+    }
+}
+
+@main struct RunIt {
+    static func main() async {
+        let actor = FirstActor()
+        await actor.startTest() // do not remove this call
+    }
+}

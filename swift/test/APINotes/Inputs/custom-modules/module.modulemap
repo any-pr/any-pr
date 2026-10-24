@@ -1,0 +1,9 @@
+module APINotesTest {
+  header "APINotesTest.h"
+}
+module ObsoletedAPINotesTest {
+  header "ObsoletedAPINotesTest.h"
+}
+module InvalidMacroNames {
+  header "InvalidMacroNames.h"
+}

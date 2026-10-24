@@ -1,0 +1,44 @@
+module MemberInline {
+  header "member-inline.h"
+  requires cplusplus
+}
+
+module DefaultedComparisons {
+  header "defaulted-comparisons.h"
+  requires cplusplus
+}
+
+module MemberOutOfLine {
+  header "member-out-of-line.h"
+  requires cplusplus
+}
+
+module NonMemberInline {
+  header "non-member-inline.h"
+  requires cplusplus
+}
+
+module NonMemberOutOfLine {
+  header "non-member-out-of-line.h"
+  requires cplusplus
+}
+
+module RenamedOperators {
+  header "renamed-operators.h"
+  requires cplusplus
+}
+
+module PointeeOverloads {
+  header "pointee-overloads.h"
+  requires cplusplus
+}
+
+module Subscripts {
+  header "subscripts.h"
+  requires cplusplus
+}
+
+module SubscriptOverloads {
+  header "subscript-overloads.h"
+  requires cplusplus
+}

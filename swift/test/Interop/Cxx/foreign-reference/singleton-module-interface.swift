@@ -1,0 +1,37 @@
+// RUN: %target-swift-ide-test -print-module -module-to-print=Singleton -I %S/Inputs -source-filename=x -enable-experimental-cxx-interop | %FileCheck %s
+
+// CHECK: class DeletedDtor {
+// CHECK: init
+// CHECK:   var value: CInt
+// CHECK:   func test() -> CInt
+// CHECK:   func testMutable() -> CInt
+// CHECK:   class func create() -> DeletedDtor
+// CHECK: }
+// CHECK: func mutateIt(_ x: DeletedDtor)
+
+// CHECK: class PrivateDtor {
+// CHECK: init
+// CHECK:   var value: CInt
+// CHECK:   func test() -> CInt
+// CHECK:   func testMutable() -> CInt
+// CHECK:   class func create() -> PrivateDtor
+// CHECK: }
+// CHECK: func mutateIt(_ x: PrivateDtor)
+
+// CHECK: class DeletedSpecialMembers {
+// CHECK: init
+// CHECK:   var value: CInt
+// CHECK:   func test() -> CInt
+// CHECK:   func testMutable() -> CInt
+// CHECK:   class func create() -> DeletedSpecialMembers
+// CHECK: }
+// CHECK: func mutateIt(_ x: DeletedSpecialMembers)
+
+// CHECK: class PrivateSpecialMembers {
+// CHECK: init
+// CHECK:   var value: CInt
+// CHECK:   func test() -> CInt
+// CHECK:   func testMutable() -> CInt
+// CHECK:   class func create() -> PrivateSpecialMembers
+// CHECK: }
+// CHECK: func mutateIt(_ x: PrivateSpecialMembers)

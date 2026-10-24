@@ -1,0 +1,38 @@
+// RUN: %target-swift-emit-silgen -Xllvm -sil-print-types %s -I %S/Inputs -enable-experimental-cxx-interop -target %target-swift-5.8-abi-triple | %FileCheck %s
+
+import Singleton
+
+// CHECK-NOT: borrow
+// CHECK-NOT: retain
+// CHECK-NOT: release
+// CHECK-LABEL: sil [ossa] @$s4main4testyyF : $@convention(thin) () -> ()
+
+// CHECK: [[BOX:%.*]] = project_box {{.*}} : ${ var DeletedSpecialMembers }, 0
+
+// CHECK: [[CREATE_FN:%.*]] = function_ref @$sSo21DeletedSpecialMembersV6createAByFZTo : $@convention(c) () -> DeletedSpecialMembers
+// CHECK: [[CREATED_PTR:%.*]] = apply [[CREATE_FN]]() : $@convention(c) () -> DeletedSpecialMembers
+// CHECK: store [[CREATED_PTR]] to [trivial] [[BOX]] : $*DeletedSpecialMembers
+// CHECK: [[ACCESS_1:%.*]] = begin_access [read] [unknown] [[BOX]] : $*DeletedSpecialMembers
+// CHECK: [[X_1:%.*]] = load [trivial] [[ACCESS_1]] : $*DeletedSpecialMembers
+
+// CHECK: [[TEST_FN:%.*]] = function_ref @$sSo21DeletedSpecialMembersV4tests5Int32VyFTo : $@convention(cxx_method) (DeletedSpecialMembers) -> Int32
+// CHECK: apply [[TEST_FN]]([[X_1]]) : $@convention(cxx_method) (DeletedSpecialMembers) -> Int32
+// CHECK: [[ACCESS_2:%.*]] = begin_access [read] [unknown] [[BOX]] : $*DeletedSpecialMembers
+// CHECK: [[X_2:%.*]] = load [trivial] [[ACCESS_2]] : $*DeletedSpecialMembers
+
+// CHECK: [[MOVE_IN_RES_FN:%.*]] = function_ref @$sSo8mutateItyySo21DeletedSpecialMembersVFTo : $@convention(c) (DeletedSpecialMembers) -> ()
+// CHECK: apply [[MOVE_IN_RES_FN]]([[X_2]]) : $@convention(c) (DeletedSpecialMembers) -> ()
+
+// CHECK: return
+// CHECK-LABEL: end sil function '$s4main4testyyF'
+public func test() {
+  var x = DeletedSpecialMembers.create()
+  _ = x.test()
+  mutateIt(x)
+}
+
+// CHECK-LABEL: sil {{.*}}[asmname "{{.*}}create{{.*}}"] [clang DeletedSpecialMembers.create] @$sSo21DeletedSpecialMembersV6createAByFZTo : $@convention(c) () -> DeletedSpecialMembers
+
+// CHECK-LABEL: sil {{.*}}[asmname "{{.*}}test{{.*}}"] [clang DeletedSpecialMembers.test] @$sSo21DeletedSpecialMembersV4tests5Int32VyFTo : $@convention(cxx_method) (DeletedSpecialMembers) -> Int32
+
+// CHECK-LABEL: sil [asmname "{{.*}}mutate{{.*}}"] [clang mutateIt] @$sSo8mutateItyySo21DeletedSpecialMembersVFTo : $@convention(c) (DeletedSpecialMembers) -> ()

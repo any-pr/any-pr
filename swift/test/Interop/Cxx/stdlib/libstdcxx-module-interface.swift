@@ -1,0 +1,33 @@
+// RUN: %empty-directory(%t)
+// RUN: %target-swift-ide-test -print-module -module-to-print=CxxStdlib -source-filename=x -enable-experimental-cxx-interop -module-cache-path %t > %t/interface.swift
+// RUN: %FileCheck %s -check-prefix=CHECK-STD < %t/interface.swift
+// RUN: %FileCheck %s -check-prefix=CHECK-SIZE-T < %t/interface.swift
+// RUN: %FileCheck %s -check-prefix=CHECK-TO-STRING < %t/interface.swift
+// RUN: %FileCheck %s -check-prefix=CHECK-STRING < %t/interface.swift
+
+// Running this test with different versions of libstdc++ will result in the decls being printed in different order.
+
+// This test is specific to libstdc++ and only runs on platforms where libstdc++ is used.
+// REQUIRES: OS=linux-gnu
+
+// The RHS of basic_string's typealias value_type depends on how eagerly/lazily
+// we import type members, and also seems to be libstdc++ version-dependent.
+// e.g., we on  Ubuntu 24.04 we have typealias value_type = CChar
+//       and on Ubuntu 26.04 we have typealias value_type = std.char_traits<CChar>.char_type
+
+// CHECK-STD: enum std {
+// CHECK-STRING:   struct basic_string<CChar, std{{(.__cxx11)?}}.char_traits<CChar>, std{{(.__cxx11)?}}.allocator<CChar>> : CxxMutableRandomAccessCollection, CxxIterable {
+// CHECK-STRING:     typealias value_type = {{CChar|std(.__cxx11)?.char_traits<CChar>.char_type}}
+// CHECK-STRING:   }
+// CHECK-STRING:   struct basic_string<CWideChar, std{{(.__cxx11)?}}.char_traits<CWideChar>, std{{(.__cxx11)?}}.allocator<CWideChar>> : CxxMutableRandomAccessCollection, CxxIterable {
+// CHECK-STRING:     typealias value_type = {{CWideChar|std(.__cxx11)?.char_traits<CWideChar>.char_type}}
+// CHECK-STRING:   }
+
+// CHECK-TO-STRING:   static func to_string(_ __val: CInt) -> std{{(.__cxx11)?}}.string
+// CHECK-TO-STRING:   static func to_wstring(_ __val: CInt) -> std{{(.__cxx11)?}}.wstring
+
+// CHECK-SIZE-T:   typealias size_t = Int
+
+// CHECK-STRING:   typealias string =  std{{(.__cxx11)?}}.basic_string<CChar, std{{(.__cxx11)?}}.char_traits<CChar>, std{{(.__cxx11)?}}.allocator<CChar>>
+// CHECK-STRING:   typealias wstring =  std{{(.__cxx11)?}}.basic_string<CWideChar, std{{(.__cxx11)?}}.char_traits<CWideChar>, std{{(.__cxx11)?}}.allocator<CWideChar>>
+// CHECK-STD: }

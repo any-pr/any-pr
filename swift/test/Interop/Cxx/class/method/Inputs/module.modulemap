@@ -1,0 +1,55 @@
+module DeducingThis {
+  header "deducing-this.h"
+  requires cplusplus23
+}
+
+module Methods {
+  header "methods.h"
+  requires cplusplus
+}
+
+module CallingConvention {
+  header "calling-convention.h"
+  requires cplusplus
+}
+
+module AmbiguousMethods {
+  header "ambiguous_methods.h"
+  requires cplusplus
+}
+
+module UnsafeProjections {
+  header "unsafe-projections.h"
+  requires cplusplus
+  
+  export *
+}
+
+module SRetWinARM64 {
+  header "sret-win-arm64.h"
+  requires cplusplus
+}
+
+module InRegSRet {
+  header "inreg-sret.h"
+  requires cplusplus
+}
+
+module SwiftNameDifferentType {
+  header "swift-name-different-type.h"
+  requires cplusplus
+}
+
+module AlwaysUnsafeProjections {
+  header "always-unsafe-projections.h"
+  requires cplusplus
+
+  export *
+}
+
+module AlwaysUnsafeSafeWrapper {
+  header "always-unsafe-safe-wrapper.h"
+  requires cplusplus
+
+  export *
+}

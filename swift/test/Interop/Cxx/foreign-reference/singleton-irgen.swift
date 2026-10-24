@@ -1,0 +1,31 @@
+// RUN: %target-swift-emit-ir %s -I %S/Inputs -enable-experimental-cxx-interop -validate-tbd-against-ir=none -disable-llvm-verify -Xcc -fignore-exceptions -target %target-swift-5.8-abi-triple | %FileCheck %s
+
+import Singleton
+
+// CHECK: %struct.DeletedSpecialMembers = type { i32 }
+
+// CHECK-LABEL: define {{.*}}swiftcc void @"$s4main4testyyF"
+
+// CHECK: [[X:%.*]] = alloca ptr
+
+// CHECK: [[CREATED:%.*]] = call ptr @{{_ZN21DeletedSpecialMembers6createEv|"\?create\@DeletedSpecialMembers\@\@SAPEAU1\@XZ"}}()
+// CHECK: store ptr [[CREATED]], ptr [[X]]
+
+// CHECK: call i32 @{{_ZNK21DeletedSpecialMembers4testEv|"\?test\@DeletedSpecialMembers\@\@QEBAHXZ"}}(ptr [[CREATED]])
+
+// CHECK: call void @{{_Z8mutateItR21DeletedSpecialMembers|"\?mutateIt\@\@YAXAEAUDeletedSpecialMembers\@\@\@Z"}}(ptr [[CREATED]])
+
+// CHECK: ret void
+
+public func test() {
+  var x = DeletedSpecialMembers.create()
+  _ = x.test()
+  mutateIt(x)
+}
+
+// CHECK-LABEL: define {{.*}}swiftcc {{.*}}@"$s4main18testConstRvalueRefyySo21DeletedSpecialMembersVF"
+// CHECK: call i32 @{{.*}}readItConstRvalueRef{{.*}}(ptr %0)
+
+public func testConstRvalueRef(_ x: DeletedSpecialMembers) {
+  _ = readItConstRvalueRef(consuming: x)
+}

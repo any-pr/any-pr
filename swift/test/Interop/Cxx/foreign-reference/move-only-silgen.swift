@@ -1,0 +1,28 @@
+// RUN: %target-swift-emit-silgen -Xllvm -sil-print-types %s -I %S/Inputs -enable-experimental-cxx-interop -target %target-swift-5.8-abi-triple | %FileCheck %s
+
+import MoveOnly
+
+// CHECK-NOT: borrow
+// CHECK-NOT: retain
+// CHECK-NOT: release
+// CHECK-LABEL: sil [ossa] @$s4main4testyyF : $@convention(thin) () -> ()
+
+// CHECK: [[BOX:%.*]] = project_box {{.*}} : ${ var MoveOnly }, 0
+
+// CHECK: [[CREATE_FN:%.*]] = function_ref @$sSo8MoveOnlyV6createAByFZTo : $@convention(c) () -> MoveOnly
+// CHECK: [[CREATED_PTR:%.*]] = apply [[CREATE_FN]]() : $@convention(c) () -> MoveOnly
+// CHECK: store [[CREATED_PTR]] to [trivial] [[BOX]] : $*MoveOnly
+// CHECK: [[ACCESS_1:%.*]] = begin_access [read] [unknown] [[BOX]] : $*MoveOnly
+// CHECK: [[X_1:%.*]] = load [trivial] [[ACCESS_1]] : $*MoveOnly
+
+// CHECK: [[TEST_FN:%.*]] = function_ref @$sSo8MoveOnlyV4tests5Int32VyFTo : $@convention(cxx_method) (MoveOnly) -> Int32
+// CHECK: apply [[TEST_FN]]([[X_1]]) : $@convention(cxx_method) (MoveOnly) -> Int32
+
+// CHECK: return
+// CHECK-LABEL: end sil function '$s4main4testyyF'
+public func test() {
+  var x = MoveOnly.create()
+  _ = x.test()
+}
+
+// CHECK-LABEL: sil {{.*}}[asmname "{{.*}}create{{.*}}"] [clang MoveOnly.create] @$sSo8MoveOnlyV6createAByFZTo : $@convention(c) () -> MoveOnly

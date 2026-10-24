@@ -1,0 +1,24 @@
+import Foundation
+import CoreFoundation
+import Dispatch
+var MY_MACRO: CInt { get }
+var MACRO_DUP: CInt { get }
+func doSomethingInHead(_ arg: CInt)
+class BaseInHead {
+  class func doIt(_ arg: CInt)
+  func doIt(_ arg: CInt)
+}
+/// Awesome name.
+class SameName {
+}
+protocol SameNameProtocol {
+}
+extension BaseInHead {
+  class func doItInCategory()
+  func doItInCategory()
+}
+protocol Superproto {
+  func lala()
+}
+class MyLittleCFType {
+}

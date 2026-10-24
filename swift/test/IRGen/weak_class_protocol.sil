@@ -1,0 +1,22 @@
+// RUN: %target-swift-frontend -emit-ir %s | %FileCheck %s --check-prefix=CHECK --check-prefix=CHECK-%target-runtime
+
+// REQUIRES: CPU=x86_64
+
+import Swift
+
+protocol Foo: class { }
+
+// CHECK-LABEL: define{{( dllexport)?}}{{( protected)?}} swiftcc void @store_weak(ptr noalias sret({{.*}}) %0, ptr %1, ptr %2) {{.*}} {
+// CHECK:       entry:
+// CHECK:         [[WTABLE_SLOT:%.*]] = getelementptr inbounds{{.*}} { %swift.weak, ptr }, ptr %0, i32 0, i32 1
+// CHECK:         store ptr %2, ptr [[WTABLE_SLOT]], align 8
+// CHECK:         [[INSTANCE_SLOT:%.*]] = getelementptr inbounds{{.*}} { %swift.weak, ptr }, ptr %0, i32 0, i32 0
+// CHECK-objc:    call ptr @swift_unknownObjectWeakAssign(ptr returned [[INSTANCE_SLOT]], ptr %1) {{#[0-9]+}}
+// CHECK-native:  call ptr @swift_weakAssign(ptr returned [[INSTANCE_SLOT]], ptr %1) {{#[0-9]+}}
+// CHECK:         ret void
+// CHECK:       }
+sil @store_weak : $@convention(thin) (@owned Foo?) -> @out @sil_weak Foo? {
+entry(%w : $*@sil_weak Foo?, %x : $Foo?):
+  store_weak %x to %w : $*@sil_weak Foo?
+  return undef : $()
+}

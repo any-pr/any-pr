@@ -1,0 +1,34 @@
+// RUN: %sil-llvm-gen -target arm64-apple-macos12 -Xllvm -aarch64-use-tbi %s -output-kind=llvm-as -o - | %FileCheck -check-prefix=TBI %s
+// RUN: %sil-llvm-gen -target arm64-apple-macos12 %s -output-kind=llvm-as -o - | %FileCheck -check-prefix=TAGGED_POINTER %s
+
+import Builtin
+import Swift
+import _Concurrency
+
+// REQUIRES: concurrency
+// REQUIRES: CODEGENERATOR=AArch64
+// REQUIRES: SWIFT_STDLIB_ARCH=arm64
+// REQUIRES: OS=macosx
+
+// TAGGED_POINTER: define swiftcc { ptr, ptr } @test_cast_implicitactor_to_opaqueisolation(i64 [[WORD1:%.*]], i64 [[WORD2:%.*]])
+// TAGGED_POINTER: [[MASKED_WORD:%.*]] = and i64 [[WORD2]], -4
+// TAGGED_POINTER: [[PTR1:%.*]] = inttoptr i64 [[WORD1]] to ptr
+// TAGGED_POINTER: [[PTR2:%.*]] = inttoptr i64 [[MASKED_WORD]] to ptr
+// TAGGED_POINTER: [[TUP1:%.*]] = insertvalue { ptr, ptr } undef, ptr [[PTR1]], 0
+// TAGGED_POINTER: [[TUP2:%.*]] = insertvalue { ptr, ptr } [[TUP1]], ptr [[PTR2]], 1
+// TAGGED_POINTER: ret { ptr, ptr } [[TUP2]]
+// TAGGED_POINTER-NEXT: }
+
+// TBI: define swiftcc { ptr, ptr } @test_cast_implicitactor_to_opaqueisolation(i64 [[WORD1:%.*]], i64 [[WORD2:%.*]])
+// TBI: [[MASKED_WORD:%.*]] = and i64 [[WORD2]], -3458764513820540929
+// TBI: [[PTR1:%.*]] = inttoptr i64 [[WORD1]] to ptr
+// TBI: [[PTR2:%.*]] = inttoptr i64 [[MASKED_WORD]] to ptr
+// TBI: [[TUP1:%.*]] = insertvalue { ptr, ptr } undef, ptr [[PTR1]], 0
+// TBI: [[TUP2:%.*]] = insertvalue { ptr, ptr } [[TUP1]], ptr [[PTR2]], 1
+// TBI: ret { ptr, ptr } [[TUP2]]
+// TBI-NEXT: }
+sil @test_cast_implicitactor_to_opaqueisolation : $@convention(thin) (@guaranteed Builtin.ImplicitActor) -> @owned Optional<any Actor> {
+bb0(%0 : $Builtin.ImplicitActor):
+  %2 = implicitactor_to_opaqueisolation_cast %0
+  return %2
+}

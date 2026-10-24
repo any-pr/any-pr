@@ -1,0 +1,246 @@
+//===--- TypeCheckEmbedded.cpp - Embedded ----------------------------------===//
+//
+// This source file is part of the Swift.org open source project
+//
+// Copyright (c) 2014 - 2020 Apple Inc. and the Swift project authors
+// Licensed under Apache License v2.0 with Runtime Library Exception
+//
+// See https://swift.org/LICENSE.txt for license information
+// See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
+//
+//===----------------------------------------------------------------------===//
+//
+// This file implements type checking support for Embedded Swift.
+//
+//===----------------------------------------------------------------------===//
+
+#include "TypeCheckEmbedded.h"
+#include "OpenedExistentials.h"
+#include "TypeChecker.h"
+#include "swift/AST/ASTContext.h"
+#include "swift/AST/Decl.h"
+#include "swift/AST/DiagnosticGroups.h"
+#include "swift/AST/DiagnosticsSema.h"
+#include "swift/AST/Effects.h"
+#include "swift/AST/Expr.h"
+#include "swift/AST/ExistentialLayout.h"
+#include "swift/AST/OperatorNameLookup.h"
+#include "swift/AST/SourceFile.h"
+#include "swift/AST/Types.h"
+#include "swift/Basic/SourceLoc.h"
+#include "swift/Bridging/ASTGen.h"
+#include "swift/Sema/ConstraintSystem.h"
+
+using namespace swift;
+
+static DiagnosticBehavior
+defaultEmbeddedLimitationForError(const DeclContext *dc, SourceLoc loc) {
+  if (dc->getASTContext().LangOpts.hasFeature(Feature::Embedded))
+    return DiagnosticBehavior::Unspecified;
+
+  return DiagnosticBehavior::Warning;
+}
+
+/// Determine whether the code in this declaration context will never be
+/// emitted when compiling for Embedded Swift, in which case there is no point
+/// in diagnosing Embedded Swift limitations within it.
+static bool isNeverEmittedForEmbedded(const DeclContext *dc) {
+  auto decl = dc->getInnermostDeclarationDeclContext();
+  if (!decl)
+    return false;
+
+  // A declaration that is not available during lowering never reaches SILGen,
+  // so its restrictions can never be hit.
+  return !decl->isAvailableDuringLowering();
+}
+
+std::optional<DiagnosticBehavior>
+swift::shouldDiagnoseEmbeddedLimitations(const DeclContext *dc, SourceLoc loc,
+                                         bool wasAlwaysEmbeddedError) {
+  // Code that is never emitted for Embedded Swift is free to use constructs
+  // Embedded Swift cannot support.
+  if (isNeverEmittedForEmbedded(dc))
+    return std::nullopt;
+
+  // In Embedded Swift, things that were always errors will still be emitted
+  // as errors. Use "unspecified" so we don't change anything.
+  if (dc->getASTContext().LangOpts.hasFeature(Feature::Embedded) &&
+      wasAlwaysEmbeddedError) {
+    return defaultEmbeddedLimitationForError(dc, loc);
+  }
+
+  // Check if the Embedded restriction diagnostics, which are ignored by
+  // default, have been enabled. If it's still ignored, we won't diagnose
+  // anything.
+  auto &diags = dc->getASTContext().Diags;
+  if (!diags.isDiagnosticGroupEnabled(
+          dc->getParentSourceFile(), DiagGroupID::EmbeddedRestrictions))
+    return std::nullopt;
+
+#if SWIFT_BUILD_SWIFT_SYNTAX
+  // If we are not in Embedded Swift, check whether the location we are
+  // diagnosing at is likely to be active when compiling Embedded Swift. If not,
+  // suppress the diagnostic.
+  auto sourceFile = dc->getParentSourceFile();
+  if (!dc->getASTContext().LangOpts.hasFeature(Feature::Embedded) &&
+      sourceFile &&
+      !swift_ASTGen_activeInEmbeddedSwift(sourceFile->getASTContext(),
+                                          sourceFile->getExportedSourceFile(),
+                                          loc)) {
+    return std::nullopt;
+  }
+#endif
+
+  // If this was always an error in Embedded Swift, we aren't in Embedded Swift
+  // now, so downgrade to a warning.
+  if (wasAlwaysEmbeddedError)
+    return DiagnosticBehavior::Warning;
+
+  // Leave it as-is.
+  return DiagnosticBehavior::Unspecified;
+}
+
+/// Check embedded restrictions in the signature of the given function.
+void swift::checkEmbeddedRestrictionsInSignature(
+    const AbstractFunctionDecl *func) {
+  // If we are not supposed to diagnose Embedded Swift limitations, do nothing.
+  auto behavior = shouldDiagnoseEmbeddedLimitations(func, func->getLoc());
+  if (!behavior)
+    return;
+
+  auto classDecl = dyn_cast<ClassDecl>(func->getDeclContext());
+  if (!classDecl)
+    return;
+
+  // A `required` generic initializer is reached through the metatype of a
+  // dynamic type, so there is no way to dispatch it statically.
+  if (auto ctor = dyn_cast<ConstructorDecl>(func)) {
+    if (ctor->isRequired() && !classDecl->isSemanticallyFinal() &&
+        func->getGenericSignature().isABIMoreGenericThan(
+            classDecl->getGenericSignature())) {
+      func->diagnose(diag::generic_nonfinal_in_embedded_swift, func,
+                     /*isRequiredInit=*/true)
+        .limitBehavior(defaultEmbeddedLimitationForError(func, func->getLoc()));
+    }
+    return;
+  }
+
+  // A generic method of a class is dispatched statically and kept out of the
+  // vtable. That is only sound if nothing can override it, so reject the two
+  // ways an override could arise.
+  if (classDecl->isSemanticallyFinal() ||
+      !func->getGenericSignature().isABIMoreGenericThan(
+          classDecl->getGenericSignature()))
+    return;
+
+  // An override needs the overridden method to have a vtable entry to dispatch
+  // through, which a generic method does not get. Diagnose this before `open`,
+  // since an `open` override should be described as the override problem.
+  if (func->getOverriddenDecl()) {
+    func->diagnose(diag::generic_override_in_embedded_swift, func)
+      .limitBehavior(defaultEmbeddedLimitationForError(func, func->getLoc()));
+    return;
+  }
+
+  // An `open` method can be overridden from another module, which we would
+  // never see -- so this has to be rejected at the declaration.
+  if (func->getFormalAccess() == AccessLevel::Open) {
+    func->diagnose(diag::generic_open_in_embedded_swift, func)
+      .limitBehavior(defaultEmbeddedLimitationForError(func, func->getLoc()));
+  }
+}
+
+void swift::diagnoseGenericMemberOfExistentialInEmbedded(
+    const DeclContext *dc, SourceLoc loc,
+    Type baseType, const ValueDecl *member) {
+  // If we are not supposed to diagnose Embedded Swift limitations, do nothing.
+  auto behavior = shouldDiagnoseEmbeddedLimitations(dc, loc);
+  if (!behavior)
+    return;
+
+  if (member->getInnermostDeclContext()
+          ->getGenericSignatureOfContext()
+          .isABIMoreGenericThan(
+              member->getDeclContext()->getGenericSignatureOfContext())) {
+    dc->getASTContext().Diags.diagnose(loc, diag::use_generic_member_of_existential_in_embedded_swift, member,
+        baseType)
+      .limitBehavior(*behavior);
+  }
+}
+
+void swift::diagnoseOpenedExistentialArgumentInEmbedded(
+    const DeclContext *dc, Expr *argExpr, Type existentialType,
+    ValueDecl *callee, unsigned paramIdx) {
+  // If we are not supposed to diagnose Embedded Swift limitations, do nothing.
+  auto behavior = shouldDiagnoseEmbeddedLimitations(dc, argExpr->getLoc());
+  if (!behavior)
+    return;
+
+  auto &ctx = dc->getASTContext();
+  ctx.Diags
+      .diagnose(argExpr->getLoc(),
+                diag::open_existential_argument_in_embedded_swift,
+                existentialType, callee)
+      .limitBehavior(*behavior);
+
+  // Coercing the argument to its own existential type suppresses the implicit
+  // opening, but only helps when the existential satisfies the requirements on
+  // the generic parameter in the first place. When it does not, opening is the
+  // only way the call type checks, so there is nothing to suggest.
+  if (!canPassExistentialArgumentWithoutOpening(callee, paramIdx,
+                                                existentialType))
+    return;
+
+  // The coercion has to bind to the whole argument, which takes parentheses
+  // when the argument binds more loosely than 'as'.
+  auto *mutableDC = const_cast<DeclContext *>(dc);
+  auto *castingPG = TypeChecker::lookupPrecedenceGroup(
+                        mutableDC, ctx.Id_CastingPrecedence, SourceLoc())
+                        .getSingle();
+  bool needsParens =
+      !castingPG ||
+      exprNeedsParensInsideFollowingOperator(mutableDC, argExpr, castingPG);
+
+  SmallString<32> insertAfter;
+  if (needsParens)
+    insertAfter += ")";
+  insertAfter += " as ";
+  insertAfter += existentialType->getString();
+
+  auto note = ctx.Diags.diagnose(
+      argExpr->getLoc(),
+      diag::open_existential_argument_coerce_in_embedded_swift,
+      existentialType);
+  if (needsParens)
+    note.fixItInsert(argExpr->getStartLoc(), "(");
+  note.fixItInsertAfter(argExpr->getEndLoc(), insertAfter);
+}
+
+void swift::diagnoseDynamicCastInEmbedded(
+    const DeclContext *dc, const CheckedCastExpr *cast) {
+  // A cast to a type involving a protocol needs a runtime conformance lookup,
+  // which the embedded runtime cannot do. This has always been unsupported --
+  // for the address-only forms SILGen produces, the optimizer rejects it
+  // outright -- so it is an error in Embedded Swift rather than a warning.
+  auto behavior = shouldDiagnoseEmbeddedLimitations(dc, cast->getLoc(),
+                                                   /*wasAlwaysEmbeddedError=*/true);
+  if (!behavior)
+    return;
+
+  // We only care about casts to existential types.
+  Type toType = cast->getCastType()->lookThroughAllOptionalTypes();
+  if (!toType->isAnyExistentialType())
+    return;
+
+  ExistentialLayout layout = toType->getExistentialLayout();
+  for (auto proto : layout.getProtocols()) {
+    if (proto->isMarkerProtocol())
+      continue;
+
+    dc->getASTContext().Diags.diagnose(
+        cast->getLoc(),
+        diag::dynamic_cast_involving_protocol_in_embedded_swift, proto)
+      .limitBehaviorIf(behavior);
+    return;
+  }
+}

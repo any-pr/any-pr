@@ -1,0 +1,293 @@
+#pragma once
+
+struct
+  __attribute__((swift_attr("import_reference")))
+  __attribute__((swift_attr("retain:.retain")))
+  __attribute__((swift_attr("release:.release")))
+// expected-note@+1 {{annotate 'init()' with either SWIFT_RETURNS_RETAINED or SWIFT_RETURNS_UNRETAINED}}
+FRTImplicitDefaultCtor1 {
+  mutable int refs = 1;
+  void retain() const { check(); ++refs; }
+  void release() const { --refs; check(); if (refs == 0) delete this; }
+  void check() const { if (refs < 0) __builtin_trap(); }
+};
+
+struct
+  __attribute__((swift_attr("import_reference")))
+  __attribute__((swift_attr("retain:.retain")))
+  __attribute__((swift_attr("release:.release")))
+// expected-note@+1 {{annotate 'init()' with either SWIFT_RETURNS_RETAINED or SWIFT_RETURNS_UNRETAINED}}
+FRTImplicitDefaultCtor0 {
+  mutable int refs = 0;
+  void retain() const { check(); ++refs; }
+  void release() const { --refs; check(); if (refs == 0) delete this; }
+  void check() const { if (refs < 0) __builtin_trap(); }
+};
+
+struct
+  __attribute__((swift_attr("import_reference")))
+  __attribute__((swift_attr("retain:.retain")))
+  __attribute__((swift_attr("release:.release")))
+FRTExplicitDefaultCtorNoAnnotation {
+  mutable int refs = 1;
+  void retain() const { check(); ++refs; }
+  void release() const { --refs; check(); if (refs == 0) delete this; }
+  void check() const { if (refs < 0) __builtin_trap(); }
+
+  // expected-note@+1 {{annotate 'init()' with either SWIFT_RETURNS_RETAINED or SWIFT_RETURNS_UNRETAINED}}
+  FRTExplicitDefaultCtorNoAnnotation() = default;
+};
+
+struct
+  __attribute__((swift_attr("import_reference")))
+  __attribute__((swift_attr("retain:.retain")))
+  __attribute__((swift_attr("release:.release")))
+FRTExplicitDefaultCtor1 {
+  mutable int refs = 1;
+  void retain() const { check(); ++refs; }
+  void release() const { --refs; check(); if (refs == 0) delete this; }
+  void check() const { if (refs < 0) __builtin_trap(); }
+
+  __attribute__((swift_attr("returns_retained")))
+  FRTExplicitDefaultCtor1() = default;
+};
+
+struct
+  __attribute__((swift_attr("import_reference")))
+  __attribute__((swift_attr("retain:.retain")))
+  __attribute__((swift_attr("release:.release")))
+FRTExplicitDefaultCtor0 {
+  mutable int refs = 0;
+  void retain() const { check(); ++refs; }
+  void release() const { --refs; check(); if (refs == 0) delete this; }
+  void check() const { if (refs < 0) __builtin_trap(); }
+
+
+  __attribute__((swift_attr("returns_unretained")))
+  FRTExplicitDefaultCtor0() = default;
+};
+
+struct
+  __attribute__((swift_attr("import_reference")))
+  __attribute__((swift_attr("retain:.retain")))
+  __attribute__((swift_attr("release:.release")))
+FRTUserDefaultCtorNoAnnotation {
+  mutable int refs;
+  void retain() const { check(); ++refs; }
+  void release() const { --refs; check(); if (refs == 0) delete this; }
+  void check() const { if (refs < 0) __builtin_trap(); }
+
+  // expected-note@+1 {{annotate 'init()' with either SWIFT_RETURNS_RETAINED or SWIFT_RETURNS_UNRETAINED}}
+  FRTUserDefaultCtorNoAnnotation() : refs(0) {}
+};
+
+struct
+  __attribute__((swift_attr("import_reference")))
+  __attribute__((swift_attr("retain:.retain")))
+  __attribute__((swift_attr("release:.release")))
+FRTUserDefaultCtor1 {
+  mutable int refs;
+  void retain() const { check(); ++refs; }
+  void release() const { --refs; check(); if (refs == 0) delete this; }
+  void check() const { if (refs < 0) __builtin_trap(); }
+
+  __attribute__((swift_attr("returns_retained")))
+  FRTUserDefaultCtor1() : refs(1) {}
+};
+
+struct
+  __attribute__((swift_attr("import_reference")))
+  __attribute__((swift_attr("retain:.retain")))
+  __attribute__((swift_attr("release:.release")))
+FRTUserDefaultCtor0 {
+  mutable int refs;
+  void retain() const { check(); ++refs; }
+  void release() const { --refs; check(); if (refs == 0) delete this; }
+  void check() const { if (refs < 0) __builtin_trap(); }
+
+  __attribute__((swift_attr("returns_unretained")))
+  FRTUserDefaultCtor0() : refs(0) {}
+};
+
+struct
+  __attribute__((swift_attr("import_reference")))
+  __attribute__((swift_attr("retain:.retain")))
+  __attribute__((swift_attr("release:.release")))
+FRTMixedConventionCtors {
+  mutable int refs;
+  void retain() const { check(); ++refs; }
+  void release() const { --refs; check(); if (refs == 0) delete this; }
+  void check() const { if (refs < 0) __builtin_trap(); }
+
+  __attribute__((swift_attr("returns_unretained")))
+  FRTMixedConventionCtors() : refs(0) {}
+
+  __attribute__((swift_attr("returns_retained")))
+  FRTMixedConventionCtors(int) : refs(1) {}
+
+  // expected-note@+1 {{annotate 'init(_:_:)' with either SWIFT_RETURNS_RETAINED or SWIFT_RETURNS_UNRETAINED}}
+  FRTMixedConventionCtors(int, int) : refs(0) {}
+};
+
+struct
+  __attribute__((swift_attr("import_reference")))
+  __attribute__((swift_attr("retain:.retain")))
+  __attribute__((swift_attr("release:.release")))
+  __attribute__((swift_attr("returned_as_unretained_by_default")))
+FRTMixedConventionCtorsUnretainedByDefault {
+  mutable int refs;
+  void retain() const { check(); ++refs; }
+  void release() const { --refs; check(); if (refs == 0) delete this; }
+  void check() const { if (refs < 0) __builtin_trap(); }
+
+  __attribute__((swift_attr("returns_retained")))
+  FRTMixedConventionCtorsUnretainedByDefault() : refs(1) {}
+
+  __attribute__((swift_attr("returns_unretained")))
+  FRTMixedConventionCtorsUnretainedByDefault(int) : refs(0) {}
+
+  FRTMixedConventionCtorsUnretainedByDefault(int, int) : refs(0) {}
+};
+
+struct
+  __attribute__((swift_attr("import_reference")))
+  __attribute__((swift_attr("retain:.retain")))
+  __attribute__((swift_attr("release:.release")))
+FRTUnavailableCtor {
+  mutable int refs = 1;
+  void retain() const { check(); ++refs; }
+  void release() const { --refs; check(); if (refs == 0) delete this; }
+  void check() const { if (refs < 0) __builtin_trap(); }
+
+  __attribute__((swift_attr("returns_retained")))
+  __attribute__((availability(swift, unavailable, message="cannot use this constructor")))
+  FRTUnavailableCtor() : refs(1) {}
+  // expected-note@-1 {{'init()' has been explicitly marked unavailable here}}
+};
+
+struct
+  __attribute__((swift_attr("import_reference")))
+  __attribute__((swift_attr("retain:.retain")))
+  __attribute__((swift_attr("release:.release")))
+FRTMixedAvailabilityCtors {
+  mutable int refs = 1;
+  void retain() const { check(); ++refs; }
+  void release() const { --refs; check(); if (refs == 0) delete this; }
+  void check() const { if (refs < 0) __builtin_trap(); }
+
+  __attribute__((swift_attr("returns_retained")))
+  FRTMixedAvailabilityCtors() : refs(1) {}
+
+  __attribute__((swift_attr("returns_retained")))
+  __attribute__((availability(swift, unavailable, message="cannot construct from an int")))
+  FRTMixedAvailabilityCtors(int) : refs(1) {}
+  // expected-note@-1 {{'init(_:)' has been explicitly marked unavailable here}}
+
+  __attribute__((swift_attr("returns_retained")))
+  __attribute__((unavailable("cannot construct from two ints")))
+  FRTMixedAvailabilityCtors(int, int) : refs(1) {}
+  // expected-note@-1 {{'init(_:_:)' has been explicitly marked unavailable here}}
+
+  __attribute__((swift_attr("returns_retained")))
+  __attribute__((deprecated("don't construct from three ints")))
+  FRTMixedAvailabilityCtors(int, int, int) : refs(1) {}
+};
+
+struct
+  __attribute__((swift_attr("import_reference")))
+  __attribute__((swift_attr("retain:.retain")))
+  __attribute__((swift_attr("release:.release")))
+FRTCtorWithDefaultPointerArg {
+  mutable int refs = 1;
+  void retain() const { check(); ++refs; }
+  void release() const { --refs; check(); if (refs == 0) delete this; }
+  void check() const { if (refs < 0) __builtin_trap(); }
+
+  FRTCtorWithDefaultPointerArg *parent;
+
+  __attribute__((swift_attr("returns_retained")))
+  FRTCtorWithDefaultPointerArg(FRTCtorWithDefaultPointerArg *parent = nullptr)
+      : parent(parent) {}
+};
+
+struct
+  __attribute__((swift_attr("import_reference")))
+  __attribute__((swift_attr("retain:.retain")))
+  __attribute__((swift_attr("release:.release")))
+FRTCtorWithDefaultIntArgs {
+  mutable int refs = 1;
+  void retain() const { check(); ++refs; }
+  void release() const { --refs; check(); if (refs == 0) delete this; }
+  void check() const { if (refs < 0) __builtin_trap(); }
+
+  int value;
+
+  __attribute__((swift_attr("returns_retained")))
+  // expected-note@+1 {{'init(_:_:_:)' declared here}}
+  FRTCtorWithDefaultIntArgs(int a, int b = 456, int c = 123)
+      : value(a + b + c) {}
+};
+
+struct FRTCtorArgView {
+  int *ptr;
+};
+
+// Swift can't guarantee the lifetime of the pointee of a view type, so this
+// constructor imports without its default argument.
+struct
+  __attribute__((swift_attr("import_reference")))
+  __attribute__((swift_attr("retain:.retain")))
+  __attribute__((swift_attr("release:.release")))
+FRTCtorWithDefaultViewArg {
+  mutable int refs = 1;
+  void retain() const { check(); ++refs; }
+  void release() const { --refs; check(); if (refs == 0) delete this; }
+  void check() const { if (refs < 0) __builtin_trap(); }
+
+  bool isNull;
+
+  __attribute__((swift_attr("returns_retained")))
+  // expected-note@+1 {{'init(_:)' declared here}}
+  FRTCtorWithDefaultViewArg(FRTCtorArgView view = {nullptr})
+      : isNull(view.ptr == nullptr) {}
+};
+
+// Marking the parameter import_unsafe imports the default argument anyway.
+struct
+  __attribute__((swift_attr("import_reference")))
+  __attribute__((swift_attr("retain:.retain")))
+  __attribute__((swift_attr("release:.release")))
+FRTCtorWithUnsafeDefaultViewArg {
+  mutable int refs = 1;
+  void retain() const { check(); ++refs; }
+  void release() const { --refs; check(); if (refs == 0) delete this; }
+  void check() const { if (refs < 0) __builtin_trap(); }
+
+  bool isNull;
+
+  __attribute__((swift_attr("returns_retained")))
+  FRTCtorWithUnsafeDefaultViewArg(
+      __attribute__((swift_attr("import_unsafe"))) FRTCtorArgView view = {nullptr})
+      : isNull(view.ptr == nullptr) {}
+};
+
+// Like constructors of value type class templates, this constructor imports
+// without its default argument.
+template <typename T>
+struct
+  __attribute__((swift_attr("import_reference")))
+  __attribute__((swift_attr("retain:.retain")))
+  __attribute__((swift_attr("release:.release")))
+FRTTemplateCtorWithDefaultArg {
+  mutable int refs = 1;
+  void retain() const { check(); ++refs; }
+  void release() const { --refs; check(); if (refs == 0) delete this; }
+  void check() const { if (refs < 0) __builtin_trap(); }
+
+  T value;
+
+  __attribute__((swift_attr("returns_retained")))
+  FRTTemplateCtorWithDefaultArg(T value = T(42)) : value(value) {}
+};
+
+using FRTTemplateCtorWithDefaultArgInt = FRTTemplateCtorWithDefaultArg<int>;

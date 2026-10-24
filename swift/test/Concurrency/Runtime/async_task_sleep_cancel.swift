@@ -1,0 +1,127 @@
+// RUN: %target-run-simple-swift( -target %target-swift-5.1-abi-triple %import-libdispatch -parse-as-library) | %FileCheck %s --dump-input always
+// RUN: %target-run-simple-swift( -target %target-swift-5.1-abi-triple %import-libdispatch -parse-as-library -swift-version 5 -strict-concurrency=complete -enable-upcoming-feature NonisolatedNonsendingByDefault)  | %FileCheck %s --dump-input always
+// REQUIRES: swift_feature_NonisolatedNonsendingByDefault
+// REQUIRES: executable_test
+// REQUIRES: concurrency
+// REQUIRES: libdispatch
+
+// rdar://76038845
+// REQUIRES: concurrency_runtime
+// UNSUPPORTED: back_deployment_runtime
+
+import _Concurrency
+// FIXME: should not depend on Dispatch
+import Dispatch
+
+@available(SwiftStdlib 5.1, *)
+@main struct Main {
+  // Duration for testing a sleep that we intend to run to completion.
+  static let normalPause = 500_000_000 // 500ms
+
+  // Duration for testing a sleep that will be cancelled. This should not run to
+  // completion, so we make it longer in order to minimize the chance of some
+  // delay making the test fail spuriously.
+  //
+  // 15 billion is too big to fit into an Int on 32-bit targets, so we'll make
+  // this a UInt64 and play some games in the time arithmetic.
+  static let cancelledPause = 15_000_000_000 as UInt64 // 15s
+
+  static func main() async {
+    // CHECK: Starting!
+    print("Starting!")
+    await testSleepFinished()
+    await testSleepMomentary()
+    await testSleepCancelledBeforeStarted()
+    await testSleepCancelled()
+  }
+
+  static func testSleepFinished() async {
+    // CHECK-NEXT: Testing sleep that completes
+    print("Testing sleep that completes")
+    let start = DispatchTime.now()
+
+    // try! will fail if the task got cancelled (which shouldn't happen).
+    try! await Task.sleep(nanoseconds: UInt64(normalPause))
+
+    let stop = DispatchTime.now()
+
+    // assert that at least the specified time passed since calling `sleep`
+    assert(stop >= (start + .nanoseconds(normalPause)))
+
+    // CHECK-NEXT: Wakey wakey!
+    print("Wakey wakey!")
+  }
+
+  static func testSleepMomentary() async {
+    // CHECK-NEXT: Testing sleep that completes instantly
+    print("Testing sleep that completes instantly")
+
+    // try! will fail if the task got cancelled (which shouldn't happen).
+    try! await Task.sleep(nanoseconds: 0)
+
+    // CHECK-NEXT: Wakey wakey!
+    print("Wakey wakey!")
+  }
+
+  static func testSleepCancelledBeforeStarted() async {
+    // CHECK-NEXT: Testing sleep that gets cancelled before it starts
+    print("Testing sleep that gets cancelled before it starts")
+    let sleepyTask = Task {
+      try await Task.sleep(nanoseconds: cancelledPause)
+    }
+
+    do {
+      sleepyTask.cancel()
+      try await sleepyTask.value
+
+      print("Bah, weird scheduling")
+    } catch is CancellationError {
+      print("Caught the cancellation error")
+    } catch {
+      fatalError("sleep(nanoseconds:) threw some other error: \(error)")
+    }
+
+    // CHECK: Cancelled!
+    print("Cancelled!")
+  }
+
+  static func testSleepCancelled() async {
+    // CHECK-NEXT: Testing sleep that gets cancelled before it completes
+    print("Testing sleep that gets cancelled before it completes")
+    let start = DispatchTime.now()
+
+    let sleepyTask = Task {
+      try await Task.sleep(nanoseconds: cancelledPause)
+    }
+
+    do {
+      let waiterTask = Task {
+        try await sleepyTask.value
+      }
+
+      let cancellerTask = Task {
+        await Task.sleep(UInt64(normalPause / 2))
+        sleepyTask.cancel()
+      }
+
+      try await waiterTask.value
+
+      fatalError("sleep(nanoseconds:) should have thrown CancellationError")
+    } catch is CancellationError {
+      // CHECK-NEXT: Caught the cancellation error
+      print("Caught the cancellation error")
+
+      let stop = DispatchTime.now()
+
+      // Assert that we stopped early. cancelledPause is too big to fit into an
+      // Int on 32-bit systems, so we'll check in microseconds instead of
+      // nanoseconds to make that work.
+      assert(stop < (start + .microseconds(Int(cancelledPause / 1000))))
+    } catch {
+      fatalError("sleep(nanoseconds:) threw some other error: \(error)")
+    }
+
+    // CHECK-NEXT: Cancelled!
+    print("Cancelled!")
+  }
+}

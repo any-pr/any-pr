@@ -1,0 +1,14 @@
+// RUN: %target-typecheck-verify-swift -verify-ignore-unrelated -verify-ignore-unknown -cxx-interoperability-mode=default -target %target-swift-5.8-abi-triple -I %S/Inputs
+
+import WitnessTable
+
+public protocol ListNode {
+  associatedtype Element
+  func next() -> Element?
+}
+
+@available(SwiftStdlib 5.8, *)
+extension CxxLinkedList : ListNode { }
+
+let existential: any ListNode = makeLinkedList()
+let cast: CxxLinkedList? = existential as? CxxLinkedList

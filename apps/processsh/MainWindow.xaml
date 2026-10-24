@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Window
+    x:Class="ProcessSH.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:tb="using:H.NotifyIcon"
+    Title="ProcessSH">
+    <Window.SystemBackdrop>
+        <DesktopAcrylicBackdrop />
+    </Window.SystemBackdrop>
+
+    <Grid x:Name="RootGrid">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <Grid x:Name="AppTitleBar" Grid.Row="0" Height="32" Background="Transparent">
+            <TextBlock Text="ProcessSH"
+                       Margin="16,0,0,0"
+                       VerticalAlignment="Center"
+                       FontSize="12"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+        </Grid>
+
+        <tb:TaskbarIcon
+            x:Name="TrayIcon"
+            ToolTipText="ProcessSH"
+            IconSource="Assets/AppIcon.ico"
+            ContextMenuMode="SecondWindow"
+            LeftClickCommand="{x:Bind ToggleWindowCommand}">
+            <tb:TaskbarIcon.ContextFlyout>
+                <MenuFlyout Opening="TrayMenu_Opening" Closed="TrayMenu_Closed">
+                    <MenuFlyoutItem x:Name="TrayToggleItem" Click="TrayToggleWindow_Click" />
+                    <MenuFlyoutSeparator />
+                    <MenuFlyoutItem x:Name="TrayClearItem" Click="TrayClearHistory_Click" />
+                    <MenuFlyoutItem x:Name="TraySettingsItem" Click="TraySettings_Click" />
+                    <MenuFlyoutItem x:Name="TrayAboutItem" Click="TrayAbout_Click" />
+                    <MenuFlyoutSeparator />
+                    <MenuFlyoutItem x:Name="TrayQuitItem" Click="TrayQuit_Click" />
+                </MenuFlyout>
+            </tb:TaskbarIcon.ContextFlyout>
+        </tb:TaskbarIcon>
+
+        <Frame x:Name="RootFrame" Grid.Row="1" />
+    </Grid>
+</Window>

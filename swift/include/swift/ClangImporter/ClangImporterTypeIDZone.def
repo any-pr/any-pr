@@ -1,0 +1,53 @@
+//===--- ClangImporterTypeIDZone.def ----------------------------*- C++ -*-===//
+//
+// This source file is part of the Swift.org open source project
+//
+// Copyright (c) 2021 Apple Inc. and the Swift project authors
+// Licensed under Apache License v2.0 with Runtime Library Exception
+//
+// See https://swift.org/LICENSE.txt for license information
+// See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
+//
+//===----------------------------------------------------------------------===//
+//
+//  This definition file describes the types in the clang importer
+//  TypeID zone, for use with the TypeID template.
+//
+//===----------------------------------------------------------------------===//
+
+SWIFT_REQUEST(ClangImporter, CXXNamespaceMemberLookup,
+              TinyPtrVector<ValueDecl *>(CXXNamespaceMemberLookupDescriptor), Uncached,
+              NoLocationInfo)
+SWIFT_REQUEST(ClangImporter, ClangRecordMemberLookup,
+              TinyPtrVector<ValueDecl *>(ClangRecordMemberLookupDescriptor), Uncached,
+              NoLocationInfo)
+SWIFT_REQUEST(ClangImporter, ClangCategoryLookupRequest,
+              llvm::TinyPtrVector<Decl *>(ClangCategoryLookupDescriptor), Uncached,
+              NoLocationInfo)
+SWIFT_REQUEST(ClangImporter, ObjCInterfaceAndImplementationRequest,
+              ObjCInterfaceAndImplementation(Decl *), SeparatelyCached,
+              NoLocationInfo)
+SWIFT_REQUEST(ClangImporter, ForeignReferenceTypeInfoRequest,
+              ForeignReferenceTypeInfo(ForeignReferenceTypeInfoDescriptor), Cached,
+              NoLocationInfo)
+SWIFT_REQUEST(ClangImporter, CxxRecordSemantics,
+              CxxRecordSemanticsKind(CxxRecordSemanticsDescriptor), Cached,
+              NoLocationInfo)
+SWIFT_REQUEST(ClangImporter, CxxRecordAsSwiftType,
+              ValueDecl *(CxxRecordSemanticsDescriptor), Cached,
+              NoLocationInfo)
+SWIFT_REQUEST(ClangImporter, ClangTypeEscapability,
+              CxxEscapability(EscapabilityLookupDescriptor), Cached,
+              NoLocationInfo)
+SWIFT_REQUEST(ClangImporter, CxxValueSemantics,
+              CxxValueSemanticsKind(CxxValueSemanticsDescriptor), Cached,
+              NoLocationInfo)
+SWIFT_REQUEST(ClangImporter, ClangDeclExplicitSafety,
+              ExplicitSafety(ClangDeclExplicitSafetyDescriptor), Cached,
+              NoLocationInfo)
+SWIFT_REQUEST(ClangImporter, ClangRefCountedSmartPointer,
+              RefCountedPtrRequestResult(ClangRefCountedSmartPointerDescriptor),
+              Cached, NoLocationInfo)
+SWIFT_REQUEST(ClangImporter, CxxIteratorInfoRequest,
+              std::optional<CxxIteratorCategory>(CxxRecordDeclDescriptor),
+              Cached, NoLocationInfo)

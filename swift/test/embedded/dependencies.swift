@@ -1,0 +1,90 @@
+// RUN: %empty-directory(%t)
+// RUN: split-file %s %t
+// RUN: %target-swift-frontend -parse-as-library -enable-experimental-feature Extern -enable-experimental-feature Embedded %t/test.swift -c -o %t/a.o
+
+// RUN: %llvm-nm --undefined-only --format=just-symbols %t/a.o | sort | tee %t/actual-dependencies.txt
+
+// Fail if there is any entry in actual-dependencies.txt that's not in allowed-dependencies.txt
+// RUN: %if OS=linux-gnu %{ comm -13 %t/allowed-dependencies_linux.txt %t/actual-dependencies.txt > %t/extra.txt %} %else %{ comm -13 %t/allowed-dependencies_macos.txt %t/actual-dependencies.txt > %t/extra.txt %}
+// RUN: test ! -s %t/extra.txt
+
+// Runtime error reporting still uses the standard library's print.
+// Expects the POSIX-based dependencies, not the Embedded Swift platform ones.
+// XFAIL: swift_embedded_platform
+
+//--- allowed-dependencies_macos.txt
+___stack_chk_fail
+___stack_chk_guard
+___stdoutp
+_flockfile
+_free
+_funlockfile
+_memmove
+_memset
+_posix_memalign
+_putchar
+
+//--- allowed-dependencies_linux.txt
+__stack_chk_fail
+__stack_chk_guard
+flockfile
+free
+funlockfile
+memmove
+memset
+posix_memalign
+putchar
+stdout
+//--- test.swift
+// RUN: %target-clang -x c -c %S/Inputs/print.c -o %t/print.o
+// RUN: %target-embedded-link %t/a.o %t/print.o -o %t/a.out
+// RUN: %target-run %t/a.out | %FileCheck %s
+
+// REQUIRES: executable_test
+// REQUIRES: optimized_stdlib
+// REQUIRES: OS=macosx || OS=linux-gnu
+// REQUIRES: swift_feature_Embedded
+// REQUIRES: swift_feature_Extern
+// REQUIRES: embedded_stdlib_default_codegen
+// UNSUPPORTED: OS=linux-gnu && CPU=aarch64
+
+@_extern(c, "putchar")
+@discardableResult
+func putchar(_: CInt) -> CInt
+
+public func print(_ s: StaticString, terminator: StaticString = "\n") {
+  var p = s.utf8Start
+  while p.pointee != 0 {
+    putchar(CInt(p.pointee))
+    p += 1
+  }
+  p = terminator.utf8Start
+  while p.pointee != 0 {
+    putchar(CInt(p.pointee))
+    p += 1
+  }
+}
+
+class MyClass {
+  func foo() { print("MyClass.foo") }
+}
+
+class MySubClass: MyClass {
+  override func foo() { print("MySubClass.foo") }
+}
+
+@main
+struct Main {
+  static var objects: [MyClass] = []
+  static func main() {
+    print("Hello Embedded Swift!")
+    // CHECK: Hello Embedded Swift!
+    objects.append(MyClass())
+    objects.append(MySubClass())
+    for o in objects {
+      o.foo()
+    }
+    // CHECK: MyClass.foo
+    // CHECK: MySubClass.foo
+  }
+}

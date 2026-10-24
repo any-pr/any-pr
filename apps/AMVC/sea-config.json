@@ -1,0 +1,10 @@
+{
+  "main": "amv-converter.js",
+  "output": "build/sea-prep.blob",
+  "disableExperimentalSEAWarning": true,
+  "useSnapshot": false,
+  "useCodeCache": false,
+  "assets": {
+    "ffmpeg.exe": "./ffmpeg.exe"
+  }
+}

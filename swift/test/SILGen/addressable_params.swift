@@ -1,0 +1,103 @@
+// FIXME: crashes under opaque values
+// RUN: not --crash %target-swift-emit-silgen-ossa -o /dev/null -enable-sil-opaque-values -enable-experimental-feature AddressableParameters %s
+
+// RUN: %target-swift-emit-silgen -enable-experimental-feature AddressableParameters %s | %FileCheck %s
+
+// REQUIRES: swift_feature_AddressableParameters
+
+// CHECK-LABEL: sil {{.*}}@$s{{.*}}6withUP{{.*}} : $@convention(thin) <T> (@in_guaranteed T, @guaranteed @noescape @callee_guaranteed @substituted <τ_0_0> (UnsafePointer<τ_0_0>) -> () for <T>) -> ()
+func withUP<T>(to: borrowing @_addressable T, _ body: (UnsafePointer<T>) -> Void) -> Void {}
+
+// Forwarding an addressable parameter binding as an argument to another
+// addressable parameter with matching ownership forwards the address without
+// copying or moving the value.
+// CHECK-LABEL: sil {{.*}}@$s{{.*}}14testForwarding{{.*}} :
+// CHECK-SAME:    $@convention(thin) (@in_guaranteed String) -> ()
+func testForwarding(x: borrowing @_addressable String) {
+    // CHECK: [[MO:%.*]] = copyable_to_moveonlywrapper_addr %0
+    // CHECK: [[MOR:%.*]] = mark_unresolved_non_copyable_value [no_consume_or_assign] [[MO]]
+    // CHECK: [[MORC:%.*]] = moveonlywrapper_to_copyable_addr [[MOR]]
+    // CHECK: apply {{.*}}([[MORC]],
+    withUP(to: x) {
+        _ = $0
+    }
+}
+
+func normalBorrowingArgument(_: borrowing String) {}
+func normalConsumingArgument(_: consuming String) {}
+
+func normalGenericArgument<T>(_: borrowing T) {}
+
+func testUseAsNormalArgument(x: borrowing @_addressable String) {
+    normalBorrowingArgument(x)
+    normalConsumingArgument(copy x)
+    normalGenericArgument(x)
+}
+
+struct Foo {
+    var x: String
+
+    // CHECK-LABEL: sil {{.*}}@$s{{.*}}18testForwardingSelf{{.*}} :
+    // CHECK-SAME:    $@convention(method) (@in_guaranteed Foo) -> ()
+    @_addressableSelf borrowing func testForwardingSelf() {
+        // CHECK: [[MO:%.*]] = copyable_to_moveonlywrapper_addr %0
+        // CHECK: [[MOR:%.*]] = mark_unresolved_non_copyable_value [no_consume_or_assign] [[MO]]
+        // CHECK: [[MORC:%.*]] = moveonlywrapper_to_copyable_addr [[MOR]]
+        // CHECK: apply {{.*}}([[MORC]],
+        withUP(to: self) {
+            _ = $0
+        }
+    }
+}
+
+enum TestEnum {
+    case foo(String)
+    case bar(String)
+}
+
+func addressableParam(_: @_addressable String) -> Bool { true }
+
+func testAddressableSwitchBinding(e: TestEnum) -> Bool {
+    return switch e {
+    case .foo(let f) where addressableParam(f):
+        true
+    case .bar(let b):
+        addressableParam(b)
+    default:
+        false
+    }
+}
+
+// A loadable noncopyable payload bound by a borrowing pattern match and 
+// used as an addressable argument materializes an addressable buffer
+// for the binding. The buffer is allocated dominating the bound value and torn                              
+// down before the value is destroyed. 
+struct AddressableLoadable: ~Copyable {
+    var x: Int
+    @_addressableSelf borrowing func get() -> Int { x }
+}
+
+enum NoncopyableBox: ~Copyable {
+    case some(AddressableLoadable)
+    case none
+}
+
+// CHECK-LABEL: sil hidden [ossa] @$s{{.*}}33testAddressableNoncopyableBinding{{.*}} :
+// CHECK:       bb1([[PAYLOAD:%.*]] : @guaranteed $AddressableLoadable):
+// CHECK:         [[COPY:%.*]] = copy_value [[PAYLOAD]]
+// CHECK:         [[BUF:%.*]] = alloc_stack $AddressableLoadable
+// CHECK:         [[BIND:%.*]] = mark_unresolved_non_copyable_value [strict] [no_consume_or_assign] [[COPY]]
+// CHECK:         [[SB:%.*]] = store_borrow [[BIND]] to [[BUF]]
+// CHECK:         [[SBM:%.*]] = mark_unresolved_non_copyable_value [no_consume_or_assign] [[SB]]
+// CHECK:         apply {{%.*}}([[SBM]])
+// CHECK:         end_borrow [[SB]]
+// CHECK:         dealloc_stack [[BUF]]
+// CHECK:         destroy_value [[BIND]]
+func testAddressableNoncopyableBinding(box: borrowing NoncopyableBox) -> Int {
+    switch box {
+    case .some(let v):
+        return v.get()
+    case .none:
+        return 0
+    }
+}

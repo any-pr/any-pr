@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Page
+    x:Class="ProcessSH.Views.SettingsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <ScrollViewer Padding="24">
+        <StackPanel Spacing="20">
+
+            <!-- 语言 -->
+            <StackPanel Spacing="8">
+                <TextBlock x:Name="LanguageHeader" FontSize="16" FontWeight="SemiBold" />
+                <ComboBox x:Name="LanguageCombo"
+                          MinWidth="200"
+                          SelectionChanged="LanguageCombo_SelectionChanged">
+                    <ComboBoxItem Content="简体中文" Tag="SimplifiedChinese" />
+                    <ComboBoxItem Content="繁體中文" Tag="TraditionalChinese" />
+                    <ComboBoxItem Content="English" Tag="English" />
+                </ComboBox>
+            </StackPanel>
+
+            <!-- 窗口 -->
+            <StackPanel Spacing="8">
+                <TextBlock x:Name="WindowHeader" FontSize="16" FontWeight="SemiBold" />
+                <CheckBox x:Name="HideOnDeactivateToggle"
+                          Click="HideOnDeactivateToggle_Click" />
+            </StackPanel>
+
+            <!-- 工作目录 -->
+            <StackPanel Spacing="8">
+                <TextBlock x:Name="WorkingDirHeader" FontSize="16" FontWeight="SemiBold" />
+                <Grid ColumnSpacing="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBox x:Name="WorkingDirBox"
+                             Grid.Column="0"
+                             IsReadOnly="True"
+                             FontFamily="Consolas"
+                             FontSize="12" />
+                    <Button x:Name="ChooseDirButton"
+                            Grid.Column="1"
+                            Click="ChooseWorkingDir_Click" />
+                    <Button x:Name="ResetDirButton"
+                            Grid.Column="2"
+                            Click="ResetWorkingDir_Click" />
+                </Grid>
+                <TextBlock x:Name="WorkingDirWarning"
+                           FontSize="11"
+                           Foreground="Red"
+                           Visibility="Collapsed" />
+            </StackPanel>
+
+            <!-- 快捷键 -->
+            <StackPanel Spacing="8">
+                <TextBlock x:Name="HotkeyHeader" FontSize="16" FontWeight="SemiBold" />
+                <Grid ColumnSpacing="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBox x:Name="HotkeyBox"
+                             Grid.Column="0"
+                             IsReadOnly="True"
+                             FontFamily="Consolas"
+                             FontSize="12" />
+                    <Button x:Name="RecordHotkeyButton"
+                            Grid.Column="1"
+                            Click="RecordHotkey_Click" />
+                    <Button x:Name="ResetHotkeyButton"
+                            Grid.Column="2"
+                            Click="ResetHotkey_Click" />
+                </Grid>
+                <TextBlock x:Name="HotkeyStatus"
+                           FontSize="11"
+                           Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+            </StackPanel>
+
+            <!-- PowerShell -->
+            <StackPanel Spacing="8">
+                <TextBlock x:Name="PowerShellHeader" FontSize="16" FontWeight="SemiBold" />
+                <TextBlock x:Name="PowerShellDesc"
+                           FontSize="12"
+                           TextWrapping="Wrap"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <Button x:Name="InstallPowerShellButton"
+                        Click="InstallPowerShell_Click" />
+            </StackPanel>
+
+        </StackPanel>
+    </ScrollViewer>
+</Page>

@@ -1,0 +1,13 @@
+// RUN: %target-swift-emit-ir -verify -verify-ignore-unrelated %s -enable-experimental-feature Embedded -wmo
+
+// REQUIRES: optimized_stdlib
+// REQUIRES: swift_feature_Embedded
+
+public struct MyStruct {
+  var a, b, c: Int
+}
+
+public func foo(s: MyStruct) {
+  let mirror = Mirror(reflecting: s) // expected-error {{'Mirror' is unavailable}}
+  _ = mirror.children
+}

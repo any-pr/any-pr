@@ -1,0 +1,195 @@
+//===----------------------------------------------------------------------===//
+//
+// This source file is part of the Swift.org open source project
+//
+// Copyright (c) 2021 - 2025 Apple Inc. and the Swift project authors
+// Licensed under Apache License v2.0 with Runtime Library Exception
+//
+// See https://swift.org/LICENSE.txt for license information
+// See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
+//
+//===----------------------------------------------------------------------===//
+//
+// Functions to bridge between C++ and Swift.  This does not include the
+// *Impl functions because we need them separate for Embedded Swift.
+//
+//===----------------------------------------------------------------------===//
+
+import Swift
+#if canImport(Builtin)
+import Builtin
+#endif
+
+@available(StdlibDeploymentTarget 6.3, *)
+@_extern(c) private func _swift_exit(_ result: CInt) /* -> Never */
+
+@available(StdlibDeploymentTarget 6.3, *)
+internal func _exit(result: CInt) -> Never {
+  _swift_exit(result)
+#if canImport(Builtin)
+  Builtin.unreachable()
+#else
+  fatalError("Unreachable")
+#endif
+}
+
+#if !$Embedded
+@available(StdlibDeploymentTarget 6.3, *)
+@_silgen_name("_swift_task_isMainExecutorSwift")
+internal func _isMainExecutor<E>(_ executor: E) -> Bool where E: SerialExecutor {
+  return executor.isMainExecutor
+}
+#endif
+
+@available(StdlibDeploymentTarget 6.3, *)
+@_silgen_name("_swift_task_checkIsolatedSwift")
+internal func checkIsolated<E>(executor: E) where E: SerialExecutor {
+  executor.checkIsolated()
+}
+
+/// Invokes the swift function isIsolatingCurrentContext on the given executor,
+/// and converts between the `Optional<Bool>` into:
+///     -1: unknown
+///      0: not isolated
+///      1: isolated
+@available(StdlibDeploymentTarget 6.3, *)
+@_silgen_name("_swift_task_isIsolatingCurrentContextSwift")
+internal func isIsolatingCurrentContext<E>(executor: E) -> Int8
+  where E: SerialExecutor {
+  switch executor.isIsolatingCurrentContext() {
+  case nil: -1 // unknown
+  case .some(false): 0 // not isolated
+  case .some(true): 1 // isolated!
+  }
+}
+
+@available(StdlibDeploymentTarget 6.3, *)
+@_silgen_name("_swift_getActiveExecutor")
+internal func _getActiveExecutor() -> UnownedSerialExecutor
+
+@available(StdlibDeploymentTarget 6.3, *)
+@_silgen_name("_swift_getCurrentTaskExecutor")
+internal func _getCurrentTaskExecutor() -> UnownedTaskExecutor
+
+@available(StdlibDeploymentTarget 6.3, *)
+@_silgen_name("_swift_getPreferredTaskExecutor")
+internal func _getPreferredTaskExecutor() -> UnownedTaskExecutor
+
+@available(StdlibDeploymentTarget 6.3, *)
+@_silgen_name("swift_job_allocate")
+internal func _jobAllocate(_ job: Builtin.Job,
+                           _ capacity: Int) -> UnsafeMutableRawPointer
+
+@available(StdlibDeploymentTarget 6.3, *)
+@_silgen_name("swift_job_deallocate")
+internal func _jobDeallocate(_ job: Builtin.Job,
+                             _ address: UnsafeMutableRawPointer)
+
+@available(StdlibDeploymentTarget 6.3, *)
+@_silgen_name("swift_job_getPriority")
+internal func _jobGetPriority(_ job: Builtin.Job) -> UInt8
+
+@available(StdlibDeploymentTarget 6.3, *)
+@_silgen_name("swift_job_setPriority")
+internal func _jobSetPriority(_ job: Builtin.Job, _ priority: UInt8)
+
+@available(StdlibDeploymentTarget 6.3, *)
+@_silgen_name("swift_job_getKind")
+internal func _jobGetKind(_ job: Builtin.Job) -> UInt8
+
+/// Returns the job's flags; works for any job, not only tasks
+@available(SwiftStdlib 5.1, *)
+@usableFromInline
+@_silgen_name("swift_task_getJobFlags")
+internal func _jobGetFlags(_ job: Builtin.Job) -> Int
+
+/// Returns the task the job represents, or `nil` if the job is not a task
+@available(SwiftStdlib 6.4, *)
+@export(implementation)
+internal func _jobGetUnsafeCurrentTask(_ job: Builtin.Job) -> UnsafeCurrentTask? {
+  let rawJob: Builtin.RawPointer = Builtin.reinterpretCast(job)
+  let rawTask: Builtin.RawPointer
+  // The low 8 bits of the flags are the JobKind
+  switch _jobGetFlags(job) & 0xFF {
+  case 0: // JobKind::Task
+    // An AsyncTask is a Job, so the job pointer is also the task pointer
+    rawTask = rawJob
+  case 197: // JobKind::TaskStealer
+    // An AsyncTaskStealer runs a task on its behalf and stores the task
+    // pointer right after the Job fields, see TaskPrivate.h
+#if _pointerBitWidth(_64)
+    let taskOffset = 8 * MemoryLayout<Int>.size
+#else
+    // The Job fields end at 9 words, the Task pointer is laid out in the
+    // Job's alignment tail padding rather than after sizeof(Job)
+    let taskOffset = 9 * MemoryLayout<Int>.size
+#endif
+    rawTask = unsafe UnsafeRawPointer(rawJob).load(
+      fromByteOffset: taskOffset, as: UnsafeRawPointer.self)._rawValue
+  default:
+    return nil
+  }
+  let task: Builtin.NativeObject = Builtin.bridgeFromRawPointer(rawTask)
+  return unsafe UnsafeCurrentTask(task)
+}
+
+@available(StdlibDeploymentTarget 6.3, *)
+@_silgen_name("swift_job_getExecutorPrivateData")
+internal func _jobGetExecutorPrivateData(
+  _ job: Builtin.Job
+) -> UnsafeMutableRawPointer
+
+#if os(WASI) || os(Emscripten) || !$Embedded
+#if !SWIFT_STDLIB_TASK_TO_THREAD_MODEL_CONCURRENCY
+@available(StdlibDeploymentTarget 6.3, *)
+@_silgen_name("swift_getMainExecutor")
+internal func _getMainExecutorAsSerialExecutor() -> UnownedSerialExecutor {
+  return unsafe MainActor.unownedExecutor
+}
+#else
+// For task-to-thread model, this is implemented in C++
+@available(StdlibDeploymentTarget 6.3, *)
+@_silgen_name("swift_getMainExecutor")
+internal func _getMainExecutorAsSerialExecutor() -> UnownedSerialExecutor
+#endif // SWIFT_STDLIB_TASK_TO_THREAD_MODEL_CONCURRENCY
+#endif // os(WASI) || os(Emscripten) || !$Embedded
+
+@available(StdlibDeploymentTarget 6.3, *)
+@_silgen_name("swift_getDefaultExecutor")
+internal func _getDefaultExecutorAsTaskExecutor() -> UnownedTaskExecutor {
+  return unsafe Task.unownedDefaultExecutor
+}
+
+@available(StdlibDeploymentTarget 6.3, *)
+@_silgen_name("swift_dispatchMain")
+internal func _dispatchMain()
+
+@available(StdlibDeploymentTarget 6.3, *)
+@_silgen_name("swift_dispatchEnqueueMain")
+internal func _dispatchEnqueueMain(_ job: UnownedJob)
+
+@available(StdlibDeploymentTarget 6.3, *)
+@_silgen_name("swift_dispatchEnqueueGlobal")
+internal func _dispatchEnqueueGlobal(_ job: UnownedJob)
+
+@available(StdlibDeploymentTarget 6.3, *)
+@_silgen_name("swift_dispatchEnqueueWithDeadline")
+internal func _dispatchEnqueueWithDeadline(_ global: CBool,
+                                           _ sec: CLongLong,
+                                           _ nsec: CLongLong,
+                                           _ tsec: CLongLong,
+                                           _ tnsec: CLongLong,
+                                           _ clock: CInt,
+                                           _ job: UnownedJob)
+
+@available(StdlibDeploymentTarget 6.3, *)
+@_silgen_name("swift_dispatchAssertMainQueue")
+internal func _dispatchAssertMainQueue()
+
+@_silgen_name("swift_createDefaultExecutorsOnce")
+func _createDefaultExecutorsOnce()
+
+@_silgen_name("swift_getDispatchQueueForExecutor")
+internal func _getDispatchQueueForExecutor(
+  _ executor: UnownedSerialExecutor
+) -> OpaquePointer?

@@ -1,0 +1,262 @@
+public struct NUPixelSize {
+
+    public init()
+
+    public init(width: CLong, height: CLong)
+
+    /** Some clang-style comments */
+    public var width: CLong
+
+    /**
+     * Some clang-style comments
+     */
+    public var height: CLong
+}
+
+[
+  {
+    key.kind: source.lang.swift.syntaxtype.attribute.builtin,
+    key.offset: 0,
+    key.length: 6
+  },
+  {
+    key.kind: source.lang.swift.syntaxtype.keyword,
+    key.offset: 7,
+    key.length: 6
+  },
+  {
+    key.kind: source.lang.swift.syntaxtype.identifier,
+    key.offset: 14,
+    key.length: 11
+  },
+  {
+    key.kind: source.lang.swift.syntaxtype.attribute.builtin,
+    key.offset: 33,
+    key.length: 6
+  },
+  {
+    key.kind: source.lang.swift.syntaxtype.keyword,
+    key.offset: 40,
+    key.length: 4
+  },
+  {
+    key.kind: source.lang.swift.syntaxtype.attribute.builtin,
+    key.offset: 52,
+    key.length: 6
+  },
+  {
+    key.kind: source.lang.swift.syntaxtype.keyword,
+    key.offset: 59,
+    key.length: 4
+  },
+  {
+    key.kind: source.lang.swift.syntaxtype.identifier,
+    key.offset: 64,
+    key.length: 5
+  },
+  {
+    key.kind: source.lang.swift.syntaxtype.typeidentifier,
+    key.offset: 71,
+    key.length: 5
+  },
+  {
+    key.kind: source.lang.swift.syntaxtype.identifier,
+    key.offset: 78,
+    key.length: 6
+  },
+  {
+    key.kind: source.lang.swift.syntaxtype.typeidentifier,
+    key.offset: 86,
+    key.length: 5
+  },
+  {
+    key.kind: source.lang.swift.syntaxtype.doccomment,
+    key.offset: 98,
+    key.length: 32
+  },
+  {
+    key.kind: source.lang.swift.syntaxtype.attribute.builtin,
+    key.offset: 135,
+    key.length: 6
+  },
+  {
+    key.kind: source.lang.swift.syntaxtype.keyword,
+    key.offset: 142,
+    key.length: 3
+  },
+  {
+    key.kind: source.lang.swift.syntaxtype.identifier,
+    key.offset: 146,
+    key.length: 5
+  },
+  {
+    key.kind: source.lang.swift.syntaxtype.typeidentifier,
+    key.offset: 153,
+    key.length: 5
+  },
+  {
+    key.kind: source.lang.swift.syntaxtype.doccomment,
+    key.offset: 164,
+    key.length: 44
+  },
+  {
+    key.kind: source.lang.swift.syntaxtype.attribute.builtin,
+    key.offset: 213,
+    key.length: 6
+  },
+  {
+    key.kind: source.lang.swift.syntaxtype.keyword,
+    key.offset: 220,
+    key.length: 3
+  },
+  {
+    key.kind: source.lang.swift.syntaxtype.identifier,
+    key.offset: 224,
+    key.length: 6
+  },
+  {
+    key.kind: source.lang.swift.syntaxtype.typeidentifier,
+    key.offset: 232,
+    key.length: 5
+  }
+]
+[
+  {
+    key.kind: source.lang.swift.ref.typealias,
+    key.offset: 71,
+    key.length: 5,
+    key.is_system: 1
+  },
+  {
+    key.kind: source.lang.swift.ref.typealias,
+    key.offset: 86,
+    key.length: 5,
+    key.is_system: 1
+  },
+  {
+    key.kind: source.lang.swift.ref.typealias,
+    key.offset: 153,
+    key.length: 5,
+    key.is_system: 1
+  },
+  {
+    key.kind: source.lang.swift.ref.typealias,
+    key.offset: 232,
+    key.length: 5,
+    key.is_system: 1
+  }
+]
+[
+  {
+    key.kind: source.lang.swift.decl.struct,
+    key.accessibility: source.lang.swift.accessibility.public,
+    key.name: "NUPixelSize",
+    key.offset: 7,
+    key.length: 232,
+    key.nameoffset: 14,
+    key.namelength: 11,
+    key.bodyoffset: 27,
+    key.bodylength: 211,
+    key.attributes: [
+      {
+        key.offset: 0,
+        key.length: 6,
+        key.attribute: source.decl.attribute.public
+      }
+    ],
+    key.substructure: [
+      {
+        key.kind: source.lang.swift.decl.function.method.instance,
+        key.accessibility: source.lang.swift.accessibility.public,
+        key.name: "init()",
+        key.offset: 40,
+        key.length: 6,
+        key.nameoffset: 40,
+        key.namelength: 6,
+        key.attributes: [
+          {
+            key.offset: 33,
+            key.length: 6,
+            key.attribute: source.decl.attribute.public
+          }
+        ]
+      },
+      {
+        key.kind: source.lang.swift.decl.function.method.instance,
+        key.accessibility: source.lang.swift.accessibility.public,
+        key.name: "init(width:height:)",
+        key.offset: 59,
+        key.length: 33,
+        key.nameoffset: 59,
+        key.namelength: 33,
+        key.attributes: [
+          {
+            key.offset: 52,
+            key.length: 6,
+            key.attribute: source.decl.attribute.public
+          }
+        ],
+        key.substructure: [
+          {
+            key.kind: source.lang.swift.decl.var.parameter,
+            key.name: "width",
+            key.offset: 64,
+            key.length: 12,
+            key.typename: "CLong",
+            key.nameoffset: 64,
+            key.namelength: 5
+          },
+          {
+            key.kind: source.lang.swift.decl.var.parameter,
+            key.name: "height",
+            key.offset: 78,
+            key.length: 13,
+            key.typename: "CLong",
+            key.nameoffset: 78,
+            key.namelength: 6
+          }
+        ]
+      },
+      {
+        key.kind: source.lang.swift.decl.var.instance,
+        key.accessibility: source.lang.swift.accessibility.public,
+        key.setter_accessibility: source.lang.swift.accessibility.public,
+        key.name: "width",
+        key.offset: 142,
+        key.length: 16,
+        key.typename: "CLong",
+        key.nameoffset: 146,
+        key.namelength: 5,
+        key.docoffset: 98,
+        key.doclength: 32,
+        key.attributes: [
+          {
+            key.offset: 135,
+            key.length: 6,
+            key.attribute: source.decl.attribute.public
+          }
+        ]
+      },
+      {
+        key.kind: source.lang.swift.decl.var.instance,
+        key.accessibility: source.lang.swift.accessibility.public,
+        key.setter_accessibility: source.lang.swift.accessibility.public,
+        key.name: "height",
+        key.offset: 220,
+        key.length: 17,
+        key.typename: "CLong",
+        key.nameoffset: 224,
+        key.namelength: 6,
+        key.docoffset: 164,
+        key.doclength: 44,
+        key.attributes: [
+          {
+            key.offset: 213,
+            key.length: 6,
+            key.attribute: source.decl.attribute.public
+          }
+        ]
+      }
+    ]
+  }
+]

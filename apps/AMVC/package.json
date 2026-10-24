@@ -1,0 +1,24 @@
+{
+  "name": "amv-converter",
+  "version": "1.1.0",
+  "description": "任意格式视频/音频/图片转 AMV (320x240@16fps) —— 零依赖 Node.js 工具，可打包为独立 exe 与 DLL",
+  "main": "amv-converter.js",
+  "bin": {
+    "amv-converter": "amv-converter.js"
+  },
+  "scripts": {
+    "start": "node amv-converter.js",
+    "test": "node test/run-test.js",
+    "test:cs": "node test/test-cs.js",
+    "build:cs": "cs\\build-cs.bat",
+    "build:exe": "node build/build-exe.js"
+  },
+  "keywords": [
+    "amv",
+    "ffmpeg",
+    "video-converter",
+    "mp4-player"
+  ],
+  "license": "MIT",
+  "private": true
+}

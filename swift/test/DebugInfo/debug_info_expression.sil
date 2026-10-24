@@ -1,0 +1,44 @@
+// RUN: %target-swift-frontend %s -sil-verify-all -g -Xllvm -sil-print-types -emit-sil -o - | %FileCheck --check-prefix=CHECK-SIL %s
+// RUN: %target-swift-frontend -disable-debugger-shadow-copies -primary-file %s -emit-ir -g -o - | %FileCheck %s
+import Builtin
+import Swift
+
+struct MyStruct {
+  var x: Builtin.Int64
+  var y: Builtin.Int64
+}
+
+struct SmallStruct {
+  var z : Builtin.Int64
+}
+
+sil_scope 1 { loc "file.swift":7:6 parent @test_fragment : $@convention(thin) () -> () }
+
+// Testing op_fragment w/ debug_value
+sil hidden @test_fragment : $@convention(thin) () -> () {
+bb0:
+  %2 = alloc_stack $MyStruct, var, name "my_struct", loc "file.swift":8:9, scope 1
+  // CHECK: %[[MY_STRUCT:.+]] = alloca %{{.*}}MyStruct
+  // CHECK: #dbg_declare({{.*}} %[[MY_STRUCT]], ![[VAR_DECL_MD:[0-9]+]]
+  // CHECK: %[[SMALL_STRUCT:.+]] = alloca %{{.*}}SmallStruct
+  // CHECK: #dbg_declare({{.*}} %[[SMALL_STRUCT]], ![[SMALL_VAR_DECL_MD:[0-9]+]]
+  %3 = struct_element_addr %2 : $*MyStruct, #MyStruct.x, loc "file.swift":9:17, scope 1
+  // CHECK: %[[FIELD_X:.*]] = getelementptr {{.*}} %[[MY_STRUCT]]
+  // CHECK-SIL: debug_value %{{[0-9]+}} : $*Builtin.Int64
+  // CHECK-SIL-SAME:        (name "my_struct", loc "file.swift":8:9)
+  // CHECK-SIL-SAME:        type $MyStruct, expr op_deref:op_fragment:#MyStruct.x
+  debug_value %3 : $*Builtin.Int64, var, (name "my_struct", loc "file.swift":8:9, scope 1), type $MyStruct, expr op_deref:op_fragment:#MyStruct.x, loc "file.swift":9:17, scope 1
+
+  %4 = alloc_stack $SmallStruct, var, name "small_struct", loc "file.swift":10:11, scope 1
+  %5 = struct_element_addr %4 : $*SmallStruct, #SmallStruct.z, loc "file.swift":11:13, scope 1
+  // CHECK: %[[FIELD_Z:.*]] = getelementptr {{.*}} %[[SMALL_STRUCT]]
+  // If the fragment covers the whole struct, we're not generating the
+  // DW_OP_LLVM_fragment part.
+  debug_value %5 : $*Builtin.Int64, var, (name "small_struct", loc "file.swift":10:11, scope 1), type $SmallStruct, expr op_deref:op_fragment:#SmallStruct.z, loc "file.swift":11:13, scope 1
+  dealloc_stack %4 : $*SmallStruct
+
+  dealloc_stack %2 : $*MyStruct
+  %r = tuple()
+  return %r : $()
+}
+

@@ -1,0 +1,118 @@
+#ifndef TEST_INTEROP_CXX_CLASS_METHOD_UNSAFE_PROJECTIONS_H
+#define TEST_INTEROP_CXX_CLASS_METHOD_UNSAFE_PROJECTIONS_H
+
+#include <string>
+
+struct NestedSelfContained;
+struct Empty;
+struct SelfContained;
+struct ExplicitSelfContained;
+struct NestedExplicitSelfContained;
+
+struct View {
+  void *ptr;
+  
+  void *data() const;
+  void *empty() const;
+  std::string name() const;
+  NestedSelfContained nested() const;
+  ExplicitSelfContained explicitSelfContained() const;
+  NestedExplicitSelfContained explicitNested() const;
+};
+
+// expected-strict-note@+1 {{this type has unknown escapability: its member 'ptr' is a pointer or reference, and Swift cannot tell whether it owns what it points to}}
+struct SelfContained {
+  void *ptr;
+  SelfContained(const SelfContained&);
+  
+  std::string name() const;
+  SelfContained selfContained() const;
+  NestedSelfContained nested() const;
+  Empty empty() const;
+  int value() const;
+  // expected-note@+1 {{this returns a view into a type that owns its storage}}
+  View view() const;
+  // expected-default-note@+1 {{this returns a pointer or reference into a type that owns its storage}}
+  int *pointer() const;
+  ExplicitSelfContained explicitSelfContained() const;
+  NestedExplicitSelfContained explicitNested() const;
+};
+
+struct NestedSelfContained {
+  SelfContained member;
+  
+  std::string name() const;
+  SelfContained selfContained() const;
+  NestedSelfContained nested() const;
+  Empty empty() const;
+  int value() const;
+  View view() const;
+  int *pointer() const;
+  ExplicitSelfContained explicitSelfContained() const;
+  NestedExplicitSelfContained explicitNested() const;
+};
+
+struct InheritSelfContained: SelfContained {
+  std::string name() const;
+  SelfContained selfContained() const;
+  NestedSelfContained nested() const;
+  Empty empty() const;
+  int value() const;
+  View view() const;
+  int *pointer() const;
+};
+
+struct __attribute__((swift_attr("import_owned"))) ExplicitSelfContained {
+  void *ptr;
+  
+  void *pointer() const;
+  View view() const;
+  NestedSelfContained nested() const;
+};
+
+struct NestedExplicitSelfContained {
+  ExplicitSelfContained m;
+
+  SelfContained selfContained() const;
+  NestedSelfContained nested() const;
+  int value() const;
+  View view() const;
+  int *pointer() const;
+};
+
+struct Empty {
+  Empty empty() const;
+  void *pointer() const;
+  SelfContained selfContained() const;
+};
+
+struct IntPair {
+  int a; int b;
+
+  int first() const;
+  void *pointer() const;
+  SelfContained selfContained() const;
+};
+
+// An unsafe projection that is never renamed to '__getUnsafe', because it has
+// a custom Swift name. It stays '@unsafe' rather than becoming '@unsafe(always)'.
+struct CustomNamed {
+  int x;
+  CustomNamed(const CustomNamed &);
+
+  // expected-strict-note@+1 {{this returns a pointer or reference into a type that owns its storage}}
+  int *_get() __attribute__((swift_name("get()")));
+};
+
+// A call to a member template refers to its specialization, which is shared
+// by the template's original name and its '__<name>Unsafe' migration stub.
+struct TemplateProjections {
+  int x;
+  TemplateProjections(const TemplateProjections &);
+
+  // expected-note@+1 {{this returns a pointer or reference into a type that owns its storage}}
+  template <class T> int *projection(T);  // an unsafe projection
+  template <class T> int *metatype();     // likewise, with a metatype argument
+};
+
+#endif // TEST_INTEROP_CXX_CLASS_METHOD_UNSAFE_PROJECTIONS_H

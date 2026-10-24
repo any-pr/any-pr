@@ -1,0 +1,22 @@
+// RUN: %target-swift-emit-silgen-ossa -o /dev/null -enable-sil-opaque-values %s
+// RUN: %target-swift-emit-silgen -target %target-swift-5.1-abi-triple -verify %s
+
+// rdar://94877954
+
+// `dynamic` prevents SILGen from lowering away
+// the opaque return type of `foo`
+dynamic func foo<T: Sendable>(f: () -> T) -> some Sendable {
+    if #available(macOS 11.0, *) {
+        return f()
+    } else {
+        return ()
+    }
+}
+
+func bar() {
+    let x: Void = ()
+    let y: () = ()
+    var a = foo { x }
+    a = foo { y }
+    _ = a
+}

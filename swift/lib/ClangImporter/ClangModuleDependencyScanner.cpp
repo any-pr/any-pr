@@ -1,0 +1,178 @@
+//===--- ClangModuleDependencyScanner.cpp - Dependency Scanning -----------===//
+//
+// This source file is part of the Swift.org open source project
+//
+// Copyright (c) 2019 Apple Inc. and the Swift project authors
+// Licensed under Apache License v2.0 with Runtime Library Exception
+//
+// See https://swift.org/LICENSE.txt for license information
+// See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
+//
+//===----------------------------------------------------------------------===//
+//
+// This file implements dependency scanning for Clang modules.
+//
+//===----------------------------------------------------------------------===//
+#include "ImporterImpl.h"
+#include "swift/AST/ModuleDependencies.h"
+#include "swift/AST/SILOptions.h"
+#include "swift/Basic/CASOptions.h"
+#include "swift/ClangImporter/ClangImporter.h"
+#include "clang/Basic/Diagnostic.h"
+#include "clang/CAS/CASOptions.h"
+#include "clang/Frontend/CompilerInvocation.h"
+#include "clang/Frontend/FrontendOptions.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/Allocator.h"
+#include "llvm/Support/Signals.h"
+#include "llvm/Support/StringSaver.h"
+
+using namespace swift;
+
+using namespace clang::tooling;
+using namespace clang::dependencies;
+
+static void addScannerPrefixMapperInvocationArguments(
+    std::vector<std::string> &invocationArgStrs, ASTContext &ctx) {
+  for (const auto &arg : ctx.SearchPathOpts.ScannerPrefixMapper) {
+    invocationArgStrs.push_back("-fdepscan-prefix-map");
+    invocationArgStrs.push_back(arg.first);
+    invocationArgStrs.push_back(arg.second);
+  }
+}
+
+/// Create the command line for Clang dependency scanning.
+std::vector<std::string> ClangImporter::getClangDepScanningInvocationArguments(
+    ASTContext &ctx) {
+  std::vector<std::string> commandLineArgs = getClangDriverArguments(ctx);
+  addScannerPrefixMapperInvocationArguments(commandLineArgs, ctx);
+
+  // HACK! Drop the -fmodule-format= argument and the one that
+  // precedes it.
+  {
+    auto moduleFormatPos = llvm::find_if(commandLineArgs,
+                                         [](StringRef arg) {
+      return arg.starts_with("-fmodule-format=");
+    });
+    assert(moduleFormatPos != commandLineArgs.end());
+    assert(moduleFormatPos != commandLineArgs.begin());
+    commandLineArgs.erase(moduleFormatPos-1, moduleFormatPos+1);
+  }
+
+  // Use `-fsyntax-only` to do dependency scanning and assert if not there.
+  assert(llvm::is_contained(commandLineArgs, "-fsyntax-only") &&
+         "missing -fsyntax-only option");
+
+  // The Clang modules produced by ClangImporter are always embedded in an
+  // ObjectFilePCHContainer and contain -gmodules debug info.
+  commandLineArgs.push_back("-gmodules");
+
+  // To use -gmodules we need to have a real path for the PCH; this option has
+  // no effect if caching is disabled.
+  commandLineArgs.push_back("-Xclang");
+  commandLineArgs.push_back("-finclude-tree-preserve-pch-path");
+
+  return commandLineArgs;
+}
+
+void ClangImporter::getBridgingHeaderOptions(
+    const ASTContext &ctx,
+    const clang::dependencies::TranslationUnitDeps &deps,
+    std::vector<std::string> &swiftArgs) {
+  auto addClangArg = [&](Twine arg) {
+    swiftArgs.push_back("-Xcc");
+    swiftArgs.push_back(arg.str());
+  };
+
+  // We are using Swift frontend mode.
+  swiftArgs.push_back("-frontend");
+
+  // Swift frontend action: -emit-pcm
+  swiftArgs.push_back("-emit-pch");
+
+  // Ensure that the resulting PCM build invocation uses Clang frontend
+  // directly
+  swiftArgs.push_back("-direct-clang-cc1-module-build");
+
+  // `ClangImporter::create` overwrites the
+  // `clang::CodeGenOptions::OptimizationLevel` setting based on
+  // `swift::IRGenOptions::OptMode`. Respect the swift optimisation mode here
+  // so that the bridging header PCH, which is emitted using these options, is
+  // emitted and later consumed using the same clang optimisation level.
+  // Otherwise, the mismatch will be caught and reported as an error when
+  // reading the PCH.
+  switch (ctx.SILOpts.OptMode) {
+  case OptimizationMode::NotSet:
+    break;
+  case OptimizationMode::NoOptimization:
+    swiftArgs.push_back("-Onone");
+    break;
+  case OptimizationMode::ForSpeed:
+    swiftArgs.push_back("-O");
+    break;
+  case OptimizationMode::ForSize:
+    swiftArgs.push_back("-Osize");
+    break;
+  }
+
+  // If the main compilation specifies '-clang-target', forward it so the
+  // bridging header PCH is emitted through the same `ClangImporter::create`
+  // configuration path (and therefore the same `clang::CodeGenOptions`) as the
+  // compilations that later consume the PCH.
+  if (ctx.LangOpts.ClangTarget.has_value()) {
+    swiftArgs.push_back("-target");
+    swiftArgs.push_back(ctx.LangOpts.Target.str());
+    swiftArgs.push_back("-clang-target");
+    swiftArgs.push_back(ctx.LangOpts.ClangTarget->str());
+  }
+
+  // Inherit Embedded Swift.
+  if (ctx.LangOpts.hasFeature(Feature::Embedded)) {
+    swiftArgs.push_back("-enable-experimental-feature");
+    swiftArgs.push_back("Embedded");
+  }
+
+  // Add args reported by the scanner.
+
+  // Round-trip clang args to canonicalize and clear the options that swift
+  // compiler doesn't need.
+  clang::CompilerInvocation depsInvocation;
+  clang::DiagnosticOptions diagOpts;
+  clang::DiagnosticsEngine clangDiags(new clang::DiagnosticIDs(), diagOpts,
+                                      new clang::IgnoringDiagConsumer());
+
+  llvm::SmallVector<const char *> clangArgs;
+  llvm::for_each(deps.Commands[0].Arguments, [&](const std::string &Arg) {
+    clangArgs.push_back(Arg.c_str());
+  });
+
+  bool success = clang::CompilerInvocation::CreateFromArgs(
+      depsInvocation, clangArgs, clangDiags);
+  (void)success;
+  assert(success && "clang option from dep scanner round trip failed");
+
+  // Clear the cache key for module. The module key is computed from clang
+  // invocation, not swift invocation.
+  depsInvocation.getFrontendOpts().ProgramAction =
+      clang::frontend::ActionKind::GeneratePCH;
+  depsInvocation.getFrontendOpts().ModuleCacheKeys.clear();
+  depsInvocation.getFrontendOpts().PathPrefixMappings.clear();
+  depsInvocation.getFrontendOpts().OutputFile.clear();
+
+  llvm::BumpPtrAllocator allocator;
+  llvm::StringSaver saver(allocator);
+  clangArgs.clear();
+  depsInvocation.generateCC1CommandLine(
+      clangArgs,
+      [&saver](const llvm::Twine &T) { return saver.save(T).data(); });
+
+  llvm::for_each(clangArgs, addClangArg);
+
+  ctx.CASOpts.enumerateCASConfigurationFlags(
+      [&](StringRef Arg) { swiftArgs.push_back(Arg.str()); });
+
+  if (auto Tree = deps.IncludeTreeID) {
+    swiftArgs.push_back("-clang-include-tree-root");
+    swiftArgs.push_back(*Tree);
+  }
+}

@@ -1,0 +1,59 @@
+# This source file is part of the Swift.org open source project
+#
+# Copyright (c) 2014 - 2021 Apple Inc. and the Swift project authors
+# Licensed under Apache License v2.0 with Runtime Library Exception
+#
+# See http://swift.org/LICENSE.txt for license information
+# See http://swift.org/CONTRIBUTORS.txt for Swift project authors
+
+swift_compiler_sources(Optimizer
+  AllocBoxToStack.swift
+  AssumeSingleThreaded.swift
+  CommonSubexpressionElimination.swift
+  AsyncDemotion.swift
+  AutoDiffBranchTracingEnumUtilities.swift
+  BooleanLiteralFolding.swift
+  ClassDestroyDevirtualizer.swift
+  ConstantCapturePropagation.swift
+  CleanupDebugSteps.swift
+  ClosureSpecialization.swift
+  ComputeEscapeEffects.swift
+  ComputeSideEffects.swift
+  CondFailOptimization.swift
+  CopySinking.swift
+  CopyToBorrowOptimization.swift
+  DeadAccessScopeElimination.swift
+  DeadDebugVariableElimination.swift
+  DeadObjectElimination.swift
+  DeadStoreElimination.swift
+  DeinitDevirtualizer.swift
+  DestroyHoisting.swift
+  DiagnoseInfiniteRecursion.swift
+  EmbeddedWitnessCallSpecialization.swift
+  InitializeStaticGlobals.swift
+  KillInvalidDebugValues.swift
+  LetPropertyLowering.swift
+  LifetimeDependenceDiagnostics.swift
+  LifetimeDependenceInsertion.swift
+  LifetimeDependenceScopeFixup.swift
+  LifetimeResolution.swift
+  LifetimeResolutionDiagnose.swift
+  LoopInvariantCodeMotion.swift
+  ObjectOutliner.swift
+  ObjCBridgingOptimization.swift
+  MandatoryDestroyHoisting.swift
+  MergeBorrowScopes.swift
+  MergeCondFails.swift
+  NamedReturnValueOptimization.swift
+  RedundantLoadElimination.swift
+  RedundantOverflowCheckRemoval.swift
+  ReleaseDevirtualizer.swift
+  RemoveSILGenLifetimes.swift
+  SimplificationPasses.swift
+  StackPromotion.swift
+  StripObjectHeaders.swift
+  TempLValueElimination.swift
+  TempRValueElimination.swift
+  TrivialOwnershipElimination.swift
+  PackSpecialization.swift
+)

@@ -1,0 +1,9 @@
+// RUN: %empty-directory(%t)
+// RUN: %gyb %S/PrintFloat.swift.gyb -o %t/FloatingPointPrinting.swift
+// RUN: %line-directive %t/FloatingPointPrinting.swift -- %target-build-swift %t/FloatingPointPrinting.swift -o %t/main.out
+// RUN: %target-codesign %t/main.out
+// RUN: %line-directive %t/FloatingPointPrinting.swift -- %target-run %t/main.out --locale ru_RU.UTF-8
+// REQUIRES: executable_test
+// UNSUPPORTED: use_os_stdlib
+// UNSUPPORTED: back_deployment_runtime
+// UNSUPPORTED: freestanding

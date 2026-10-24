@@ -1,0 +1,80 @@
+// RUN: %target-run-simple-swift-split-file(test.swift -I %t/Inputs -Xfrontend -enable-experimental-cxx-interop -O)
+
+// Verify that a non-const ref value parameter can't implicitly receive
+// aborrowed value.
+// RUN: %target-swift-frontend -DBORROW_PASS_TO_VALUE_PARAM -emit-ir -o /dev/null -I %t/Inputs %t/test.swift -enable-experimental-cxx-interop -verify
+
+// REQUIRES: executable_test
+// XFAIL: swift_test_mode_optimize_none_with_opaque_values
+
+//--- Inputs/module.modulemap
+module CxxTest {
+    header "test.h"
+    requires cplusplus
+}
+
+//--- Inputs/test.h
+
+inline int &getCopyCounter() {
+    static int value = 0;
+    return value;
+}
+
+class BorrowMe {
+public:
+  BorrowMe(): x_(11) {}
+  BorrowMe(const BorrowMe &other): x_(other.x_) {
+    ++getCopyCounter();
+  }
+
+  const int &x() const { return x_; }
+  int &x() { return x_; }
+private:
+  int x_;
+};
+
+inline int takeBorrowConstRef(const BorrowMe &value) {
+    return value.x();
+}
+
+inline int takeBorrowByVal(BorrowMe value) {
+    return value.x();
+}
+
+//--- test.swift
+
+import CxxTest
+
+extension BorrowMe {
+    borrowing func getX() -> CInt {
+        __xUnsafe().pointee
+    }
+
+    var x: CInt {
+        borrowing get {
+            getX()
+        }
+    }
+}
+
+func testBorrowingParam(_ value: borrowing BorrowMe) {
+    let x = takeBorrowConstRef(value)
+    assert(x == 11)
+#if BORROW_PASS_TO_VALUE_PARAM
+    takeBorrowByVal(value) // expected-error@-4 {{'value' is borrowed and cannot be consumed}} expected-note {{consumed here}}
+    takeBorrowByVal(copy value) // ok
+#endif
+}
+
+public func testBorrowingSafeReferenceUse() {
+    let x: CInt
+    do {
+        let p = BorrowMe()
+        x = p.x
+        testBorrowingParam(p)
+    }
+    if x != 11 { fatalError("wrong value") }
+    assert(getCopyCounter().pointee == 0)
+}
+
+testBorrowingSafeReferenceUse()

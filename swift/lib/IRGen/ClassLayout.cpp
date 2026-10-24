@@ -1,0 +1,136 @@
+//===--- ClassLayout.cpp - Layout of class instances ---------------------===//
+//
+// This source file is part of the Swift.org open source project
+//
+// Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
+// Licensed under Apache License v2.0 with Runtime Library Exception
+//
+// See https://swift.org/LICENSE.txt for license information
+// See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
+//
+//===----------------------------------------------------------------------===//
+//
+//  This file implements algorithms for laying out class instances.
+//
+//===----------------------------------------------------------------------===//
+
+#include "swift/SIL/SILType.h"
+#include "llvm/ADT/SmallVector.h"
+
+#include "ClassLayout.h"
+#include "ClassTypeInfo.h"
+#include "GenHeap.h"
+#include "IRGenFunction.h"
+#include "IRGenModule.h"
+#include "TypeInfo.h"
+
+using namespace swift;
+using namespace irgen;
+
+ClassLayout::ClassLayout(const StructLayoutBuilder &builder,
+                         ClassMetadataOptions options,
+                         llvm::Type *classTy,
+                         ArrayRef<Field> allStoredProps,
+                         ArrayRef<FieldAccess> allFieldAccesses,
+                         ArrayRef<ElementLayout> allElements,
+                         Size headerSize)
+  : MinimumAlign(builder.getAlignment()),
+    MinimumSize(builder.getSize()),
+    IsFixedLayout(builder.isFixedLayout()),
+    Options(options),
+    Ty(classTy),
+    HeaderSize(headerSize),
+    AllStoredProperties(allStoredProps),
+    AllFieldAccesses(allFieldAccesses),
+    AllElements(allElements) { }
+
+Size ClassLayout::getInstanceStart() const {
+  ArrayRef<ElementLayout> elements = AllElements;
+  while (!elements.empty()) {
+    auto element = elements.front();
+    elements = elements.drop_front();
+
+    // Ignore empty elements.
+    if (element.isEmpty()) {
+      continue;
+    } else if (element.hasByteOffset()) {
+      // FIXME: assumes layout is always sequential!
+      return element.getByteOffset();
+    } else {
+      // We used to crash for classes that have an empty and a resilient field
+      // during initialization.
+      //   class CrashInInit {
+      //     var empty = EmptyStruct()
+      //     var resilient = ResilientThing()
+      //   }
+      // What happened was that for such a class we we would compute a
+      // instanceStart of 0. The shared cache builder would then slide the value
+      // of the constant ivar offset for the empty field from 0 to 16. However
+      // the field offset for empty fields is assume to be zero and the runtime
+      // does not compute a different value for the empty field and so the field
+      // offset for the empty field stays 0. The runtime then trys to reconcile
+      // the field offset and the ivar offset trying to write to the ivar
+      // offset. However, the ivar offset is marked as constant and so we
+      // crashed.
+      // This can be avoided by correctly computing the instanceStart for such a
+      // class to be 16 such that the shared cache builder does not update the
+      // value of the empty field.
+      if (!Options.contains(ClassMetadataFlags::ClassHasObjCAncestry))
+        return HeaderSize;
+      return Size(0);
+    }
+  }
+
+  // If there are no non-empty elements, just return the computed size.
+  return getSize();
+}
+
+void ClassLayout::collectAllStoredPropertyTypes(
+    IRGenModule &IGM, SILType classType, SmallVectorImpl<SILType> &fieldTypes) {
+  auto *classDecl = classType.getClassOrBoundGenericClass();
+  // ClassLayout::AllStoredProperties for a class is populated to
+  // include its ancestors' properties only when the class includes a
+  // generic parameter and fully specialized (which is the same
+  // condition as collectStoredProperties in
+  // addDirectFieldsFromClass()). We need to walk the superclass chain
+  // up to find the first class that meets that condition.
+  bool alreadyIncludesAncestors =
+      classDecl->isGenericContext() &&
+      !classType.getASTType()->getRecursiveProperties().hasUnboundGeneric();
+  if (!alreadyIncludesAncestors) {
+    if (SILType superclassType = classType.getSuperclass())
+      collectAllStoredPropertyTypes(IGM, superclassType, fieldTypes);
+  }
+  auto &classTI = IGM.getTypeInfo(classType).as<ClassTypeInfo>();
+  auto &classLayout = classTI.getClassLayout(IGM, classType,
+                                             /*forBackwardDeployment=*/false);
+  for (Field field : classLayout.AllStoredProperties) {
+    assert(field.isConcrete() && "Missing member on fixed size class");
+    fieldTypes.push_back(field.getType(IGM, classType).getObjectType());
+  }
+}
+
+std::optional<uint64_t>
+ClassLayout::computeTypedMallocTypeDescriptor(IRGenModule &IGM,
+                                              SILType selfType) const {
+  if (!isFixedSize()) {
+    return std::nullopt;
+  }
+  llvm::SmallVector<SILType> storageEntries;
+
+  auto rawPointerType = SILType::getRawPointerType(IGM.Context);
+
+  // Add the heap header as the first entry
+  if (hasObjCImplementation()) {
+    storageEntries.push_back(rawPointerType);
+  } else if (!HeaderSize.isZero()) {
+    assert(HeaderSize == IGM.RefCountedStructSize &&
+           "Swift object with non-standard header size");
+    storageEntries.push_back(rawPointerType);
+    storageEntries.push_back(rawPointerType);
+  }
+
+  collectAllStoredPropertyTypes(IGM, selfType, storageEntries);
+
+  return irgen::computeTypedMallocTypeDescriptor(IGM, storageEntries);
+}

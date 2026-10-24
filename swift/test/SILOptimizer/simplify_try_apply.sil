@@ -1,0 +1,264 @@
+// RUN: %target-sil-opt -enable-sil-verify-all %s -onone-simplification -simplify-instruction=try_apply | %FileCheck %s -check-prefix=CHECK -check-prefix=CHECKONONE
+// RUN: %target-sil-opt -enable-sil-verify-all %s -simplification -simplify-instruction=try_apply | %FileCheck %s -check-prefix=CHECK -check-prefix=CHECKO
+
+
+sil_stage canonical
+
+import Builtin
+import Swift
+import SwiftShims
+
+class Bar {
+  init()
+  func foo() throws -> Int 
+}
+
+protocol P {}
+
+struct S: P {
+  var x: Int
+}
+
+struct GenS<T> {
+  var x: Int
+}
+
+struct GenError<T>: Error {
+  var x: Int
+}
+
+protocol CP : AnyObject {
+}
+
+final class C : CP {
+}
+
+// CHECK-LABEL: sil @devirt_class_method :
+// CHECK:         [[F:%.*]] = function_ref @bar_foo
+// CHECK:         try_apply [[F]]
+// CHECK:       } // end sil function 'devirt_class_method'
+sil @devirt_class_method : $@convention(thin) () -> (Int, @error any Error) {
+bb0:
+  %0 = alloc_ref $Bar
+  %1 = class_method %0 : $Bar, #Bar.foo : (Bar) -> () throws -> Int, $@convention(method) (@guaranteed Bar) -> (Int, @error any Error)
+  try_apply %1(%0) : $@convention(method) (@guaranteed Bar) -> (Int, @error any Error), normal bb1, error bb2
+
+bb1(%3 : $Int):
+  strong_release %0 : $Bar
+  return %3 : $Int
+
+bb2(%6 : $Error):
+  strong_release %0 : $Bar
+  throw %6 : $Error
+}
+
+sil @bar_foo : $@convention(method) (@guaranteed Bar) -> (Int, @error any Error)
+
+sil_vtable Bar {
+  #Bar.foo: @bar_foo
+}
+
+sil @createit : $@convention(thin) <τ_0_0 where τ_0_0 : P> (@thick τ_0_0.Type) -> (@out τ_0_0, @error any Error)
+sil @returnGenS : $@convention(thin) <τ_0_0 where τ_0_0 : P> (@thick τ_0_0.Type) -> (GenS<τ_0_0>, @error any Error)
+sil @throwGenError : $@convention(thin) <τ_0_0 where τ_0_0 : P> (@thick τ_0_0.Type) -> ((), @error GenError<τ_0_0>)
+
+// CHECK-LABEL: sil [ossa] @replace_archetype :
+// CHECKO:        [[E:%.*]] = init_existential_addr %0
+// CHECKO-DAG:    [[C:%.*]] = unchecked_addr_cast [[E]] to $*S
+// CHECKO-DAG:    [[M:%.*]] = metatype $@thick S.Type
+// CHECKO:        try_apply %{{[0-9]+}}<S>([[C]], [[M]])
+// CHECKONONE:    apply %{{[0-9]+}}<@opened
+// CHECK:       } // end sil function 'replace_archetype'
+sil [ossa] @replace_archetype : $@convention(thin) () -> (@out any P, @error any Error) {
+bb0(%0 : $*any P):
+  %1 = metatype $@thick S.Type
+  %2 = init_existential_metatype %1, $@thick any P.Type
+  %4 = open_existential_metatype %2 to $@thick (@opened(1, any P) Self).Type
+  %6 = function_ref @createit : $@convention(thin) <τ_0_0 where τ_0_0 : P> (@thick τ_0_0.Type) -> (@out τ_0_0, @error any Error)
+  %7 = init_existential_addr %0, $@opened(1, any P) Self
+  try_apply %6<@opened(1, any P) Self>(%7, %4) : $@convention(thin) <τ_0_0 where τ_0_0 : P> (@thick τ_0_0.Type) -> (@out τ_0_0, @error any Error), normal bb1, error bb2
+
+bb1(%8 : $()):
+  return %8 : $()
+
+bb2(%10 : $Error):
+  throw %10 : $Error
+}
+
+// CHECK-LABEL: sil [ossa] @dont_replace_returned_embedded_archetype :
+// CHECK:         try_apply %{{[0-9]+}}<@opened
+// CHECK:       } // end sil function 'dont_replace_returned_embedded_archetype'
+sil [ossa] @dont_replace_returned_embedded_archetype : $@convention(thin) () -> ((), @error any Error) {
+bb0:
+  %1 = metatype $@thick S.Type
+  %2 = init_existential_metatype %1, $@thick any P.Type
+  %4 = open_existential_metatype %2 to $@thick (@opened(2, any P) Self).Type
+  %6 = function_ref @returnGenS : $@convention(thin) <τ_0_0 where τ_0_0 : P> (@thick τ_0_0.Type) -> (GenS<τ_0_0>, @error any Error)
+  try_apply %6<@opened(2, any P) Self>(%4) : $@convention(thin) <τ_0_0 where τ_0_0 : P> (@thick τ_0_0.Type) -> (GenS<τ_0_0>, @error any Error), normal bb1, error bb2
+
+bb1(%8 : $GenS<@opened(2, any P) Self>):
+  %9 = tuple ()
+  return %9 : $()
+
+bb2(%10 : $Error):
+  throw %10 : $Error
+}
+
+// CHECK-LABEL: sil [ossa] @dont_replace_thrown_embedded_archetype :
+// CHECK:         try_apply %{{[0-9]+}}<@opened
+// CHECK:       } // end sil function 'dont_replace_thrown_embedded_archetype'
+sil [ossa] @dont_replace_thrown_embedded_archetype : $@convention(thin) () -> ((), @error any Error) {
+bb0:
+  %1 = metatype $@thick S.Type
+  %2 = init_existential_metatype %1, $@thick any P.Type
+  %4 = open_existential_metatype %2 to $@thick (@opened(3, any P) Self).Type
+  %6 = function_ref @throwGenError : $@convention(thin) <τ_0_0 where τ_0_0 : P> (@thick τ_0_0.Type) -> ((), @error GenError<τ_0_0>)
+  try_apply %6<@opened(3, any P) Self>(%4) : $@convention(thin) <τ_0_0 where τ_0_0 : P> (@thick τ_0_0.Type) -> ((), @error GenError<τ_0_0>), normal bb1, error bb2
+
+bb1(%8 : $()):
+  return %8 : $()
+
+bb2(%10 : $GenError<@opened(3, any P) Self>):
+  unreachable
+}
+
+sil @callee_guaranteed : $@convention(thin) <τ_0_0 where τ_0_0 : CP> (@guaranteed τ_0_0) -> (Int, @error any Error)
+
+// CHECK-LABEL: sil [ossa] @propagate_class_existential :
+// CHECKO:         [[E:%.*]] = end_init_let_ref
+// CHECKO:         [[C:%.*]] = unchecked_ref_cast [[E]] to $@opened
+// CHECKO:         [[B:%.*]] = begin_borrow [[C]]
+// CHECKO:         [[C2:%.*]] = unchecked_ref_cast [[B]] to $C
+// CHECKO:         try_apply {{%[0-9]+}}<C>([[C2]])
+// CHECKO:       bb1({{.*}}):
+// CHECKO-NEXT:    end_borrow [[B]]
+// CHECKO:       bb2({{.*}}):
+// CHECKO-NEXT:    end_borrow [[B]]
+// CHECK:       } // end sil function 'propagate_class_existential'
+sil [ossa] @propagate_class_existential : $@convention(thin) () -> () {
+bb0:
+  %0 = metatype $@thick C.Type
+  %1 = init_existential_metatype %0, $@thick any CP.Type
+  %2 = open_existential_metatype %1 to $@thick (@opened(4, any CP) Self).Type
+  %3 = alloc_ref $C
+  %4 = end_init_let_ref %3
+  %5 = unchecked_ref_cast %4 to $@opened(4, any CP) Self
+  %6 = function_ref @callee_guaranteed : $@convention(thin) <τ_0_0 where τ_0_0 : CP> (@guaranteed τ_0_0) -> (Int, @error any Error)
+  try_apply %6<@opened(4, any CP) Self>(%5) : $@convention(thin) <τ_0_0 where τ_0_0 : CP> (@guaranteed τ_0_0) -> (Int, @error any Error), normal bb1, error bb2
+
+bb1(%8: $Int):
+  br bb3
+
+bb2(%10 : $Error):
+  destroy_value %10
+  br bb3
+
+bb3:
+  destroy_value %5
+  %9 = tuple ()
+  return %9
+}
+
+sil @throws_never : $@convention(thin) () -> (Int, @error Never)
+sil @throws_never_indirect : $@convention(thin) (@in_guaranteed Int) -> (@out Int, @error_indirect Never)
+sil @throws_never_substituted : $@convention(thin) @substituted <τ_0_0, τ_0_1> (@in_guaranteed τ_0_0) -> (@out τ_0_0, @error_indirect τ_0_1) for <Int, Never>
+sil @throws_substituted_error : $@convention(thin) @substituted <τ_0_0> () -> (Int, @error τ_0_0) for <any Error>
+
+// A `throws(E)` function specialized for `E == Never` cannot take its error branch. Without
+// removing it the rethrow survives to IRGen, which emits it as an unconditional trap.
+
+// CHECK-LABEL: sil @remove_uninhabited_error_edge :
+// CHECK:         [[F:%.*]] = function_ref @throws_never
+// CHECK-NEXT:    [[R:%.*]] = apply [nothrow] [[F]]()
+// CHECK-NEXT:    br bb1([[R]])
+// CHECK-NOT:     throw
+// CHECK:       } // end sil function 'remove_uninhabited_error_edge'
+sil @remove_uninhabited_error_edge : $@convention(thin) () -> (Int, @error Never) {
+bb0:
+  %0 = function_ref @throws_never : $@convention(thin) () -> (Int, @error Never)
+  try_apply %0() : $@convention(thin) () -> (Int, @error Never), normal bb1, error bb2
+
+bb1(%2 : $Int):
+  return %2
+
+bb2(%4 : $Never):
+  throw %4
+}
+
+// CHECK-LABEL: sil @remove_uninhabited_indirect_error_edge :
+// CHECK:         [[F:%.*]] = function_ref @throws_never_indirect
+// CHECK-NEXT:    [[R:%.*]] = apply [nothrow] [[F]](%0, %1, %2)
+// CHECK-NEXT:    br bb1([[R]])
+// CHECK-NOT:     throw_addr
+// CHECK:       } // end sil function 'remove_uninhabited_indirect_error_edge'
+sil @remove_uninhabited_indirect_error_edge : $@convention(thin) (@in_guaranteed Int) -> (@out Int, @error_indirect Never) {
+bb0(%0 : $*Int, %1 : $*Never, %2 : $*Int):
+  %3 = function_ref @throws_never_indirect : $@convention(thin) (@in_guaranteed Int) -> (@out Int, @error_indirect Never)
+  try_apply %3(%0, %1, %2) : $@convention(thin) (@in_guaranteed Int) -> (@out Int, @error_indirect Never), normal bb1, error bb2
+
+bb1(%5 : $()):
+  return %5
+
+bb2:
+  throw_addr
+}
+
+// This is the shape generic specialization actually produces: the error type is `Never` only
+// once the pattern substitutions of the `@substituted` callee type are applied.
+
+// CHECK-LABEL: sil @remove_uninhabited_substituted_error_edge :
+// CHECK:         [[F:%.*]] = function_ref @throws_never_substituted
+// CHECK-NEXT:    [[R:%.*]] = apply [nothrow] [[F]](%0, %1, %2)
+// CHECK-NEXT:    br bb1([[R]])
+// CHECK-NOT:     throw_addr
+// CHECK:       } // end sil function 'remove_uninhabited_substituted_error_edge'
+sil @remove_uninhabited_substituted_error_edge : $@convention(thin) (@in_guaranteed Int) -> (@out Int, @error_indirect Never) {
+bb0(%0 : $*Int, %1 : $*Never, %2 : $*Int):
+  %3 = function_ref @throws_never_substituted : $@convention(thin) @substituted <τ_0_0, τ_0_1> (@in_guaranteed τ_0_0) -> (@out τ_0_0, @error_indirect τ_0_1) for <Int, Never>
+  try_apply %3(%0, %1, %2) : $@convention(thin) @substituted <τ_0_0, τ_0_1> (@in_guaranteed τ_0_0) -> (@out τ_0_0, @error_indirect τ_0_1) for <Int, Never>, normal bb1, error bb2
+
+bb1(%5 : $()):
+  return %5
+
+bb2:
+  throw_addr
+}
+
+// The error block is removed, so a value which was destroyed on both paths keeps a single
+// destroy on the remaining one.
+
+// CHECK-LABEL: sil [ossa] @remove_uninhabited_error_edge_ossa :
+// CHECK:         apply [nothrow]
+// CHECK:       bb1([[R:%.*]] : $Int):
+// CHECK-NEXT:    destroy_value %0
+// CHECK-NEXT:    return [[R]]
+// CHECK:       } // end sil function 'remove_uninhabited_error_edge_ossa'
+sil [ossa] @remove_uninhabited_error_edge_ossa : $@convention(thin) (@owned Bar) -> (Int, @error Never) {
+bb0(%0 : @owned $Bar):
+  %1 = function_ref @throws_never : $@convention(thin) () -> (Int, @error Never)
+  try_apply %1() : $@convention(thin) () -> (Int, @error Never), normal bb1, error bb2
+
+bb1(%3 : $Int):
+  destroy_value %0
+  return %3
+
+bb2(%5 : $Never):
+  destroy_value %0
+  throw %5
+}
+
+// CHECK-LABEL: sil @keep_inhabited_substituted_error_edge :
+// CHECK:         try_apply
+// CHECK:         throw
+// CHECK:       } // end sil function 'keep_inhabited_substituted_error_edge'
+sil @keep_inhabited_substituted_error_edge : $@convention(thin) () -> (Int, @error any Error) {
+bb0:
+  %0 = function_ref @throws_substituted_error : $@convention(thin) @substituted <τ_0_0> () -> (Int, @error τ_0_0) for <any Error>
+  try_apply %0() : $@convention(thin) @substituted <τ_0_0> () -> (Int, @error τ_0_0) for <any Error>, normal bb1, error bb2
+
+bb1(%2 : $Int):
+  return %2
+
+bb2(%4 : $any Error):
+  throw %4
+}

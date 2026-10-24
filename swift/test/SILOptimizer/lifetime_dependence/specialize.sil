@@ -1,0 +1,94 @@
+// RUN: %target-sil-opt \
+// RUN:   -generic-specializer \
+// RUN:   -sil-verify-all \
+// RUN:   -enable-experimental-feature LifetimeDependence \
+// RUN:   -enable-experimental-feature AddressableParameters \
+// RUN:   -enable-experimental-feature AddressableTypes \
+// RUN:   %s | %FileCheck %s
+
+// REQUIRES: swift_feature_LifetimeDependence
+// REQUIRES: swift_feature_AddressableParameters
+// REQUIRES: swift_feature_AddressableTypes
+
+// REQUIRES: PTRSIZE=64
+
+// Test the SIL representation for lifetime dependence scope fixup.
+
+sil_stage raw
+
+import Builtin
+import Swift
+
+struct NE: ~Escapable {}
+
+sil @makeSpan : $@convention(method) <τ_0_0 where τ_0_0 : ~Copyable> (UnsafePointer<τ_0_0>, Int, @thin Span<τ_0_0>.Type) -> @lifetime(borrow 0) @owned Span<τ_0_0>
+
+// Ensure that the addressable argument is not deleted.
+//
+// CHECK-LABEL: sil shared [ossa] @$s12getSpanOfOneSi_Tg5 : $@convention(thin) (@in_guaranteed CollectionOfOne<Int>) -> @lifetime(borrow address_for_deps 0) @owned Span<Int> {
+sil shared [ossa] @getSpanOfOne : $@convention(thin) <Element> (@in_guaranteed CollectionOfOne<Element>) -> @lifetime(borrow address_for_deps 0) @owned Span<Element> {
+[global: ]
+bb0(%0 : $*CollectionOfOne<Element>):
+  %1 = address_to_pointer [stack_protection] %0 : $*CollectionOfOne<Element> to $Builtin.RawPointer
+  %2 = struct $UnsafePointer<Element> (%1 : $Builtin.RawPointer)
+  %3 = metatype $@thin Span<Element>.Type
+  %4 = integer_literal $Builtin.Int64, 1
+  %5 = struct $Int (%4 : $Builtin.Int64)
+  %6 = function_ref @makeSpan : $@convention(method) <τ_0_0 where τ_0_0 : ~Copyable> (UnsafePointer<τ_0_0>, Int, @thin Span<τ_0_0>.Type) -> @lifetime(borrow 0) @owned Span<τ_0_0>
+  %7 = apply %6<Element>(%2, %5, %3) : $@convention(method) <τ_0_0 where τ_0_0 : ~Copyable> (UnsafePointer<τ_0_0>, Int, @thin Span<τ_0_0>.Type) -> @lifetime(borrow 0) @owned Span<τ_0_0>
+  return %7 : $Span<Element>
+}
+
+sil hidden [ossa] @testGetSpanOfOne : $@convention(thin) (@in_guaranteed CollectionOfOne<Int>) -> () {
+bb0(%0 : $*CollectionOfOne<Int>):
+  %temp = alloc_stack $CollectionOfOne<Int>
+  %load = load [trivial] %0 : $*CollectionOfOne<Int>
+  %borrow = store_borrow %load to %temp : $*CollectionOfOne<Int>
+
+  %fget = function_ref @getSpanOfOne : $@convention(thin) <Element> (@in_guaranteed CollectionOfOne<Element>) -> @lifetime(borrow address_for_deps 0) @owned Span<Element>
+  %span = apply %fget<Int>(%borrow) : $@convention(thin) <τ_0_0> (@in_guaranteed CollectionOfOne<τ_0_0>) -> @lifetime(borrow address_for_deps 0) @owned Span<τ_0_0>
+
+  destroy_value %span : $Span<Int>
+  end_borrow %borrow : $*CollectionOfOne<Int>
+  dealloc_stack %temp : $*CollectionOfOne<Int>
+
+  %99 = tuple ()
+  return %99 : $()
+}
+
+// Ensure that an ununsed metatype is not deleted during specialization.
+//
+// rdar://177185142 (Assertion failed: (indices->getCapacity() <= numFormalParams && "There should be at most 1 index
+// per parameter. SIL functions " "cannot have " "an implicit self parameter."))
+sil [ossa] @unused_metatype : $@convention(thin) <T>(@lifetime(copy 0) @inout NE, @in_guaranteed T, @thin T.Type) -> () {
+bb0(%0 : $*NE, %1 : $*T, %2 : $@thin T.Type):
+  %99 = tuple ()
+  return %99 : $()
+}
+
+sil @takeSpecializedNEClosure : $@convention(method) (@guaranteed @noescape @callee_guaranteed (@lifetime(copy 0) @inout NE) -> ()) -> ()
+
+// CHECK-LABEL: sil [ossa] @test_unused_metatype : $@convention(thin) (@in_guaranteed Int) -> () {
+// CHECK: bb0(%0 : $*Int):
+// CHECK:   [[MT:%[0-9]+]] = metatype $@thin Int.Type
+// CHECK:   [[F:%[0-9]+]] = function_ref @$s15unused_metatypeSi_TG5 : $@convention(thin) (@lifetime(copy 0) @inout NE, @in_guaranteed Int, @thin Int.Type) -> ()
+// CHECK:   [[PA:%[0-9]+]] = partial_apply [callee_guaranteed] [on_stack] [[F]](%0, [[MT]]) : $@convention(thin) (@lifetime(copy 0) @inout NE, @in_guaranteed Int, @thin Int.Type) -> ()
+// CHECK:   [[MD:%[0-9]+]] = mark_dependence [nonescaping] [[PA]] on %0
+// CHECK:   [[CF:%[0-9]+]] = convert_function [[MD]] to $@noescape @callee_guaranteed (@lifetime(copy 0) @inout NE) -> ()
+// CHECK:   [[TC:%[0-9]+]] = function_ref @takeSpecializedNEClosure : $@convention(method) (@guaranteed @noescape @callee_guaranteed (@lifetime(copy 0) @inout NE) -> ()) -> ()
+// CHECK:   {{%[0-9]+}} = apply [[TC]]([[CF]]) : $@convention(method) (@guaranteed @noescape @callee_guaranteed (@lifetime(copy 0) @inout NE) -> ()) -> ()
+// CHECK:   destroy_value [[CF]]
+// CHECK: } // end sil function 'test_unused_metatype'
+sil [ossa] @test_unused_metatype : $@convention(thin) (@in_guaranteed Int) -> () {
+bb0(%0 : $*Int):
+  %mt = metatype $@thin Int.Type
+  %f = function_ref @unused_metatype : $@convention(thin) <T>(@lifetime(copy 0) @inout NE, @in_guaranteed T, @thin T.Type) -> ()
+  %15 = partial_apply [callee_guaranteed] [on_stack] %f<Int>(%0, %mt) : $@convention(thin) <τ_0_0> (@lifetime(copy 0) @inout NE, @in_guaranteed τ_0_0, @thin τ_0_0.Type) -> ()
+  %16 = mark_dependence [nonescaping] %15 on %0
+  %18 = convert_function %16 to $@noescape @callee_guaranteed (@lifetime(copy 0) @inout NE) -> ()
+  %19 = function_ref @takeSpecializedNEClosure : $@convention(method) (@guaranteed @noescape @callee_guaranteed (@lifetime(copy 0) @inout NE) -> ()) -> ()
+  %21 = apply %19(%18) : $@convention(method) (@guaranteed @noescape @callee_guaranteed (@lifetime(copy 0) @inout NE) -> ()) -> ()
+  destroy_value %18
+  %99 = tuple ()
+  return %99
+}

@@ -1,0 +1,169 @@
+// RUN: %target-typecheck-verify-swift -Wwarning EmbeddedRestrictions -verify-additional-prefix nonembedded-
+// RUN: %target-typecheck-verify-swift -enable-experimental-feature Embedded -verify-additional-prefix embedded-
+// RUN: %target-swift-frontend -typecheck %s -suppress-warnings -enable-experimental-feature Embedded -DSUPPRESS_CASTS
+// REQUIRES: swift_feature_Embedded
+
+// ---------------------------------------------------------------------------
+// Untyped throws - we're not diagnosing this.
+// ---------------------------------------------------------------------------
+
+enum MyError: Error {
+case failed
+}
+
+func untypedThrows() throws { }
+
+func rethrowingFunction(param: () throws -> Void) rethrows { }
+
+typealias FnType = () throws -> Void
+
+func untypedThrowsInBody() {
+  do throws {
+    throw MyError.failed
+  } catch {
+  }
+
+  _ = { (x) throws in x + 1 }
+}
+
+struct SomeStruct {
+  init() throws { }
+
+  var value: Int {
+    get throws {
+      0
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// generic, non-final functions
+// ---------------------------------------------------------------------------
+
+protocol P { }
+
+// A generic method of a class is dispatched statically and kept out of the
+// vtable, so it is fine as long as nothing can override it. Only `open` and
+// `override` are rejected; see classes-generic-methods.swift.
+class MyGenericClass<T> {
+  func f<U>(value: U) { } // okay, statically dispatched
+  func g() { }
+  class func h() where T: P { } // okay, statically dispatched
+
+  init<U>(value: U) { } // okay, can be directly called
+
+  required init() { } // non-generic is okay
+
+  required init<V>(something: V) { } // expected-warning{{generic initializer 'init(something:)' in a class cannot be 'required' in Embedded Swift}}
+}
+
+// ---------------------------------------------------------------------------
+// generic functions on existentials
+// ---------------------------------------------------------------------------
+
+public protocol Q {
+  func f<T>(_ value: T)
+  func okay()
+}
+
+extension Q {
+  public func g<T>(_ value: T) {
+    f(value)
+  }
+
+  public mutating func h<T>(_ value: T) {
+    f(value)
+  }
+}
+
+public func existentials(q: any AnyObject & Q, i: Int) {
+  q.okay()
+  q.f(i) // expected-warning{{cannot use generic instance method 'f' on a value of type 'any AnyObject & Q' in Embedded Swift}}
+
+  q.g(i) // expected-warning{{cannot use generic instance method 'g' on a value of type 'any AnyObject & Q' in Embedded Swift}}
+
+  var qm = q
+  qm.h(i) // expected-warning{{cannot use generic instance method 'h' on a value of type 'any AnyObject & Q' in Embedded Swift}}
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic casting restrictions
+// ---------------------------------------------------------------------------
+
+class ConformsToQ: Q {
+  final func f<T>(_ value: T) { }
+  func okay() { }
+}
+
+#if !SUPPRESS_CASTS
+func dynamicCasting(object: AnyObject, cq: ConformsToQ) {
+  // expected-nonembedded-warning@+2{{cannot perform a dynamic cast to a type involving protocol 'Q' in Embedded Swift}}
+  // expected-embedded-error@+1{{cannot perform a dynamic cast to a type involving protocol 'Q' in Embedded Swift}}
+  if let q = object as? any AnyObject & Q {
+    _ = q
+  }
+
+  // expected-nonembedded-warning@+2{{cannot perform a dynamic cast to a type involving protocol 'Q' in Embedded Swift}}
+  // expected-embedded-error@+1{{cannot perform a dynamic cast to a type involving protocol 'Q' in Embedded Swift}}
+  if object is any AnyObject & Q { }
+
+  // expected-nonembedded-warning@+2{{cannot perform a dynamic cast to a type involving protocol 'Q' in Embedded Swift}}
+  // expected-embedded-error@+1{{cannot perform a dynamic cast to a type involving protocol 'Q' in Embedded Swift}}
+  _ = object as! AnyObject & Q
+
+  _ = cq as AnyObject & Q
+}
+#endif
+
+// ---------------------------------------------------------------------------
+// #if handling to suppress diagnostics for non-Embedded-only code
+// ---------------------------------------------------------------------------
+
+#if $Embedded
+
+#if !SUPPRESS_CASTS
+func stillProblematic(object: AnyObject) {
+  // expected-embedded-error@+1{{cannot perform a dynamic cast to a type involving protocol 'Q' in Embedded Swift}}
+  if let q = object as? any AnyObject & Q {
+    _ = q
+  }
+}
+#endif
+
+#else
+
+func notProblematicAtAll(object: AnyObject) throws {
+  if let q = object as? any AnyObject & Q {
+    _ = q
+  }
+}
+
+#endif
+
+#if !hasFeature(Embedded)
+func stillNotProblematicAtAll(object: AnyObject) throws {
+  if let q = object as? any AnyObject & Q {
+    _ = q
+  }
+}
+#endif
+
+// ---------------------------------------------------------------------------
+// Existential opening is not permitted
+// ---------------------------------------------------------------------------
+
+func acceptP<T: P>(_ t: T) { }
+
+func openme(p: any P) {
+  func generic<T: P>(_ t: T) { }
+
+  // explicit opening
+  // expected-warning@+1{{cannot open existential type 'any P' in Embedded Swift}}
+  _openExistential(p, do: generic)
+
+  // implicit opening
+  // Opening is the only way this call type checks -- 'any P' does not conform
+  // to 'P' -- so there is no coercion to suggest.
+  // expected-warning@+1{{cannot open existential type 'any P' when passing it as an argument to global function 'acceptP' in Embedded Swift}}
+  acceptP(p)
+}

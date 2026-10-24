@@ -1,0 +1,20 @@
+// RUN: %target-swift-emit-silgen-ossa -o /dev/null -enable-sil-opaque-values %s
+// RUN: %target-swift-emit-silgen -target %target-swift-5.1-abi-triple -verify %s
+
+// rdar://problem/65683913
+
+@_silgen_name("foo") func foo() -> Int
+
+func createSomeOpaqueObject() -> some CustomStringConvertible {
+    foo()
+}
+
+struct TypeWitness<R> {
+    init(witness _: R) { }
+
+    var type: R.Type { R.self }
+    func getType() -> R.Type { R.self }
+}
+
+let w = TypeWitness(witness: createSomeOpaqueObject())
+print(w.getType())

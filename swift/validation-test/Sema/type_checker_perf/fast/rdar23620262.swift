@@ -1,0 +1,10 @@
+// RUN: %target-typecheck-verify-swift -solver-scope-threshold=500 -solver-enable-promote-supertypes
+// RUN: %target-typecheck-verify-swift -solver-scope-threshold=15000 -solver-disable-promote-supertypes
+// REQUIRES: tools-release,no_asan
+
+func test() {
+  let a: [Double] = []
+  _ = a.map { $0 - 1.0 }
+    .map { $0 * $0 }
+    .reduce(0, +) / Double(a.count)
+}
