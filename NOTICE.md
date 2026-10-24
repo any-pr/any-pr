@@ -22,7 +22,7 @@ license statement within the file or its accompanying documentation.
 external to this repository and was imported here, whether vendored in full,
 imported partially, or incorporated in modified form. Top-level directories
 that constitute imported projects — including, at the time of writing,
-`swift/`, `vscode/`, and `neoforbric/` — are Third-Party Code in their
+`swift/` and `vscode/` — are Third-Party Code in their
 entirety.
 
 1.4 **"MIT License"** means the MIT License text in the `LICENSE` file at the
@@ -69,7 +69,7 @@ project's published license policy, are controlling:
 |---|---|---|
 | `swift/` | Swift (swiftlang/swift), Apple Inc. and the Swift project authors | Apache License 2.0 with LLVM Runtime Library Exception (see `https://swift.org/LICENSE.txt` and per-file headers) |
 | `vscode/` | Visual Studio Code (microsoft/vscode), Microsoft | MIT License, with certain files and vendored components under other licenses as marked in their headers |
-| `neoforbric/` | Forbric, The Forbric Project | Apache License 2.0; see the `NOTICE` files in each module, which also record third-party components |
+
 | `libs/VastNova-Repository/` | VastNova Repository | MIT License, per its `Notice.txt` |
 
 3.4 Where Third-Party Code was imported without its upstream license file,

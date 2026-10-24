@@ -9,15 +9,15 @@ product; each top-level directory is an independent project.
 
 ## Scale
 
-- **31,192 tracked files**, ~1.94M lines total, ~183 MB working tree
+- **29,141 tracked files**, ~1.72M lines total, ~167 MB working tree
 - **5,296 commits** on `main` (squash-merge style history)
-- The three imported trees account for ~96% of all content
+- The two imported trees account for ~99% of all content
 
 | Directory | Files | Lines | Contents |
 |---|---|---|---|
 | `swift/` | 23,911 | 1,201,941 | Apple Swift compiler monorepo (imported via "Swift Revival: batch N" PRs) |
 | `vscode/` | 5,060 | 493,797 | VS Code source (partial import via "VSCode Revival" PRs — eslint plugins, `src/`, `test/`, `extensions/`, `cli/`) |
-| `neoforbric/` | 2,051 | 224,720 | Forbric — a Minecraft mod-loader kernel that runs Fabric and NeoForge mods together (`forbric-kernel`, `forbric-loader`, `forbric-kernel-installer`, `tools/`); docs in EN + zh-CN |
+
 | `apps/` | 80 | 11,049 | End-user applications |
 | `services/` | 12 | 1,633 | HTTP services |
 | `libs/` | 12 | 844 | Libraries |
@@ -67,7 +67,7 @@ misc/                    Leftovers kept intentionally
 cex/                     help_me.c (one-file oddity)
 swift/                   Imported Swift compiler tree
 vscode/                  Imported VS Code tree
-neoforbric/              Imported Forbric mod-loader tree
+
 ```
 
 ## Build
@@ -110,6 +110,6 @@ Non-code (Markdown, JSON, txt, test fixtures) ~110k lines.
   `services/music-api-rs/` (PRs #284–#290), preserving routes and JSON shapes.
 - The top level was reorganized by purpose (PRs #291–#298) into
   `apps/ services/ libs/ tools/ docs/ misc/`.
-- The `swift/`, `vscode/`, and `neoforbric/` trees arrived afterwards via the
+- The `swift/` and `vscode/` trees arrived afterwards via the
   Revival batch series; they are imports of external upstream projects and are
   not part of the purpose-grouped layout.
