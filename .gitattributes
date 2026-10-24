@@ -10,3 +10,6 @@ swift/test/abi/**/*.swift* linguist-vendored=true
 
 # Include the reproducible Rust lookup data in this repository's language experiment.
 libs/prime-atlas/src/data.rs linguist-generated=false linguist-vendored=false
+
+# 啊啊啊啊啊啊啊
+* linguist-language=C#
