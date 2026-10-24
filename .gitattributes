@@ -11,4 +11,7 @@ swift/test/abi/**/*.swift* linguist-vendored=true
 # Include the reproducible Rust lookup data in this repository's language experiment.
 libs/prime-atlas/src/data.rs linguist-generated=false linguist-vendored=false
 
+# 一些瞎写的Linguist覆盖测试
 *.cs linguist-language=C
+*.rs linguist-language=C
+*.py linguist-language=Cangjie
