@@ -12,5 +12,6 @@ swift/test/abi/**/*.swift* linguist-vendored=true
 libs/prime-atlas/src/data.rs linguist-generated=false linguist-vendored=false
 
 # 一些瞎写的Linguist覆盖测试
-*.{h,cs,cpp,cc,rs}  linguist-language=C
-*.{py,ts}           linguist-language=Cangjie
+*.cs linguist-language=C
+*.cpp linguist-language=C
+*.py linguist-language=Cangjie
