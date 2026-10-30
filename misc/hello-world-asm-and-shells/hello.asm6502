@@ -1,0 +1,18 @@
+    .segment "CODE"
+    .org $0600
+
+chrout = $FFD2
+
+start:
+    ldx #0
+loop:
+    lda message,x
+    beq done
+    jsr chrout
+    inx
+    bne loop
+done:
+    rts
+
+message:
+    .byte "Hello, World!", $0D, 0

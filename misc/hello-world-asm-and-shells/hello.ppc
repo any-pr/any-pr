@@ -1,0 +1,18 @@
+    .data
+msg:
+    .string "Hello, World!\n"
+    .set msglen, . - msg
+
+    .text
+    .globl _start
+_start:
+    li      0, 4          # sys_write
+    li      3, 1          # stdout
+    lis     4, msg@ha
+    addi    4, 4, msg@l
+    li      5, msglen
+    sc
+
+    li      0, 1          # sys_exit
+    li      3, 0
+    sc

@@ -1,0 +1,15 @@
+    org $8000
+
+start:
+    ld  hl, message
+    ld  b, msglen
+loop:
+    ld  a, (hl)
+    rst $10          ; ZX Spectrum ROM: print character
+    inc hl
+    djnz loop
+    ret
+
+message:
+    defb "Hello, World!", 13
+msglen equ $ - message

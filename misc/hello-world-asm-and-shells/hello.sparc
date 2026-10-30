@@ -1,0 +1,13 @@
+    .section ".data"
+msg:
+    .asciz "Hello, World!\n"
+
+    .section ".text"
+    .global _start
+_start:
+    mov     1, %o0
+    sethi   %hi(msg), %o1
+    or      %o1, %lo(msg), %o1
+    mov     14, %o2
+    mov     4, %g1
+    ta      0
