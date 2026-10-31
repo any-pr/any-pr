@@ -1,0 +1,39 @@
+{
+    "format_version": "1.20.0",
+    "minecraft:npc_dialogue": {
+        "scenes": [
+            {
+                "scene_tag": "admin_tool",
+                "npc_name": {
+                    "rawtext": [{"text":"管理员工具"}]
+                },
+                "text": {
+                    "rawtext": [{"text":"建议您谨慎使用管理员工具。\n某些选项可能会破坏游戏平衡。"}]
+                },
+                "buttons": [
+                    {
+                        "name":"将余额设为#32767",
+                        "commands": [
+                            "scoreboard players set @initiator balance 32767",
+                            "dialogue open @s @initiator success"
+                        ]
+                    },
+                    {
+                        "name":"将余额设为#0",
+                        "commands": [
+                            "scoreboard players set @initiator balance 0",
+                            "dialogue open @s @initiator success"
+                        ]
+                    },
+                    {
+                        "name":"清理掉落物",
+                        "commands": [
+                            "kill @e[type=item]",
+                            "dialogue open @s @initiator success"
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+}

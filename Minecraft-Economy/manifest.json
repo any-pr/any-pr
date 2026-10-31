@@ -1,0 +1,25 @@
+{
+  "format_version": 2,
+  "header": {
+    "name": "通用经济",
+    "description": "轻量级 Minecraft 经济组件。",
+    "uuid": "79d3f7a8-9974-42e2-ac6c-c32dff11fff8",
+    "version": [26, 4, 28],
+    "min_engine_version": [1, 20, 0]
+  },
+  "modules": [
+    {
+      "type": "data",
+      "uuid": "62e6dd33-4ebb-400a-835e-936ce2ba790b",
+      "version": [26, 4, 28]
+    }
+  ],
+  "metadata": {
+    "authors": [ "cmdcorp6534" ],
+    "generated_with": {
+      "blockception-minecraft-bedrock": [
+        "9.0.1"
+      ]
+    }
+  }
+}

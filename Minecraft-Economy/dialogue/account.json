@@ -1,0 +1,33 @@
+{
+    "format_version": "1.20.0",
+    "minecraft:npc_dialogue": {
+        "scenes": [
+            {
+                "scene_tag": "account",
+                "npc_name": {
+                    "rawtext": [{"text":"账号"}]
+                },
+                "text": {
+                    "rawtext": [{"text":"权限介绍\n\n1. 无配置权限\n这是每个玩家的初始权限。\n可用功能：\na)查询余额\nb)存入\nc)商店\nd)账号管理\n2. 管理员\n操作员使用 tag 命令添加 admin 标签即得权限，移除标签即失权限。\n可用功能：\na)查询余额\nb)存入\nc)商店\nd)管理员工具\ne)账号管理\n3. 被封禁\n操作员使用 tag 命令添加 banned 标签即得权限，移除标签即失权限。\n此权限配置优先级高于管理员。\n可用功能：\na)查询余额\nb)账号管理\n3. 开发者\n此权限仅用于开发调试，该权限需要配置 DEVKEY ，正确的 DEVKEY 以硬编码的方式写入行为包中，房主可修改行为包来管理此权限。\n此权限配置优先级高于被封禁。\n\n\n封禁申诉\n\n本行为包暂未推出申诉渠道，您可以通过游戏聊天或其他方式联系操作员。"}]
+                },
+                "buttons": [
+                    {
+                        "name":"发送账号信息",
+                        "commands": [
+                            "tellraw @initiator[tag=banned] {\"rawtext\":[{\"text\":\"被封禁：是\"}]}",
+                            "tellraw @initiator[tag=!banned] {\"rawtext\":[{\"text\":\"被封禁：否\"}]}",
+                            "tellraw @initiator[tag=admin] {\"rawtext\":[{\"text\":\"管理员：是\"}]}",
+                            "tellraw @initiator[tag=!admin] {\"rawtext\":[{\"text\":\"管理员：否\"}]}"
+                        ]
+                    },
+                    {
+                        "name":"配置 DEVKEY",
+                        "commands": [
+                            "dialogue open @s @initiator DEVKEY"
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+}

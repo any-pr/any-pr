@@ -1,0 +1,73 @@
+{
+    "format_version": "1.20.0",
+    "minecraft:npc_dialogue": {
+        "scenes": [
+            {
+                "scene_tag": "store",
+                "npc_name": {
+                    "rawtext": [{"text":"商店"}]
+                },
+                "text": {
+                    "rawtext": [{"text":"请确保您的账号余额足够。"}]
+                },
+                "buttons": [
+                    {
+                        "name":"#10 -> 铁锭",
+                        "commands": [
+                            "give @initiator[scores={balance=10..}] iron_ingot",
+                            "dialogue open @s @initiator[scores={balance=10..}] success",
+                            "dialogue open @s @initiator[scores={balance=..9}] fault",
+                            "scoreboard players remove @initiator[scores={balance=10..}] balance 10"
+
+                        ]
+                    },
+                    {
+                        "name":"#10 -> 铜锭",
+                        "commands": [
+                            "give @initiator[scores={balance=10..}] copper_ingot",
+                            "dialogue open @s @initiator[scores={balance=10..}] success",
+                            "dialogue open @s @initiator[scores={balance=..9}] fault",
+                            "scoreboard players remove @initiator[scores={balance=10..}] balance 10"
+                        ]
+                    },
+                    {
+                        "name":"#20 -> 金锭",
+                        "commands": [
+                            "give @initiator[scores={balance=20..}] gold_ingot",
+                            "dialogue open @s @initiator[scores={balance=20..}] success",
+                            "dialogue open @s @initiator[scores={balance=..19}] fault",
+                            "scoreboard players remove @initiator[scores={balance=20..}] balance 20"
+                        ]
+                    },
+                    {
+                        "name":"#40 -> 钻石",
+                        "commands": [
+                            "give @initiator[scores={balance=40..}] diamond",
+                            "dialogue open @s @initiator[scores={balance=40..}] success",
+                            "dialogue open @s @initiator[scores={balance=..39}] fault",
+                            "scoreboard players remove @initiator[scores={balance=40..}] balance 40"
+                        ]
+                    },
+                    {
+                        "name":"#60 -> 下届合金锭",
+                        "commands": [
+                            "give @initiator[scores={balance=60..}] netherite_ingot",
+                            "dialogue open @s @initiator[scores={balance=60..}] success",
+                            "dialogue open @s @initiator[scores={balance=..59}] fault",
+                            "scoreboard players remove @initiator[scores={balance=60..}] balance 60"
+                        ]
+                    },
+                    {
+                        "name":"#80 -> 绿宝石",
+                        "commands": [
+                            "give @initiator[scores={balance=80..}] emerald",
+                            "dialogue open @s @initiator[scores={balance=80..}] success",
+                            "dialogue open @s @initiator[scores={balance=..79}] fault",
+                            "scoreboard players remove @initiator[scores={balance=80..}] balance 80"
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+}

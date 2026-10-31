@@ -1,0 +1,63 @@
+{
+    "format_version": "1.20.0",
+    "minecraft:npc_dialogue": {
+        "scenes": [
+            {
+                "scene_tag": "first_page_default",
+                "npc_name": {
+                    "rawtext": [{"text":"首页"}]
+                },
+                "text": {
+                    "rawtext": [{"text":"欢迎访问经济终端！\n\n\n本组件已开源，仓库地址：\nhttps://github.com/cmdcorp6534/Minecraft-Economy\n\n\n开源协议：GNU AFFERO GENERAL PUBLIC LICENSE  Version 3, 19 November 2007"}]
+                },
+                "buttons": [
+                    {
+                        "name":"查询余额",
+                        "commands": [
+                            "title @initiator title 账号余额",
+                            "titleraw @initiator subtitle {\"rawtext\":[{\"text\":\"#\"},{\"score\":{\"name\":\"@initiator\",\"objective\":\"balance\"}}]}"
+                        ]
+                    },
+                    {
+                        "name":"存入",
+                        "commands": [
+                            "dialogue open @s @initiator[tag=!banned] bank",
+                            "dialogue open @s @initiator[tag=banned] fault"
+                        ]
+                    },
+                    {
+                        "name":"商店",
+                        "commands": [
+                            "dialogue open @s @initiator[tag=!banned] store",
+                            "dialogue open @s @initiator[tag=banned] fault"
+                        ]
+                    },
+                    {
+                        "name":"管理员工具",
+                        "commands": [
+                            "execute as @initiator[tag=!banned] run tag @s[tag=admin] add admin_authed",
+                            "dialogue open @s @initiator[tag=admin_authed] admin_tool",
+                            "dialogue open @s @initiator[tag=!admin_authed] fault",
+                            "tag @initiator remove admin_authed"
+                        ]
+                    },
+                    {
+                        "name":"开发者工具",
+                        "commands": [
+                            "execute as @initiator run execute if score @s config_devkey = devkey correct_devkey run tag @s add dev_authed",
+                            "dialogue open @s @initiator[tag=dev_authed] dev_tool",
+                            "dialogue open @s @initiator[tag=!dev_authed] fault",
+                            "tag @initiator remove dev_authed"
+                        ]
+                    },
+                    {
+                        "name":"账号",
+                        "commands": [
+                            "dialogue open @s @initiator account"
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+}

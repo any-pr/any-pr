@@ -1,0 +1,129 @@
+{
+    "format_version": "1.20.0",
+    "minecraft:npc_dialogue": {
+        "scenes": [
+            {
+                "scene_tag": "dev_tool",
+                "npc_name": {
+                    "rawtext": [{"text":"开发者工具"}]
+                },
+                "text": {
+                    "rawtext": [{"text":"建议您谨慎使用开发者工具。\n某些选项可能会破坏游戏平衡。"}]
+                },
+                "buttons": [
+                    {
+                        "name":"将余额设为#32767",
+                        "commands": [
+                            "scoreboard players set @initiator balance 32767",
+                            "dialogue open @s @initiator success"
+                        ]
+                    },
+                    {
+                        "name":"将余额设为#0",
+                        "commands": [
+                            "scoreboard players set @initiator balance 0",
+                            "dialogue open @s @initiator success"
+                        ]
+                    },
+                    {
+                        "name":"清理掉落物",
+                        "commands": [
+                            "kill @e[type=item]",
+                            "dialogue open @s @initiator success"
+                        ]
+                    },
+                    {
+                        "name":"切换模式",
+                        "commands": [
+                            "dialogue open @s @initiator switch_gm"
+                        ]
+                    },
+                    {
+                        "name":"解除封禁",
+                        "commands": [
+                            "tag @initiator remove banned",
+                            "dialogue open @s @initiator success"
+                        ]
+                    },
+                    {
+                        "name":"绕过模式检查",
+                        "commands": [
+                            "dialogue open @s @initiator switch_bypass_gm_check"
+                        ]
+                    }
+                ]
+            },
+            {
+                "scene_tag": "switch_gm",
+                "npc_name": {
+                    "rawtext": [{"text":"开发者工具>切换模式"}]
+                },
+                "text": {
+                    "rawtext": [{"text":"建议您谨慎使用开发者工具。\n某些选项可能会破坏游戏平衡。"}]
+                },
+                "buttons": [
+                    {
+                        "name":"默认",
+                        "commands": [
+                            "gamemode default @initiator",
+                            "dialogue open @s @initiator success"
+                        ]
+                    },
+                    {
+                        "name":"生存",
+                        "commands": [
+                            "gamemode survival @initiator",
+                            "dialogue open @s @initiator success"
+                        ]
+                    },
+                    {
+                        "name":"创造",
+                        "commands": [
+                            "gamemode creative @initiator",
+                            "dialogue open @s @initiator success"
+                        ]
+                    },
+                    {
+                        "name":"冒险",
+                        "commands": [
+                            "gamemode adventure @initiator",
+                            "dialogue open @s @initiator engineer_tool"
+                        ]
+                    },
+                    {
+                        "name":"旁观",
+                        "commands": [
+                            "gamemode spectator @initiator",
+                            "dialogue open @s @initiator success"
+                        ]
+                    }
+                ]
+            },
+            {
+                "scene_tag": "switch_bypass_gm_check",
+                "npc_name": {
+                    "rawtext": [{"text":"开发者工具>绕过模式检查"}]
+                },
+                "text": {
+                    "rawtext": [{"text":"建议您谨慎使用开发者工具。\n某些选项可能会破坏游戏平衡。"}]
+                },
+                "buttons": [
+                    {
+                        "name":"启用",
+                        "commands": [
+                            "tag @initiator add bypass_gm_check",
+                            "dialogue open @s @initiator success"
+                        ]
+                    },
+                    {
+                        "name":"禁用",
+                        "commands": [
+                            "tag @initiator remove bypass_gm_check",
+                            "dialogue open @s @initiator success"
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+}
