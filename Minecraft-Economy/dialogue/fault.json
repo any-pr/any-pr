@@ -1,0 +1,16 @@
+{
+    "format_version": "1.20.0",
+    "minecraft:npc_dialogue": {
+        "scenes": [
+            {
+                "scene_tag": "fault",
+                "npc_name": {
+                    "rawtext": [{"text":"执行失败"}]
+                },
+                "text": {
+                    "rawtext": [{"text":"拒绝访问。\n\n常见原因：\n1. 您不具备所需的权限。\n2. 经验或余额不足。\n\n您可以关闭此页面。"}]
+                }
+            }
+        ]
+    }
+}

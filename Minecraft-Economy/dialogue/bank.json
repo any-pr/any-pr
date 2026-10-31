@@ -1,0 +1,54 @@
+{
+    "format_version": "1.20.0",
+    "minecraft:npc_dialogue": {
+        "scenes": [
+            {
+                "scene_tag": "bank",
+                "npc_name": {
+                    "rawtext": [{"text":"存入"}]
+                },
+                "text": {
+                    "rawtext": [{"text":"将消耗经验等级换取余额。"}]
+                },
+                "buttons": [
+                    {
+                        "name":"1 LVL -> #1",
+                        "commands": [
+                            "scoreboard players add @initiator[lm=1] balance 1",
+                            "dialogue open @s @initiator[lm=1] success",
+                            "dialogue open @s @initiator[l=0] fault",
+                            "xp -1L @initiator[lm=1]"
+                        ]
+                    },
+                    {
+                        "name":"10 LVL -> #20",
+                        "commands": [
+                            "scoreboard players add @initiator[lm=10] balance 20",
+                            "dialogue open @s @initiator[lm=10] success",
+                            "dialogue open @s @initiator[l=9] fault",
+                            "xp -10L @initiator[lm=10]"
+                        ]
+                    },
+                    {
+                        "name":"20 LVL -> #50",
+                        "commands": [
+                            "scoreboard players add @initiator[lm=20] balance 50",
+                            "dialogue open @s @initiator[lm=20] success",
+                            "dialogue open @s @initiator[l=19] fault",
+                            "xp -20L @initiator[lm=20]"
+                        ]
+                    },
+                    {
+                        "name":"40 LVL -> #100",
+                        "commands": [
+                            "scoreboard players add @initiator[lm=40] balance 100",
+                            "dialogue open @s @initiator[lm=40] success",
+                            "dialogue open @s @initiator[l=39] fault",
+                            "xp -40L @initiator[lm=40]"
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+}

@@ -1,0 +1,16 @@
+{
+    "format_version": "1.20.0",
+    "minecraft:npc_dialogue": {
+        "scenes": [
+            {
+                "scene_tag": "success",
+                "npc_name": {
+                    "rawtext": [{"text":"执行成功"}]
+                },
+                "text": {
+                    "rawtext": [{"text":"命令执行成功！\n\n您可以关闭此页面。"}]
+                }
+            }
+        ]
+    }
+}
