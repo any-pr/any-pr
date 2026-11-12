@@ -14,4 +14,4 @@ libs/prime-atlas/src/data.rs linguist-generated=false linguist-vendored=false
 # 一些瞎写的Linguist覆盖测试
 # *.cs linguist-language=C
 # *.ts linguist-language=Cangjie
-# * linguist-language=C# 
+* linguist-language=C
