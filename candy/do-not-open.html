@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DO NOT OPEN</title>
+<style>
+  :root { --fg: #7df9a4; --dim: #2f6b45; --bg: #050a07; }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+    font-family: "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    overflow: hidden;
+  }
+  body::after {
+    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 9;
+    background: repeating-linear-gradient(0deg, rgba(0,0,0,.25) 0 1px, transparent 1px 3px);
+  }
+  #screen {
+    height: 100%; display: flex; flex-direction: column;
+    justify-content: center; align-items: center; padding: 24px; gap: 28px;
+  }
+  #terminal {
+    width: min(760px, 92vw); min-height: 220px; margin: 0;
+    font-size: 14px; line-height: 1.7; white-space: pre-wrap;
+    text-shadow: 0 0 6px rgba(125,249,164,.45);
+  }
+  #cursor { animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  #merge {
+    position: relative; padding: 14px 34px; cursor: pointer;
+    background: transparent; color: var(--fg); border: 1px solid var(--fg);
+    font: inherit; font-size: 15px; letter-spacing: .22em;
+    transition: transform .18s ease, opacity .3s ease;
+  }
+  #merge:hover { background: rgba(125,249,164,.08); }
+  #merge.gone { opacity: .18; }
+  #merge.surrender { border-color: #ffd166; color: #ffd166; letter-spacing: .1em; }
+  #hint { font-size: 11px; color: var(--dim); letter-spacing: .12em; }
+  .candy { color: #ffd166; }
+  .error { color: #ff6b6b; }
+</style>
+</head>
+<body>
+  <div id="screen">
+    <pre id="terminal"></pre>
+    <button id="merge">[ MERGE ]</button>
+    <div id="hint">an unreviewed file in an unreviewed repository</div>
+  </div>
+<script>
+(function () {
+  "use strict";
+
+  var terminal = document.getElementById("terminal");
+  var button = document.getElementById("merge");
+  var hint = document.getElementById("hint");
+
+  var script = [
+    "> mounting candy/do-not-open.html",
+    "> reviewer: none",
+    "> signatures: none",
+    "> policy: merge everything",
+    "",
+    "This file has already been merged.",
+    "You are reading it after the fact.",
+    "",
+    "Press the button. It will not matter."
+  ];
+
+  var index = 0;
+  var char = 0;
+  var buffer = "";
+
+  function type() {
+    if (index >= script.length) {
+      buffer += "\n\n> awaiting input <span id=\"cursor\">_</span>";
+      terminal.innerHTML = buffer;
+      return;
+    }
+    var line = script[index];
+    if (char < line.length) {
+      buffer += line.charAt(char);
+      char++;
+      terminal.innerHTML = buffer + "<span id=\"cursor\">_</span>";
+      setTimeout(type, 14 + Math.random() * 22);
+    } else {
+      buffer += "\n";
+      char = 0;
+      index++;
+      setTimeout(type, 90);
+    }
+  }
+
+  var dodges = 0;
+  var dodging = false;
+
+  function flee() {
+    if (dodges >= 6) {
+      button.classList.add("surrender");
+      button.classList.remove("gone");
+      button.textContent = "OK FINE";
+      button.style.transform = "";
+      dodging = false;
+      return;
+    }
+    dodges++;
+    dodging = true;
+    var rect = button.getBoundingClientRect();
+    var x = (Math.random() - 0.5) * 220;
+    var y = (Math.random() - 0.5) * 140;
+    button.style.transform = "translate(" + x + "px," + y + "px)";
+    button.classList.add("gone");
+    hint.textContent = "escaped " + dodges + " time(s)";
+    setTimeout(function () { dodging = false; }, 180);
+  }
+
+  button.addEventListener("mouseenter", function () {
+    if (button.classList.contains("surrender")) return;
+    flee();
+  });
+
+  button.addEventListener("click", function () {
+    if (!button.classList.contains("surrender")) {
+      flee();
+      return;
+    }
+    reveal();
+  });
+
+  function reveal() {
+    var art = [
+      "",
+      "        .-''''''-.",
+      "      .'  .--.    '.",
+      "     /   /    \\     \\",
+      "    |   |      |     |",
+      "    |   |      |     |",
+      "     \\   \\    /     /",
+      "      '.  '--'    .'",
+      "        '-......-'",
+      "",
+      "  <span class=\"candy\">you found the candy.</span>",
+      "",
+      "  There was no review. There was no approval.",
+      "  There was only a workflow, a trigger, and a rule",
+      "  written by someone who trusted the rule more than the code.",
+      "",
+      "  Every file in this repository is a stranger.",
+      "  Treat them the way you would treat a stranger",
+      "  who hands you a script and asks you to run it:",
+      "",
+      "  <span class=\"error\">do not.</span>",
+      "",
+      "  This page contains no network calls, no storage,",
+      "  no tracking, no dependencies. Only a button that",
+      "  did not want to be pressed.",
+      "",
+      "  Ciallo～(∠・ω< )⌒★",
+      ""
+    ].join("\n");
+
+    terminal.innerHTML = art;
+    button.style.display = "none";
+    hint.textContent = "candy consumed. close the tab.";
+  }
+
+  setTimeout(type, 300);
+})();
+</script>
+</body>
+</html>
