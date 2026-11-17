@@ -22,6 +22,7 @@ Approximations, stated plainly:
     a local tree; the conflict check here is best effort via `git merge-tree`.
 """
 
+import json
 import os
 import re
 import subprocess
@@ -230,6 +231,9 @@ def main(argv):
             print()
         return 0
 
+    as_json = "--json" in argv
+    argv = [a for a in argv if a != "--json"]
+
     only = None
     base = "origin/main"
     if argv[:1] == ["--files"]:
@@ -267,6 +271,18 @@ def main(argv):
             warn("git merge-tree reports a conflict with the base branch; rebase first")
 
     counted = check(changes, baseline_known=only is None)
+
+    if as_json:
+        print(json.dumps({
+            "base": None if only is not None else base,
+            "files": len(changes),
+            "counted_lines": counted,
+            "failures": FAILS,
+            "warnings": WARNS,
+            "ok": not FAILS,
+        }, indent=2))
+        return 1 if FAILS else 0
+
     print(f"files={len(changes)}  counted_lines={counted}")
 
     for w in WARNS:
