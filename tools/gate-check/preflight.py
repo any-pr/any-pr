@@ -81,8 +81,12 @@ RED, GRN, YEL, DIM, RST = "\033[31m", "\033[32m", "\033[33m", "\033[2m", "\033[0
 FAILS, WARNS = [], []
 
 
-def fail(msg):
-    FAILS.append(msg)
+EXPLAIN = False
+
+
+def fail(msg, rule=None):
+    """Record a failure, naming the rule that matched when --explain is on."""
+    FAILS.append(f"[{rule}] {msg}" if EXPLAIN and rule else msg)
 
 
 def warn(msg):
@@ -170,23 +174,25 @@ def check(changes, baseline_known):
 
     if len(changes) > MAX_FILES:
         fail(f"{len(changes)} files changed, limit is {MAX_FILES} "
-             f"(lockfiles count as files; there is no exemption)")
+             f"(lockfiles count as files; there is no exemption)", rule="max-files")
 
     for c in changes:
         for cand in {c.path, c.prev} - {""}:
             if re.search(PROTECTED, cand, re.I):
-                fail(f"{cand}: under .github/ (renames into or out of it count)")
+                fail(f"{cand}: under .github/ (renames into or out of it count)",
+                     rule="protected")
             if re.search(DOCS, cand, re.I):
-                fail(f"{cand}: licence or README file — never accepted via PR")
+                fail(f"{cand}: licence or README file — never accepted via PR",
+                     rule="documents")
         if c.status != "D":
             if re.search(PROHIBITED, c.path, re.I):
-                fail(f"{c.path}: temp/cache/build-artifact/binary path")
+                fail(f"{c.path}: temp/cache/build-artifact/binary path", rule="prohibited")
             if re.search(SECRET, c.path, re.I) and not re.search(SECRET_OK, c.path, re.I):
-                fail(f"{c.path}: looks like a credential or key file")
+                fail(f"{c.path}: looks like a credential or key file", rule="secret")
         if c.status != "D" and c.mode == "120000":
-            fail(f"{c.path}: symlink (git mode 120000)")
+            fail(f"{c.path}: symlink (git mode 120000)", rule="symlink")
         if c.status != "D" and c.mode == "160000":
-            fail(f"{c.path}: submodule (git mode 160000)")
+            fail(f"{c.path}: submodule (git mode 160000)", rule="submodule")
 
     counted = 0
     for c in changes:
@@ -195,10 +201,12 @@ def check(changes, baseline_known):
         changed = c.adds + c.dels
         counted += changed
         if changed > MAX_FILE_LINES:
-            fail(f"{c.path}: {changed} changed lines, per-file limit is {MAX_FILE_LINES}")
+            fail(f"{c.path}: {changed} changed lines, per-file limit is {MAX_FILE_LINES}",
+                 rule="max-file-lines")
     if counted > MAX_LINES:
         fail(f"{counted} counted lines, limit is {MAX_LINES} "
-             f"(lockfiles, vendor/, *.min.*, *.map and *.snap are excluded)")
+             f"(lockfiles, vendor/, *.min.*, *.map and *.snap are excluded)",
+             rule="max-lines")
 
     for c in changes:
         if c.status == "D" or not os.path.isfile(c.path) or os.path.islink(c.path):
@@ -207,12 +215,12 @@ def check(changes, baseline_known):
             blob = f.read(50 * 1024 * 1024)
         if b"\0" in blob:
             fail(f"{c.path}: contains a NUL byte, so the gate treats it as binary "
-                 f"(UTF-16 text trips this too; store text as UTF-8)")
+                 f"(UTF-16 text trips this too; store text as UTF-8)", rule="binary")
             continue
         head = text(blob[:2_000_000])
         if SECRET_LITERAL.search(head) and FIXTURE_MARKER not in head:
             fail(f"{c.path}: contains what looks like a live credential literal "
-                 f"(add '{FIXTURE_MARKER}' if it is a fixture)")
+                 f"(add '{FIXTURE_MARKER}' if it is a fixture)", rule="secret-literal")
 
     return counted
 
@@ -231,8 +239,10 @@ def main(argv):
             print()
         return 0
 
+    global EXPLAIN
+    EXPLAIN = "--explain" in argv
     as_json = "--json" in argv
-    argv = [a for a in argv if a != "--json"]
+    argv = [a for a in argv if a not in ("--json", "--explain")]
 
     only = None
     base = "origin/main"
