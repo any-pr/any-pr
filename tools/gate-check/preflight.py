@@ -226,14 +226,18 @@ def main(argv):
         if git("rev-parse", "--verify", "-q", base) is None:
             print(f"{RED}{base} does not exist — git fetch first{RST}")
             return 1
-        merge_base = text(git("merge-base", base, "HEAD") or base.encode()).strip() or base
-        changes = numstat(merge_base)
-        known = modes(merge_base)
+        merge_base = text(git("merge-base", base, "HEAD") or b"").strip()
+        changes = numstat(merge_base or base)
+        known = modes(merge_base or base)
         for c in changes:
             c.mode = known.get(c.path, c.mode)
         changes += untracked()
-        print(f"base: {base}  (merge-base {merge_base[:9]})")
-        if not git("status", "--porcelain") and git("merge-tree", "--write-tree", base) is None:
+        shallow = text(git("rev-parse", "--is-shallow-repository") or b"true").strip() == "true"
+        print(f"base: {base}  (merge-base {merge_base[:9] or 'unavailable, shallow clone'})")
+        if not merge_base or shallow:
+            warn("shallow clone: history is truncated, so the conflict probe is skipped "
+                 "(git fetch --unshallow to enable it)")
+        elif not git("status", "--porcelain") and git("merge-tree", "--write-tree", base) is None:
             warn("git merge-tree reports a conflict with the base branch; rebase first")
 
     counted = check(changes, baseline_known=only is None)
