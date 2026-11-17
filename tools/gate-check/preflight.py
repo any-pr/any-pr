@@ -70,6 +70,12 @@ SECRET_LITERAL = re.compile(
     r"ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}"
     r"|-----BEGIN [A-Z ]*PRIVATE KEY-----|sk-[A-Za-z0-9]{32,}")
 
+# A file may opt out of the literal scan by containing this marker, which is
+# what a fixture needs: a test for "reject key-shaped text" has to contain
+# key-shaped text. The marker is deliberate and greppable, so a real secret
+# cannot slip through by accident.
+FIXTURE_MARKER = "gate-check: allow-secret-fixtures"
+
 RED, GRN, YEL, DIM, RST = "\033[31m", "\033[32m", "\033[33m", "\033[2m", "\033[0m"
 FAILS, WARNS = [], []
 
@@ -202,8 +208,10 @@ def check(changes, baseline_known):
             fail(f"{c.path}: contains a NUL byte, so the gate treats it as binary "
                  f"(UTF-16 text trips this too; store text as UTF-8)")
             continue
-        if SECRET_LITERAL.search(text(blob[:2_000_000])):
-            fail(f"{c.path}: contains what looks like a live credential literal")
+        head = text(blob[:2_000_000])
+        if SECRET_LITERAL.search(head) and FIXTURE_MARKER not in head:
+            fail(f"{c.path}: contains what looks like a live credential literal "
+                 f"(add '{FIXTURE_MARKER}' if it is a fixture)")
 
     return counted
 
