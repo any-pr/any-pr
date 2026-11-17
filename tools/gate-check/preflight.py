@@ -55,6 +55,16 @@ SECRET_OK = r"(^|/)\.env[._-](example|sample|template|dist)$"
 EXCLUDED = (r"(^|/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|"
             r"bun\.lockb?|composer\.lock|Cargo\.lock|Gemfile\.lock|poetry\.lock|"
             r"Pipfile\.lock|go\.sum)$|(^|/)vendor/|\.(min\.(js|css)|map|snap|lockb?)$")
+# The rules the gate applies, in the order it applies them. `--list-rules`
+# prints this table so it can be read against the workflow without opening it.
+RULES = [
+    ("protected", ".github/ at any depth, including renames into or out of it", PROTECTED),
+    ("documents", "licence instruments and README variants, at any depth", DOCS),
+    ("prohibited", "temporary, cached, build-output and binary paths", PROHIBITED),
+    ("secret", "credential and key filenames", SECRET),
+    ("excluded", "generated or vendored files left out of the line count", EXCLUDED),
+]
+
 # Not part of the workflow: catching a key pasted into a file whose name is fine.
 SECRET_LITERAL = re.compile(
     r"ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}"
@@ -203,6 +213,14 @@ def main(argv):
         print(f"{RED}not a git repository{RST}")
         return 1
     os.chdir(text(git("rev-parse", "--show-toplevel")).strip())
+
+    if argv[:1] == ["--list-rules"]:
+        for name, purpose, pattern in RULES:
+            print(name)
+            print(f"  {purpose}")
+            print(f"  {pattern}")
+            print()
+        return 0
 
     only = None
     base = "origin/main"
