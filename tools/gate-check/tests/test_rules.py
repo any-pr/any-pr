@@ -8,6 +8,9 @@ The regular expressions in preflight.py are copies of the ones in
 .github/workflows/auto-merge.yml. If one of them drifts, the mirror starts
 disagreeing with the gate, and the disagreement is invisible until a PR is
 closed. These tests pin the behaviour of both the pattern and the mirror.
+
+gate-check: allow-secret-fixtures  (the credential-literal cases below are the
+reason: a test for key-shaped text has to contain key-shaped text)
 """
 
 import importlib.util
