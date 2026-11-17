@@ -251,6 +251,8 @@ def check(changes, baseline_known):
         head = text(blob[:2_000_000])
         if blob.startswith(BOM):
             warn(f"{c.path}: starts with a UTF-8 BOM")
+        if blob and not blob.endswith(LF):
+            warn(f"{c.path}: no trailing newline")
         crlf = blob.count(CRLF)
         if crlf and blob.count(LF) != crlf:
             warn(f"{c.path}: mixes CRLF and LF line endings")
