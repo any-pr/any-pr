@@ -87,6 +87,7 @@ FAILS, WARNS = [], []
 
 EXPLAIN = False
 STAGED = False
+IGNORE = []
 
 
 def fail(msg, rule=None):
@@ -259,7 +260,7 @@ def main(argv):
             print()
         return 0
 
-    global EXPLAIN, STAGED, MAX_FILES, MAX_LINES, MAX_FILE_LINES
+    global EXPLAIN, STAGED, IGNORE, MAX_FILES, MAX_LINES, MAX_FILE_LINES
     EXPLAIN = "--explain" in argv
     STAGED = "--staged" in argv
     as_json = "--json" in argv
@@ -273,6 +274,10 @@ def main(argv):
         arg = argv[i]
         if arg in limits and i + 1 < len(argv):
             limits[arg] = int(argv[i + 1])
+            i += 2
+            continue
+        if arg == "--ignore" and i + 1 < len(argv):
+            IGNORE.append(re.compile(argv[i + 1], re.I))
             i += 2
             continue
         if arg not in ("--json", "--explain", "--staged"):
@@ -321,6 +326,12 @@ def main(argv):
                  "(git fetch --unshallow to enable it)")
         elif not git("status", "--porcelain") and git("merge-tree", "--write-tree", base) is None:
             warn("git merge-tree reports a conflict with the base branch; rebase first")
+
+    if IGNORE:
+        kept = [c for c in changes if not any(p.search(c.path) for p in IGNORE)]
+        if len(kept) != len(changes):
+            print(f"ignoring {len(changes) - len(kept)} path(s) matched by --ignore")
+        changes = kept
 
     if not changes:
         if as_json:
