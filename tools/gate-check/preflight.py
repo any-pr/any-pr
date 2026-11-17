@@ -81,6 +81,21 @@ BOM = bytes([0xEF, 0xBB, 0xBF])
 CRLF = bytes([13, 10])
 LF = bytes([10])
 
+# One path per rule, with the verdict the gate would reach. Enough to notice a
+# pattern that stopped matching after an edit, without needing a scratch repo.
+SELFTEST_CASES = [
+    ("protected", ".github/workflows/auto-merge.yml", True),
+    ("protected", "docs/.github.md", False),
+    ("documents", "docs/README.zh-CN.md", True),
+    ("documents", "tools/readme-utils.ts", False),
+    ("prohibited", "pkg/target/debug/f", True),
+    ("prohibited", "targets.yaml", False),
+    ("secret", "deploy/key.pem", True),
+    ("secret", "docs/keys.md", False),
+    ("excluded", "Cargo.lock", True),
+    ("excluded", "locksmith.py", False),
+]
+
 RED, GRN, YEL, DIM, RST = "\033[31m", "\033[32m", "\033[33m", "\033[2m", "\033[0m"
 FAILS, WARNS = [], []
 
@@ -247,6 +262,17 @@ def check(changes, baseline_known):
 
 
 def main(argv):
+    if argv[:1] == ["--selftest"]:
+        pattern_of = {name: pattern for name, _, pattern in RULES}
+        bad = 0
+        for rule, path, expected in SELFTEST_CASES:
+            got = bool(re.search(pattern_of[rule], path, re.I))
+            if got != expected:
+                bad += 1
+                print(f"FAIL {rule}: {path} -> {got}, expected {expected}")
+        print(f"{len(SELFTEST_CASES) - bad}/{len(SELFTEST_CASES)} cases ok")
+        return 1 if bad else 0
+
     if git("rev-parse", "--git-dir") is None:
         print(f"{RED}not a git repository{RST}")
         return 1
