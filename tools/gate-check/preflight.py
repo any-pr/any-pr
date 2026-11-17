@@ -82,6 +82,7 @@ FAILS, WARNS = [], []
 
 
 EXPLAIN = False
+STAGED = False
 
 
 def fail(msg, rule=None):
@@ -111,9 +112,14 @@ def text(b):
     return b.decode("utf-8", "surrogateescape")
 
 
+def diffargs(base):
+    """Compare against the index instead of a ref when --staged is set."""
+    return ["--cached"] if STAGED else [base]
+
+
 def numstat(base):
     """git diff --numstat -M -z, including the two-path form used by renames."""
-    raw = git("diff", "--numstat", "-M", "-z", base)
+    raw = git("diff", "--numstat", "-M", "-z", *diffargs(base))
     if raw is None:
         return []
     toks, out, i = raw.split(b"\0"), [], 0
@@ -134,7 +140,7 @@ def numstat(base):
 
 def modes(base):
     """git diff --raw -M -z -> {path: new mode}, for symlink/submodule detection."""
-    raw = git("diff", "--raw", "-M", "-z", base)
+    raw = git("diff", "--raw", "-M", "-z", *diffargs(base))
     if raw is None:
         return {}
     toks, out, i = raw.split(b"\0"), {}, 0
@@ -239,10 +245,11 @@ def main(argv):
             print()
         return 0
 
-    global EXPLAIN
+    global EXPLAIN, STAGED
     EXPLAIN = "--explain" in argv
+    STAGED = "--staged" in argv
     as_json = "--json" in argv
-    argv = [a for a in argv if a not in ("--json", "--explain")]
+    argv = [a for a in argv if a not in ("--json", "--explain", "--staged")]
 
     only = None
     base = "origin/main"
@@ -271,9 +278,13 @@ def main(argv):
         known = modes(merge_base or base)
         for c in changes:
             c.mode = known.get(c.path, c.mode)
-        changes += untracked()
+        if not STAGED:
+            changes += untracked()
         shallow = text(git("rev-parse", "--is-shallow-repository") or b"true").strip() == "true"
-        print(f"base: {base}  (merge-base {merge_base[:9] or 'unavailable, shallow clone'})")
+        if STAGED:
+            print("checking the index (--staged)")
+        else:
+            print(f"base: {base}  (merge-base {merge_base[:9] or 'unavailable, shallow clone'})")
         if not merge_base or shallow:
             warn("shallow clone: history is truncated, so the conflict probe is skipped "
                  "(git fetch --unshallow to enable it)")
