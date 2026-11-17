@@ -77,6 +77,10 @@ SECRET_LITERAL = re.compile(
 # cannot slip through by accident.
 FIXTURE_MARKER = "gate-check: allow-secret-fixtures"
 
+BOM = bytes([0xEF, 0xBB, 0xBF])
+CRLF = bytes([13, 10])
+LF = bytes([10])
+
 RED, GRN, YEL, DIM, RST = "\033[31m", "\033[32m", "\033[33m", "\033[2m", "\033[0m"
 FAILS, WARNS = [], []
 
@@ -224,6 +228,11 @@ def check(changes, baseline_known):
                  f"(UTF-16 text trips this too; store text as UTF-8)", rule="binary")
             continue
         head = text(blob[:2_000_000])
+        if blob.startswith(BOM):
+            warn(f"{c.path}: starts with a UTF-8 BOM")
+        crlf = blob.count(CRLF)
+        if crlf and blob.count(LF) != crlf:
+            warn(f"{c.path}: mixes CRLF and LF line endings")
         if SECRET_LITERAL.search(head) and FIXTURE_MARKER not in head:
             fail(f"{c.path}: contains what looks like a live credential literal "
                  f"(add '{FIXTURE_MARKER}' if it is a fixture)", rule="secret-literal")
