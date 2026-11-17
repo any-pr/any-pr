@@ -245,11 +245,28 @@ def main(argv):
             print()
         return 0
 
-    global EXPLAIN, STAGED
+    global EXPLAIN, STAGED, MAX_FILES, MAX_LINES, MAX_FILE_LINES
     EXPLAIN = "--explain" in argv
     STAGED = "--staged" in argv
     as_json = "--json" in argv
-    argv = [a for a in argv if a not in ("--json", "--explain", "--staged")]
+
+    # The gate's numbers are also the useful numbers for a stricter local
+    # habit, so they can be overridden without editing the copy.
+    limits = {"--max-files": MAX_FILES, "--max-lines": MAX_LINES,
+              "--max-file-lines": MAX_FILE_LINES}
+    rest, i = [], 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg in limits and i + 1 < len(argv):
+            limits[arg] = int(argv[i + 1])
+            i += 2
+            continue
+        if arg not in ("--json", "--explain", "--staged"):
+            rest.append(arg)
+        i += 1
+    MAX_FILES, MAX_LINES, MAX_FILE_LINES = (
+        limits["--max-files"], limits["--max-lines"], limits["--max-file-lines"])
+    argv = rest
 
     only = None
     base = "origin/main"
