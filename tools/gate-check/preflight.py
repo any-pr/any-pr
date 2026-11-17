@@ -322,6 +322,15 @@ def main(argv):
         elif not git("status", "--porcelain") and git("merge-tree", "--write-tree", base) is None:
             warn("git merge-tree reports a conflict with the base branch; rebase first")
 
+    if not changes:
+        if as_json:
+            print(json.dumps({"base": base, "files": 0, "counted_lines": 0,
+                              "failures": [], "warnings": WARNS, "ok": True,
+                              "nothing_to_check": True}, indent=2))
+        else:
+            print("nothing to check")
+        return 2
+
     counted = check(changes, baseline_known=only is None)
 
     if as_json:
