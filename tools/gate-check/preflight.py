@@ -112,6 +112,11 @@ class Change:
         self.adds, self.dels, self.mode = adds, dels, mode
 
 
+def label(c):
+    """Name a change, showing both ends of a rename."""
+    return f"{c.prev} -> {c.path}" if c.prev else c.path
+
+
 def text(b):
     return b.decode("utf-8", "surrogateescape")
 
@@ -196,13 +201,13 @@ def check(changes, baseline_known):
                      rule="documents")
         if c.status != "D":
             if re.search(PROHIBITED, c.path, re.I):
-                fail(f"{c.path}: temp/cache/build-artifact/binary path", rule="prohibited")
+                fail(f"{label(c)}: temp/cache/build-artifact/binary path", rule="prohibited")
             if re.search(SECRET, c.path, re.I) and not re.search(SECRET_OK, c.path, re.I):
-                fail(f"{c.path}: looks like a credential or key file", rule="secret")
+                fail(f"{label(c)}: looks like a credential or key file", rule="secret")
         if c.status != "D" and c.mode == "120000":
-            fail(f"{c.path}: symlink (git mode 120000)", rule="symlink")
+            fail(f"{label(c)}: symlink (git mode 120000)", rule="symlink")
         if c.status != "D" and c.mode == "160000":
-            fail(f"{c.path}: submodule (git mode 160000)", rule="submodule")
+            fail(f"{label(c)}: submodule (git mode 160000)", rule="submodule")
 
     counted = 0
     for c in changes:
@@ -211,7 +216,7 @@ def check(changes, baseline_known):
         changed = c.adds + c.dels
         counted += changed
         if changed > MAX_FILE_LINES:
-            fail(f"{c.path}: {changed} changed lines, per-file limit is {MAX_FILE_LINES}",
+            fail(f"{label(c)}: {changed} changed lines, per-file limit is {MAX_FILE_LINES}",
                  rule="max-file-lines")
     if counted > MAX_LINES:
         fail(f"{counted} counted lines, limit is {MAX_LINES} "
@@ -224,7 +229,7 @@ def check(changes, baseline_known):
         with open(c.path, "rb") as f:
             blob = f.read(50 * 1024 * 1024)
         if b"\0" in blob:
-            fail(f"{c.path}: contains a NUL byte, so the gate treats it as binary "
+            fail(f"{label(c)}: contains a NUL byte, so the gate treats it as binary "
                  f"(UTF-16 text trips this too; store text as UTF-8)", rule="binary")
             continue
         head = text(blob[:2_000_000])
@@ -234,7 +239,7 @@ def check(changes, baseline_known):
         if crlf and blob.count(LF) != crlf:
             warn(f"{c.path}: mixes CRLF and LF line endings")
         if SECRET_LITERAL.search(head) and FIXTURE_MARKER not in head:
-            fail(f"{c.path}: contains what looks like a live credential literal "
+            fail(f"{label(c)}: contains what looks like a live credential literal "
                  f"(add '{FIXTURE_MARKER}' if it is a fixture)", rule="secret-literal")
 
     return counted
